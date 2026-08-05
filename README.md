@@ -342,7 +342,7 @@ Or configure it by hand:
 ```toml
 [agent]
 provider = "ollama"                      # or any OpenAI-compatible server
-base_url = "http://localhost:11434/v1"   # Ollama, LM Studio, vLLM, OpenRouter…
+base_url = "http://localhost:11434/v1"   # Ollama, LM Studio, vLLM, OpenRouter, Novita…
 model = "llama3.1"
 ```
 
