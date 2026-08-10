@@ -2292,9 +2292,19 @@ mod tests {
         // say so.
         let (_v, mut app) = app("text\n");
         app.config.editor.vim = false;
-        app.config_dir = Some(std::path::PathBuf::from("/nonexistent/emeraldian-test"));
+
+        // A regular file standing where the directory would have to be.
+        // Creating anything underneath it fails on every platform — unlike a
+        // made-up absolute path, which Windows resolves against the current
+        // drive and then cheerfully creates, leaving the write to succeed and
+        // a stray directory at the root of C:.
+        let blocker =
+            std::env::temp_dir().join(format!("emeraldian-not-a-dir-{}", std::process::id()));
+        std::fs::write(&blocker, b"not a directory").expect("blocker");
+        app.config_dir = Some(blocker.clone());
 
         f4(&mut app);
+        std::fs::remove_file(&blocker).ok();
 
         assert!(app.config.editor.vim, "the toggle still took effect");
         assert!(app.status.is_error, "and the user is told it wasn't saved");
