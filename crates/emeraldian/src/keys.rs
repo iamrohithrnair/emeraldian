@@ -41,6 +41,23 @@ pub fn handle(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // Vim gets first refusal on the note pane, ahead of the global map.
+    //
+    // Order rather than a list of exceptions, deliberately. The obvious
+    // alternative — a table naming the keys vim wants, consulted before the
+    // global bindings — means two lists that have to agree, and they will not:
+    // `Ctrl+W` and `Ctrl+R` were once claimed by such a table and implemented
+    // by nobody, so they silently did nothing at all. Here the handler's own
+    // match arms are the only list. What vim declines falls through below and
+    // keeps the meaning it always had.
+    if app.config.editor.vim && app.focus == Focus::Note && app.view == View::Notes {
+        // A key release cannot reach here, so anything consumed was a real
+        // press.
+        if crate::vim::handle(app, normalize_legacy_ctrl(key)) {
+            return;
+        }
+    }
+
     if handle_global(app, key) {
         return;
     }
@@ -76,72 +93,9 @@ fn normalize_legacy_ctrl(key: KeyEvent) -> KeyEvent {
     KeyEvent { code, ..key }
 }
 
-/// Whether vim's meaning for a key beats the app's.
-///
-/// Only ever true in vim mode, in the note editor, outside Insert — so with the
-/// setting off, or in any other pane, the global map is exactly what it always
-/// was. `F4` is matched before this is consulted, or vim could be switched on
-/// and never off again.
-///
-/// These are the keys vim defines that the app had already spent. A vim user
-/// pressing `Ctrl+R` means redo, and reloading the vault instead is not a
-/// near-miss — it throws away the redo stack along with everything else.
-fn vim_owns(app: &App, key: KeyEvent) -> bool {
-    use crate::vim::VimMode;
-
-    if !app.config.editor.vim || app.focus != Focus::Note {
-        return false;
-    }
-    // Vim binds none of these with Shift, and the app does — `Ctrl+Shift+F` is
-    // the vault search. Claiming those too would cost a binding for nothing.
-    if !key.modifiers.contains(KeyModifiers::CONTROL) || key.modifiers.contains(KeyModifiers::SHIFT)
-    {
-        return false;
-    }
-
-    // Reading mode has no Insert to be in, and the scroll and jump keys are as
-    // useful on a rendered page as in the editor. But it understands only
-    // those: taking a key the reading pane cannot then handle would leave it
-    // doing nothing at all, which is how `Ctrl+W` and `Ctrl+R` briefly became
-    // dead keys here.
-    if !app.editing() {
-        return matches!(key.code, KeyCode::Char('o' | 'i' | 'd' | 'u' | 'f' | 'b'));
-    }
-
-    if !matches!(
-        app.vim.mode,
-        VimMode::Normal | VimMode::Visual | VimMode::VisualLine
-    ) {
-        return false;
-    }
-    matches!(
-        key.code,
-        KeyCode::Char('r' | 'd' | 'u' | 'f' | 'b' | 'w' | 'o' | 'i' | 'a' | 'x')
-    )
-}
-
-/// Whether vim's meaning for a key beats the app's while *typing*.
-///
-/// Only two. `Ctrl+W` deletes the word behind the cursor and `Ctrl+U` deletes
-/// to the start of the line — muscle memory strong enough that leaving them as
-/// the window prefix and a half-page scroll would be a daily papercut. Every
-/// other global binding keeps its meaning in Insert mode.
-fn vim_owns_insert(app: &App, key: KeyEvent) -> bool {
-    app.config.editor.vim
-        && app.focus == Focus::Note
-        && app.editing()
-        && app.vim.mode == crate::vim::VimMode::Insert
-        && key.modifiers.contains(KeyModifiers::CONTROL)
-        && !key.modifiers.contains(KeyModifiers::SHIFT)
-        && matches!(key.code, KeyCode::Char('w' | 'u'))
-}
-
 /// Bindings that work everywhere. Returns whether the key was consumed.
 fn handle_global(app: &mut App, key: KeyEvent) -> bool {
     let key = normalize_legacy_ctrl(key);
-    if vim_owns(app, key) || vim_owns_insert(app, key) {
-        return false;
-    }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -372,13 +326,6 @@ fn handle_note(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_reading(app: &mut App, key: KeyEvent) {
-    // Vim's reading-mode keys: the ones that make sense on a page you are not
-    // editing. `i`/`a`/`o` open the editor already typing, which is the fastest
-    // way from reading a note to changing it.
-    if app.config.editor.vim && crate::vim::reading(app, key) {
-        return;
-    }
-
     let step = |app: &mut App, delta: isize| {
         if let Some(tab) = app.active_mut() {
             tab.scroll = (tab.scroll as isize + delta).max(0) as usize;
@@ -434,14 +381,6 @@ fn follow_first_link(app: &mut App) {
 }
 
 fn handle_editing(app: &mut App, key: KeyEvent) {
-    // Vim gets first refusal on every key. What it declines — the whole of
-    // Insert mode, and Escape with nothing pending — falls through to the
-    // ordinary editing path below, so there is one implementation of typing
-    // rather than two that can drift apart.
-    if app.config.editor.vim && crate::vim::handle(app, key) {
-        return;
-    }
-
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 

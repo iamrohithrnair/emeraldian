@@ -271,10 +271,16 @@ pub fn handle(app: &mut App, key: KeyEvent) -> bool {
         start_or_continue_recording(app, key);
     }
 
-    let used = match app.vim.mode {
-        VimMode::Insert => insert(app, key),
-        VimMode::Normal => normal(app, key),
-        VimMode::Visual | VimMode::VisualLine => visual(app, key),
+    // A note being read has no buffer to act on, so it gets its own much
+    // smaller set: the keys that still mean something on a rendered page.
+    let used = if app.editing() {
+        match app.vim.mode {
+            VimMode::Insert => insert(app, key),
+            VimMode::Normal => normal(app, key),
+            VimMode::Visual | VimMode::VisualLine => visual(app, key),
+        }
+    } else {
+        reading(app, key)
     };
 
     if !app.vim.replaying {
@@ -354,9 +360,10 @@ fn repeat_change(app: &mut App) {
 /// so most motions have nothing to act on. What is left is the half that still
 /// means something — scrolling, jumping, and the keys that open the editor.
 ///
-/// Returns whether the key was consumed; anything else falls through to the
-/// reading pane's own bindings.
-pub fn reading(app: &mut App, key: KeyEvent) -> bool {
+/// Returns whether the key was consumed. Anything it declines falls through to
+/// the global map and then to the reading pane's own bindings, which is what
+/// keeps `Ctrl+W` and `Ctrl+R` working here without this function naming them.
+fn reading(app: &mut App, key: KeyEvent) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
     if ctrl {
@@ -440,8 +447,8 @@ fn insert(app: &mut App, key: KeyEvent) -> bool {
     }
 
     // The two line-editing keys vim defines while typing. Everything else falls
-    // through to the ordinary editor.
-    if ctrl {
+    // through to the ordinary editor, including every shifted combination.
+    if ctrl && !key.modifiers.contains(KeyModifiers::SHIFT) {
         match key.code {
             KeyCode::Char('w') => {
                 with_editor(app, |editor| {
@@ -1488,8 +1495,15 @@ fn run_object(app: &mut App, operator: Operator, around: bool, ch: char) {
     operate_chars(app, operator, start, end);
 }
 
-/// The Ctrl keys vim defines, which the global map lets through in Normal mode.
+/// The Ctrl keys vim defines. Anything else is declined and reaches the app.
 fn normal_ctrl(app: &mut App, key: KeyEvent) -> bool {
+    // Vim binds none of these with Shift and the app does — `Ctrl+Shift+F` is
+    // the vault search, `Ctrl+Shift+G` the local graph. Declining them here is
+    // what lets those through.
+    if key.modifiers.contains(KeyModifiers::SHIFT) {
+        return false;
+    }
+
     let (_, height) = crate::ui::note::edit_viewport(app);
     let half = (height / 2).max(1) as isize;
     let page = height.saturating_sub(1).max(1) as isize;
@@ -3092,6 +3106,100 @@ mod tests {
         );
         press(&mut app, 'g');
         assert_eq!(app.active().expect("tab").scroll, 0);
+    }
+
+    #[test]
+    fn vim_never_makes_a_working_key_dead() {
+        // The bug class, rather than the two keys that happened to hit it: vim
+        // taking a key from the global map and then not implementing it, so it
+        // silently does nothing at all.
+        //
+        // The question is not "is every key bound" — Ctrl+C is unbound in the
+        // editor either way — but "did turning vim on take something away".
+        // So each key is tried twice and the two are compared.
+        let long: String = (0..200).map(|i| format!("line {i} of text\n")).collect();
+
+        let press = |editing: bool, vim: bool, ch: char| {
+            let (_vault, mut app) = app(&long);
+            app.config.editor.vim = vim;
+            if !editing {
+                app.active_mut().expect("tab").mode = Mode::Reading;
+            }
+            // Partway down, so a key that scrolls has somewhere to go in either
+            // direction; at a boundary a working key looks like a dead one.
+            app.active_mut().expect("tab").scroll = 50;
+            if editing {
+                with_editor(&mut app, |editor| {
+                    // An edit, undone: otherwise Ctrl+R has an empty redo stack
+                    // and reads as dead when it is merely finished.
+                    editor.goto(100, 3);
+                    editor.insert_str("zz");
+                    editor.commit();
+                    editor.undo();
+                    editor.goto(100, 3);
+                });
+            }
+
+            let before = Snapshot::of(&mut app);
+            ctrl(&mut app, ch);
+            before != Snapshot::of(&mut app)
+        };
+
+        for editing in [true, false] {
+            for ch in 'a'..='z' {
+                let without = press(editing, false, ch);
+                let with = press(editing, true, ch);
+                assert!(
+                    with || !without,
+                    "Ctrl+{ch} works while {} with vim off and does nothing at \
+                     all with it on — vim claimed the key and then ignored it",
+                    if editing { "editing" } else { "reading" }
+                );
+            }
+        }
+    }
+
+    /// Enough of the app's state to tell "something happened" from "nothing did".
+    #[derive(PartialEq)]
+    struct Snapshot {
+        text: String,
+        cursor: (usize, usize),
+        scroll: usize,
+        tabs: usize,
+        note: Option<usize>,
+        mode: Option<Mode>,
+        vim: VimMode,
+        /// A prefix key is doing something: it shows in the status bar and
+        /// changes what the next key means.
+        showcmd: String,
+        view: crate::app::View,
+        focus: crate::app::Focus,
+        modal: bool,
+        status: String,
+        config: String,
+    }
+
+    impl Snapshot {
+        fn of(app: &mut App) -> Self {
+            Self {
+                text: app.editor_mut().map(|e| e.text()).unwrap_or_default(),
+                cursor: app
+                    .editor_mut()
+                    .map(|e| (e.cursor().line, e.cursor().col))
+                    .unwrap_or_default(),
+                scroll: app.active().map_or(0, |t| t.scroll),
+                tabs: app.tabs.len(),
+                note: app.active_note(),
+                mode: app.active().map(|t| t.mode),
+                vim: app.vim.mode,
+                showcmd: app.vim.showcmd.clone(),
+                view: app.view,
+                focus: app.focus,
+                modal: app.modal.is_some(),
+                status: app.status.text.clone(),
+                config: format!("{:?}", app.config.ui),
+            }
+        }
     }
 
     #[test]
