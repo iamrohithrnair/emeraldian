@@ -134,6 +134,14 @@ fn handle_global(app: &mut App, key: KeyEvent) -> bool {
         (true, true, KeyCode::Tab | KeyCode::BackTab) => Some(Action::PreviousTab),
         (true, false, KeyCode::Tab) => Some(Action::NextTab),
         (_, _, KeyCode::F(2)) => Some(Action::RenameNote),
+        // Closing a tab needs a key that means the same thing in both modes.
+        // `Ctrl+W` cannot: vim spends it on the window prefix, and every plain
+        // `Ctrl`+letter is already taken by the app, by vim, or by the terminal
+        // itself. `Ctrl+Shift+W` looks like the answer and is not — without the
+        // Kitty protocol the Shift is unencodable, so it arrives as `Ctrl+W`,
+        // arms the prefix and eats the next keystroke. F-keys are unambiguous
+        // everywhere, which is the same reason `F4` carries the vim toggle.
+        (_, _, KeyCode::F(3)) => Some(Action::CloseTab),
         // Matched here, ahead of everything vim claims, because it has to work
         // from inside Normal mode too — a toggle that can be switched on but
         // not off is a trap. F-keys are the only ones vim leaves alone.

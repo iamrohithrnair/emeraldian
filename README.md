@@ -136,7 +136,7 @@ doesn't. `?` shows the full list in the app.
 | `Tab` | Move between panes |
 | `hjkl`, `g`, `G` | Move within a pane |
 | `Enter` | Open / follow a link |
-| `F4` | Vim mode on / off |
+| `F3` / `F4` | Close the tab / vim mode on / off |
 
 In the editor: `↑`/`↓`, `Home` and `End` follow the rows on screen, so a wrapped
 paragraph moves through a line at a time as it looks rather than as it is stored.
@@ -202,7 +202,7 @@ the two things an nvim user's hands already expect:
 
 ```
 Ctrl+W h/j/k/l   explorer / note / sidebar      Ctrl+W w  cycle
-Ctrl+W c         close the tab (Ctrl+W alone is the prefix now)
+Ctrl+W c   /  F3  close the tab (Ctrl+W alone is the prefix now)
 [b  ]b           previous / next tab
 
 Space ff  find a note      Space e  explorer     Space g  graph
@@ -512,7 +512,7 @@ same state.
 ## Development
 
 ```sh
-cargo test --workspace          # 719 tests
+cargo test --workspace          # 722 tests
 cargo clippy --workspace --all-targets
 cargo fmt --all --check
 ```

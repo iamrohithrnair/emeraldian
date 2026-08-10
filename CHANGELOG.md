@@ -13,6 +13,14 @@ loads — the new key has a default.
 
 ### Added
 
+- **`F3` closes the tab**, in vim mode and out. `Ctrl+W` still does it with vim
+  off, but vim spends that key on the window prefix, and every plain
+  `Ctrl`+letter is already taken by the app, by vim, or by the terminal itself.
+  `Ctrl+Shift+W` is not the answer either: without the Kitty protocol the Shift
+  cannot be encoded, so it arrives as `Ctrl+W`, arms the prefix and swallows the
+  next keystroke. F-keys are unambiguous everywhere, which is why `F4` carries
+  the vim toggle too.
+
 - **Vim mode in the note editor, on `F4`.** Normal, Insert, Visual and
   Visual-Line.
 

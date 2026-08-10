@@ -243,7 +243,7 @@ fn hints_for(app: &App) -> &'static [(&'static str, &'static str)] {
                 ("F4", "vim"),
                 ("s", "sort"),
                 ("^N", "new"),
-                ("^W", "close tab"),
+                ("F3", "close tab"),
                 ("^\\", "files"),
                 ("^L", "chat"),
                 ("?", "help"),
@@ -288,7 +288,7 @@ fn hints_for(app: &App) -> &'static [(&'static str, &'static str)] {
                     ("Tab", "indent list"),
                     ("^Z", "undo"),
                     ("click", "place cursor"),
-                    ("^W", "close tab"),
+                    ("F3", "close tab"),
                     ("^\\", "files"),
                     ("^]", "outline"),
                     ("^P", "palette"),
@@ -299,7 +299,7 @@ fn hints_for(app: &App) -> &'static [(&'static str, &'static str)] {
                     ("Enter", "follow link"),
                     ("^O", "switcher"),
                     ("^G", "graph"),
-                    ("^W", "close tab"),
+                    ("F3", "close tab"),
                     ("^\\", "files"),
                     ("^]", "outline"),
                     ("^L", "chat"),
@@ -311,7 +311,7 @@ fn hints_for(app: &App) -> &'static [(&'static str, &'static str)] {
                 ("Enter", "jump"),
                 ("^K", "next panel"),
                 ("Tab", "panes"),
-                ("^W", "close tab"),
+                ("F3", "close tab"),
                 ("^\\", "files"),
                 ("^]", "outline"),
                 ("^L", "chat"),
@@ -519,7 +519,15 @@ fn draw_status_bar(frame: &mut Frame, app: &App, palette: &Palette, area: Rect) 
         }
         None => {
             let stats = app.index.stats();
-            format!("{} notes  {} tags  ", stats.notes, stats.tags)
+            // `position` carries the pending-command indicator, which is worth
+            // showing even with no note open — `Ctrl+W` is armed the same way
+            // from the explorer.
+            format!(
+                "{}{} notes  {} tags  ",
+                position(app),
+                stats.notes,
+                stats.tags
+            )
         }
     };
 
@@ -541,24 +549,28 @@ fn draw_status_bar(frame: &mut Frame, app: &App, palette: &Palette, area: Rect) 
 /// A writer wants to know how far down a note they are, and it's the one number
 /// that tells you the caret you can see is the caret the buffer thinks it has.
 fn position(app: &App) -> String {
-    let Some(editor) = app.active().and_then(|tab| {
-        (tab.mode == crate::app::Mode::Editing)
-            .then_some(tab.editor.as_ref())
-            .flatten()
-    }) else {
-        return String::new();
-    };
-    let cursor = editor.cursor();
-    let selected = editor.selected_text().map_or(String::new(), |text| {
-        format!("{} selected  ", text.chars().count())
-    });
-    // Vim's `showcmd`: a half-typed `2d` on screen is the difference between a
-    // command in progress and an editor that has stopped responding.
+    // Vim's `showcmd`, and the first thing worked out rather than the last: a
+    // half-typed `2d` or an armed `^W` is the difference between a command in
+    // progress and an app that has stopped responding. `Ctrl+W` is a prefix in
+    // every pane, so this has to survive the early return below — reporting it
+    // only while editing left it invisible exactly where it was most confusing.
     let pending = if app.config.editor.vim && !app.vim.showcmd.is_empty() {
         format!("{}  ", app.vim.showcmd)
     } else {
         String::new()
     };
+
+    let Some(editor) = app.active().and_then(|tab| {
+        (tab.mode == crate::app::Mode::Editing)
+            .then_some(tab.editor.as_ref())
+            .flatten()
+    }) else {
+        return pending;
+    };
+    let cursor = editor.cursor();
+    let selected = editor.selected_text().map_or(String::new(), |text| {
+        format!("{} selected  ", text.chars().count())
+    });
     format!(
         "{pending}{selected}Ln {}/{}, Col {}  ",
         cursor.line + 1,
@@ -799,7 +811,7 @@ mod tests {
 
         // Closing a tab or a pane was reachable but unadvertised, so the only
         // way to find it was the `?` overlay.
-        for hint in ["^W close tab", "^\\ files", "^] outline", "^L chat"] {
+        for hint in ["F3 close tab", "^\\ files", "^] outline", "^L chat"] {
             assert!(screen.contains(hint), "{hint:?} is missing from the bar");
         }
     }
@@ -849,6 +861,75 @@ mod tests {
         assert!(
             rendered.contains("F4"),
             "the exit was dropped from a one-row bar: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn the_hint_bar_never_advertises_a_key_that_does_not_close_the_tab() {
+        // It used to say "^W close tab" in every pane. With vim on, Ctrl+W is
+        // the window prefix and closes nothing — so the bar was telling people
+        // to press a key that would silently arm a prefix and eat their next
+        // keystroke. F3 closes the tab in both modes, so the hint is true
+        // whatever the setting.
+        for vim in [true, false] {
+            for focus in [crate::app::Focus::Explorer, crate::app::Focus::Note] {
+                let (_vault, mut app) = demo_app();
+                app.config.editor.vim = vim;
+                app.focus = focus;
+
+                let hints = hints_for(&app);
+                let close: Vec<&str> = hints
+                    .iter()
+                    .filter(|(_, label)| *label == "close tab")
+                    .map(|(key, _)| *key)
+                    .collect();
+                assert!(
+                    !close.contains(&"^W"),
+                    "the bar offers ^W to close a tab in {focus:?} (vim {vim})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn f3_closes_the_tab_in_both_modes() {
+        for vim in [true, false] {
+            let (_vault, mut app) = demo_app();
+            app.config.editor.vim = vim;
+            let tabs = app.tabs.len();
+
+            crate::keys::handle(
+                &mut app,
+                crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::F(3),
+                    crossterm::event::KeyModifiers::empty(),
+                ),
+            );
+            assert!(app.tabs.len() < tabs, "F3 should close the tab (vim {vim})");
+        }
+    }
+
+    #[test]
+    fn an_armed_prefix_shows_itself_outside_the_editor_too() {
+        // Reporting it only while editing left `Ctrl+W` looking like a dead key
+        // in exactly the pane where it was most confusing.
+        let (_vault, mut app) = demo_app();
+        app.config.editor.vim = true;
+        app.focus = crate::app::Focus::Note;
+
+        crate::keys::handle(
+            &mut app,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('w'),
+                crossterm::event::KeyModifiers::CONTROL,
+            ),
+        );
+
+        let rows = render(&mut app, 140, 40);
+        let status = rows.last().expect("a status row");
+        assert!(
+            status.contains("^W"),
+            "the armed prefix is invisible while reading: {status:?}"
         );
     }
 

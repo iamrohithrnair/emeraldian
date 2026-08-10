@@ -249,7 +249,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+S", "Save"),
             ("Ctrl+D", "Today's daily note"),
             ("F2", "Rename the open note"),
-            ("Ctrl+W", "Close the tab"),
+            ("F3", "Close the tab"),
             ("Ctrl+Tab", "Next tab"),
             ("Ctrl+B / Ctrl+I", "Bold / italic (while editing)"),
             ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
@@ -311,10 +311,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Space", "The leader menu — every app command, listed"),
             ("Ctrl+W h/j/k/l", "Move to the explorer, note, or sidebar"),
-            (
-                "Ctrl+W w / c",
-                "Cycle panes / close the tab — from any pane",
-            ),
+            ("Ctrl+W w / c", "Cycle panes / close the tab"),
             ("[b / ]b", "Previous / next tab"),
             ("Ctrl+O / Ctrl+I", "Back and forward through visited notes"),
         ],
