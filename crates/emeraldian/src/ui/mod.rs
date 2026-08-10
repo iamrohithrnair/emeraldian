@@ -186,6 +186,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_hints(frame, &palette, rows[2], hint_rows);
     }
     draw_status_bar(frame, app, &palette, status_row);
+    // Above the panes but below a real overlay: the leader menu is a prompt for
+    // the next keystroke, not something to interrupt a dialog with.
+    if app.config.editor.vim && app.vim.showing_leader() {
+        modal::draw_leader(frame, &palette, area);
+    }
     modal::draw(frame, app, &palette, area);
 
     app.regions = regions;
@@ -260,9 +265,10 @@ fn hints_for(app: &App) -> &'static [(&'static str, &'static str)] {
                 crate::vim::VimMode::Normal => &[
                     ("F4", "leave vim"),
                     ("i", "insert"),
+                    ("Space", "menu"),
                     ("v", "select"),
                     ("u", "undo"),
-                    ("dd/yy/p", "cut/copy/paste"),
+                    ("^W", "panes"),
                     ("?", "help"),
                 ],
             },
@@ -837,6 +843,30 @@ mod tests {
             rendered.contains("F4"),
             "the exit was dropped from a one-row bar: {rendered:?}"
         );
+    }
+
+    #[test]
+    fn the_leader_menu_lists_its_bindings_on_screen() {
+        // The remap is only safe because the map is visible. If this popup
+        // stops drawing, a dozen commands become unreachable in practice.
+        let (_vault, mut app) = demo_app();
+        app.config.editor.vim = true;
+        crate::actions::dispatch(&mut app, crate::app::Action::ToggleMode);
+        app.focus = crate::app::Focus::Note;
+
+        crate::keys::handle(
+            &mut app,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(' '),
+                crossterm::event::KeyModifiers::empty(),
+            ),
+        );
+
+        let screen = render(&mut app, 140, 40).join("\n");
+        assert!(screen.contains("Leader"), "the menu should be titled");
+        for label in ["Find a note", "Command palette", "Graph", "Quit"] {
+            assert!(screen.contains(label), "{label:?} is missing from the menu");
+        }
     }
 
     #[test]

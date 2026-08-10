@@ -253,10 +253,40 @@ pub fn dispatch(app: &mut App, action: Action) {
                 // `open_note` would push the current note back on, undoing the
                 // step; suppress that by clearing after the jump.
                 let before = app.history.clone();
+                let leaving = app.active_note();
                 app.open_note(previous);
                 app.history = before;
+                // Stepping back is the one navigation that leaves a forward to
+                // return to; `open_note` cleared it, so it goes on here.
+                if let Some(leaving) = leaving {
+                    app.forward.push(leaving);
+                }
             } else {
                 app.info("no earlier note");
+            }
+        }
+        // Only panes that are actually on screen can take focus; asking for the
+        // chat while it is closed would leave the keyboard talking to nothing.
+        Action::FocusPane(target) => {
+            let available = match target {
+                Focus::Explorer => app.config.ui.show_left_sidebar,
+                Focus::Sidebar => app.config.ui.show_right_sidebar,
+                Focus::Chat => app.config.ui.show_chat,
+                Focus::Note | Focus::Graph => true,
+            };
+            if available {
+                app.focus = target;
+            } else {
+                app.info("that pane is closed");
+            }
+        }
+        Action::Forward => {
+            if let Some(next) = app.forward.pop() {
+                let trail = app.forward.clone();
+                app.open_note(next);
+                app.forward = trail;
+            } else {
+                app.info("no later note");
             }
         }
 

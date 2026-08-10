@@ -187,11 +187,36 @@ wrapped paragraph; `gj` and `gk` move by the row on screen, which is what the
 arrow keys do in both modes. The cursor is drawn as a block in Normal mode and a
 bar in Insert, on terminals that support it.
 
-In Normal and Visual mode, `Ctrl+R`, `Ctrl+D`, `Ctrl+U`, `Ctrl+F` and `Ctrl+B`
-mean what vim means by them rather than what the table above says — redo, and
-scrolling. They keep their usual meanings in Insert mode, in every other pane,
-and whenever vim mode is off. `Esc` in Insert returns to Normal, and `Esc` again
-leaves for the reading view, which is where one press used to take you.
+Outside Insert mode, the Ctrl keys vim defines take vim's meanings rather than
+the app's: `Ctrl+R` redoes, `Ctrl+D`/`Ctrl+U` and `Ctrl+F`/`Ctrl+B` scroll,
+`Ctrl+A`/`Ctrl+X` adjust a number, and `Ctrl+O`/`Ctrl+I` walk back and forward
+through the notes you've visited. They keep their usual meanings in Insert mode,
+in every other pane, and whenever vim mode is off. Shifted combinations are left
+alone, so `Ctrl+Shift+F` still searches the vault.
+
+`Esc` in Insert returns to Normal, and `Esc` again leaves for the reading view,
+which is where one press used to take you.
+
+The app's own commands move onto a `Space` leader, and its panes onto `Ctrl+W` —
+the two things an nvim user's hands already expect:
+
+```
+Ctrl+W h/j/k/l   explorer / note / sidebar      Ctrl+W w  cycle
+Ctrl+W c         close the tab                  [b  ]b    previous / next tab
+
+Space ff  find a note      Space e  explorer     Space g  graph
+Space fg  grep the vault   Space p  palette      Space G  local graph
+Space n   new note         Space w  save         Space a  assistant
+Space d   daily note       Space x  close tab    Space o  outline
+Space t   theme            Space r  reload       Space ?  help
+```
+
+Pressing `Space` draws that menu on screen and the next key picks from it, so
+none of it has to be memorised. `Ctrl+W` is claimed by some terminals and
+multiplexers before the app sees it; `Tab` still cycles panes if so.
+
+From reading mode, `i`, `a`, `A`, `I`, `o` and `O` open the editor already
+typing, `gg` returns to the top, and the scroll and jump keys work as above.
 
 With vim mode off, every key in this README behaves exactly as it always has.
 
@@ -464,7 +489,7 @@ same state.
 ## Development
 
 ```sh
-cargo test --workspace          # 696 tests
+cargo test --workspace          # 715 tests
 cargo clippy --workspace --all-targets
 cargo fmt --all --check
 ```

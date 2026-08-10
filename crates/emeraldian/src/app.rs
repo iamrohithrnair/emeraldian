@@ -234,6 +234,10 @@ pub enum Action {
     FollowLink(String),
     RevealInExplorer,
     Back,
+    /// Undoes a `Back`. Vim's `Ctrl+I`, against the note history.
+    Forward,
+    /// Moves keyboard focus to a named pane. `Ctrl+W h` and friends.
+    FocusPane(Focus),
 
     // Notes
     NewNote,
@@ -348,6 +352,12 @@ pub struct App {
     pub active_tab: Option<usize>,
     /// Recently visited notes, newest last — powers `Back`.
     pub history: Vec<NoteId>,
+    /// Notes stepped back *from*, newest last — powers `Forward`.
+    ///
+    /// The browser rule: `Back` fills this, and opening a note any other way
+    /// clears it, because once you have gone somewhere new there is no longer a
+    /// forward to return to.
+    pub forward: Vec<NoteId>,
 
     pub view: View,
     pub focus: Focus,
@@ -418,6 +428,7 @@ impl App {
             tabs: Vec::new(),
             active_tab: None,
             history: Vec::new(),
+            forward: Vec::new(),
             view: View::Notes,
             focus: Focus::Explorer,
             side_panel: SidePanel::Outline,
@@ -603,6 +614,9 @@ impl App {
             if self.history.len() > 100 {
                 self.history.remove(0);
             }
+            // Navigating somewhere new ends any forward trail, as it does in a
+            // browser. `Back` puts its own entry back afterwards.
+            self.forward.clear();
         }
 
         if let Some(existing) = self.tabs.iter().position(|t| t.note == id) {

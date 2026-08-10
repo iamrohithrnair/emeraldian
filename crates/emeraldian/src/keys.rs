@@ -89,13 +89,17 @@ fn normalize_legacy_ctrl(key: KeyEvent) -> KeyEvent {
 fn vim_owns(app: &App, key: KeyEvent) -> bool {
     use crate::vim::VimMode;
 
-    if !app.config.editor.vim || app.focus != Focus::Note || !app.editing() {
+    if !app.config.editor.vim || app.focus != Focus::Note {
         return false;
     }
-    if !matches!(
-        app.vim.mode,
-        VimMode::Normal | VimMode::Visual | VimMode::VisualLine
-    ) {
+    // Reading mode has no Insert to be in, and the scroll and jumplist keys are
+    // as useful there as in the editor — arguably more so.
+    if app.editing()
+        && !matches!(
+            app.vim.mode,
+            VimMode::Normal | VimMode::Visual | VimMode::VisualLine
+        )
+    {
         return false;
     }
     // Vim binds none of these with Shift, and the app does — `Ctrl+Shift+F` is
@@ -104,13 +108,32 @@ fn vim_owns(app: &App, key: KeyEvent) -> bool {
     {
         return false;
     }
-    matches!(key.code, KeyCode::Char('r' | 'd' | 'u' | 'f' | 'b'))
+    matches!(
+        key.code,
+        KeyCode::Char('r' | 'd' | 'u' | 'f' | 'b' | 'w' | 'o' | 'i' | 'a' | 'x')
+    )
+}
+
+/// Whether vim's meaning for a key beats the app's while *typing*.
+///
+/// Only two. `Ctrl+W` deletes the word behind the cursor and `Ctrl+U` deletes
+/// to the start of the line — muscle memory strong enough that leaving them as
+/// the window prefix and a half-page scroll would be a daily papercut. Every
+/// other global binding keeps its meaning in Insert mode.
+fn vim_owns_insert(app: &App, key: KeyEvent) -> bool {
+    app.config.editor.vim
+        && app.focus == Focus::Note
+        && app.editing()
+        && app.vim.mode == crate::vim::VimMode::Insert
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+        && !key.modifiers.contains(KeyModifiers::SHIFT)
+        && matches!(key.code, KeyCode::Char('w' | 'u'))
 }
 
 /// Bindings that work everywhere. Returns whether the key was consumed.
 fn handle_global(app: &mut App, key: KeyEvent) -> bool {
     let key = normalize_legacy_ctrl(key);
-    if vim_owns(app, key) {
+    if vim_owns(app, key) || vim_owns_insert(app, key) {
         return false;
     }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -174,7 +197,7 @@ fn handle_global(app: &mut App, key: KeyEvent) -> bool {
     false
 }
 
-fn cycle_focus(app: &mut App, delta: isize) {
+pub fn cycle_focus(app: &mut App, delta: isize) {
     let mut order = vec![Focus::Explorer];
     order.push(if app.view == View::Graph {
         Focus::Graph
@@ -343,6 +366,13 @@ fn handle_note(app: &mut App, key: KeyEvent) {
 }
 
 fn handle_reading(app: &mut App, key: KeyEvent) {
+    // Vim's reading-mode keys: the ones that make sense on a page you are not
+    // editing. `i`/`a`/`o` open the editor already typing, which is the fastest
+    // way from reading a note to changing it.
+    if app.config.editor.vim && crate::vim::reading(app, key) {
+        return;
+    }
+
     let step = |app: &mut App, delta: isize| {
         if let Some(tab) = app.active_mut() {
             tab.scroll = (tab.scroll as isize + delta).max(0) as usize;

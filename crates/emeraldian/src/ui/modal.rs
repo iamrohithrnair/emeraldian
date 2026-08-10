@@ -299,6 +299,18 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("3dd, d3w", "A count repeats what follows it"),
             ("Ctrl+A / Ctrl+X", "Increment / decrement the number here"),
             ("Ctrl+D / Ctrl+U", "Half a page down / up"),
+            ("Ctrl+F / Ctrl+B", "A page down / up"),
+        ],
+    ),
+    (
+        "Vim mode: getting around",
+        &[
+            ("Space", "The leader menu — every app command, listed"),
+            ("Ctrl+W h/j/k/l", "Move to the explorer, note, or sidebar"),
+            ("Ctrl+W w", "Cycle panes; Ctrl+W c closes the tab"),
+            ("[b / ]b", "Previous / next tab"),
+            ("Ctrl+O / Ctrl+I", "Back and forward through visited notes"),
+            ("i / a / o", "From reading, straight into the editor typing"),
         ],
     ),
     (
@@ -357,10 +369,57 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     ),
 ];
 
+/// The leader menu, drawn while `<Space>` is waiting for its second key.
+///
+/// A remapped keyboard is only safe if the map is on screen. Rather than vim's
+/// timeout — which means guessing how long a person needs to think — this
+/// appears at once and the next key dismisses it, so it costs nothing to see
+/// and nothing to ignore.
+pub fn draw_leader(frame: &mut Frame, palette: &Palette, area: Rect) {
+    use crate::vim::LEADER;
+
+    // Two columns of bindings, plus a border and a title.
+    let rows = LEADER.len().div_ceil(2);
+    let height = u16::try_from(rows + 2).unwrap_or(12).min(area.height);
+    let width = 52.min(area.width);
+    let rect = centered(area, width, height);
+
+    frame.render_widget(Clear, rect);
+    let block = pane_block("Leader — Space", true, palette, palette.bg_secondary);
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    // Two columns, each a fixed-width key followed by what it does.
+    let column = usize::from(inner.width) / 2;
+    let label_width = column.saturating_sub(6);
+    let lines: Vec<Line> = LEADER
+        .chunks(2)
+        .map(|pair| {
+            let mut spans = Vec::new();
+            for (keys, label, _) in pair {
+                spans.push(Span::styled(
+                    format!(" {keys:<3} "),
+                    Style::default()
+                        .fg(palette.text_accent)
+                        .add_modifier(Modifier::BOLD),
+                ));
+                spans.push(Span::styled(
+                    format!("{:<label_width$}", truncate(label, label_width)),
+                    Style::default().fg(palette.text_muted),
+                ));
+            }
+            Line::from(spans)
+        })
+        .collect();
+
+    Paragraph::new(lines).render(inner, frame.buffer_mut());
+}
+
 /// The section that only applies once vim mode is switched on.
 ///
 /// Hidden until then, so `?` reads exactly as it always has for the people who
 /// never turn it on — a page of keys that don't work is worse than no page.
+/// Prefix marking the sections that only apply once vim mode is on.
 const VIM_SECTION: &str = "Vim mode";
 
 fn draw_help(frame: &mut Frame, scroll: &mut usize, palette: &Palette, area: Rect, vim: bool) {
@@ -377,7 +436,7 @@ fn draw_help(frame: &mut Frame, scroll: &mut usize, palette: &Palette, area: Rec
 
     let mut lines = Vec::new();
     for (section, bindings) in HELP {
-        if *section == VIM_SECTION && !vim {
+        if section.starts_with(VIM_SECTION) && !vim {
             continue;
         }
         lines.push(Line::from(Span::styled(

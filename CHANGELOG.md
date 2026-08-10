@@ -29,9 +29,22 @@ All notable changes to this project are documented here. The format follows
   approximated: `dw` stops before the next word and `de` takes the last letter
   of this one.
 
-  In Normal and Visual mode, `Ctrl+R`, `Ctrl+D`, `Ctrl+U`, `Ctrl+F` and
-  `Ctrl+B` take vim's meanings rather than the app's — redo and scrolling. They
-  are unchanged in Insert mode, in every other pane, and with vim mode off.
+  Outside Insert mode the Ctrl keys vim defines take vim's meanings rather than
+  the app's: `Ctrl+R` redoes, `Ctrl+D`/`Ctrl+U` and `Ctrl+F`/`Ctrl+B` scroll,
+  `Ctrl+A`/`Ctrl+X` adjust a number, and `Ctrl+O`/`Ctrl+I` walk the note
+  history. In Insert mode only `Ctrl+W` and `Ctrl+U` are claimed, for vim's
+  word- and line-delete. Everything else is unchanged there, in every other
+  pane, and with vim mode off; shifted combinations are left alone, so
+  `Ctrl+Shift+F` still searches.
+
+  The app's commands move onto a `Space` leader and its panes onto `Ctrl+W`.
+  Pressing `Space` draws a which-key menu built from the same table that binds
+  the keys, so a binding cannot exist without being listed. `Ctrl+W h/j/k/l`
+  moves between the explorer, note and sidebar, `[b`/`]b` step through tabs.
+
+  Reading mode gets the subset that means anything on a rendered page: `i a o`
+  and friends open the editor already typing, `gg` returns to the top, and the
+  scroll and jump keys work as they do in the editor.
 
   Deliberately hard to get stuck in: the mode is named in the status bar, the
   cursor is a block in Normal and a bar in Insert, a pending `2d` is shown as
@@ -48,6 +61,10 @@ All notable changes to this project are documented here. The format follows
 
 - `Config::save_to`, mirroring `State::save_to`, so tests that write settings
   do not reach into the config directory of the machine running them.
+
+- Forward navigation. `Action::Back` now records what it stepped away from, so
+  there is something to return to; opening a note any other way clears the
+  trail, as a browser does. Reachable as `Ctrl+I` in vim mode.
 
 ## [0.4.2] — 2026-08-07
 
