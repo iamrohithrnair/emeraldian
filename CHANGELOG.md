@@ -4,7 +4,12 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] — 2026-08-10
+
+A minor rather than a patch release: vim mode is a new way to use the editor,
+and the keyboard behaves differently while it is on. Nothing changes for anyone
+who leaves it off, and a `config.toml` written by an earlier version still
+loads — the new key has a default.
 
 ### Added
 
@@ -536,6 +541,7 @@ First release.
 - Unreadable vaults are reported clearly, including the macOS privacy
   permission that usually causes it.
 
+[0.5.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.5.0
 [0.4.2]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.4.2
 [0.4.1]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.4.1
 [0.4.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.4.0
