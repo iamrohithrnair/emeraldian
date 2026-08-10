@@ -249,7 +249,10 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+S", "Save"),
             ("Ctrl+D", "Today's daily note"),
             ("F2", "Rename the open note"),
-            ("F3", "Close the tab"),
+            (
+                "F3 / Ctrl+W",
+                "Close the tab — Ctrl+W unless vim mode is on",
+            ),
             ("Ctrl+Tab", "Next tab"),
             ("Ctrl+B / Ctrl+I", "Bold / italic (while editing)"),
             ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
@@ -527,6 +530,29 @@ mod tests {
                 assert!(!key.is_empty() && !description.is_empty());
             }
         }
+    }
+
+    #[test]
+    fn the_help_names_both_ways_to_close_a_tab() {
+        // `F3` works in both modes and `Ctrl+W` only outside vim, so the help
+        // has to say which is which — the hint bar has room for one key, and
+        // this is where the rest of the truth goes.
+        let entry = HELP
+            .iter()
+            .flat_map(|(_, bindings)| bindings.iter())
+            .find(|(_, description)| description.starts_with("Close the tab"))
+            .expect("the help documents closing a tab");
+
+        assert!(
+            entry.0.contains("F3"),
+            "the key that always works comes first"
+        );
+        assert!(entry.0.contains("Ctrl+W"), "and the familiar one is named");
+        assert!(
+            entry.1.contains("vim"),
+            "with the condition attached: {:?}",
+            entry.1
+        );
     }
 
     #[test]
