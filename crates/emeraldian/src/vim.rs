@@ -3120,6 +3120,115 @@ mod tests {
         assert!(app.tabs.is_empty());
     }
 
+    /// Enough of the app's state to tell "something happened" from "nothing did".
+    #[derive(PartialEq)]
+    struct Snapshot {
+        text: String,
+        cursor: (usize, usize),
+        scroll: usize,
+        tabs: usize,
+        note: Option<usize>,
+        mode: Option<Mode>,
+        vim: VimMode,
+        /// A prefix key is doing something: it shows in the status bar and
+        /// changes what the next key means.
+        showcmd: String,
+        view: crate::app::View,
+        focus: crate::app::Focus,
+        modal: bool,
+        status: String,
+        config: String,
+    }
+
+    impl Snapshot {
+        fn of(app: &mut App) -> Self {
+            Self {
+                text: app.editor_mut().map(|e| e.text()).unwrap_or_default(),
+                cursor: app
+                    .editor_mut()
+                    .map(|e| (e.cursor().line, e.cursor().col))
+                    .unwrap_or_default(),
+                scroll: app.active().map_or(0, |t| t.scroll),
+                tabs: app.tabs.len(),
+                note: app.active_note(),
+                mode: app.active().map(|t| t.mode),
+                vim: app.vim.mode,
+                showcmd: app.vim.showcmd.clone(),
+                view: app.view,
+                focus: app.focus,
+                modal: app.modal.is_some(),
+                status: app.status.text.clone(),
+                config: format!("{:?}", app.config.ui),
+            }
+        }
+    }
+
+    #[test]
+    fn vim_never_makes_a_working_key_dead() {
+        // The bug class, rather than the keys that happened to hit it: vim
+        // taking a key from the global map and then not implementing it, so it
+        // silently does nothing at all.
+        //
+        // The question is not "is every key bound" — Ctrl+C is unbound in the
+        // editor either way — but "did turning vim on take something away". So
+        // each key is tried twice and the two are compared.
+        //
+        // What this does *not* catch is a key that still does something, but
+        // the wrong thing: `Ctrl+W` closing a tab when it should be a window
+        // prefix looks identical from here. That needs a test that names the
+        // expected behaviour, which is `ctrl_w_is_the_window_prefix_in_every_pane`.
+        // Focus is an axis anyway, since a key can be live in one pane and dead
+        // in another.
+        let long: String = (0..200).map(|i| format!("line {i} of text\n")).collect();
+
+        let press_key = |focus: crate::app::Focus, editing: bool, vim: bool, ch: char| {
+            let (_vault, mut app) = app(&long);
+            app.config.editor.vim = vim;
+            if !editing {
+                app.active_mut().expect("tab").mode = Mode::Reading;
+            }
+            // Partway down, so a key that scrolls has somewhere to go in either
+            // direction; at a boundary a working key looks like a dead one.
+            app.active_mut().expect("tab").scroll = 50;
+            if editing {
+                with_editor(&mut app, |editor| {
+                    // An edit, undone: otherwise Ctrl+R has an empty redo stack
+                    // and reads as dead when it is merely finished.
+                    editor.goto(100, 3);
+                    editor.insert_str("zz");
+                    editor.commit();
+                    editor.undo();
+                    editor.goto(100, 3);
+                });
+            }
+            app.focus = focus;
+
+            let before = Snapshot::of(&mut app);
+            ctrl(&mut app, ch);
+            before != Snapshot::of(&mut app)
+        };
+
+        for focus in [
+            crate::app::Focus::Note,
+            crate::app::Focus::Explorer,
+            crate::app::Focus::Sidebar,
+        ] {
+            for editing in [true, false] {
+                for ch in 'a'..='z' {
+                    let without = press_key(focus, editing, false, ch);
+                    let with = press_key(focus, editing, true, ch);
+                    assert!(
+                        with || !without,
+                        "Ctrl+{ch} works in {focus:?} while {} with vim off and \
+                         does nothing at all with it on — vim claimed the key \
+                         and then ignored it",
+                        if editing { "editing" } else { "reading" }
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn an_older_config_without_the_key_starts_in_emeraldian_mode() {
         // Upgrading must not silently put someone into a modal editor.

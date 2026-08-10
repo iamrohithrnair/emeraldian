@@ -512,7 +512,7 @@ same state.
 ## Development
 
 ```sh
-cargo test --workspace          # 718 tests
+cargo test --workspace          # 719 tests
 cargo clippy --workspace --all-targets
 cargo fmt --all --check
 ```
