@@ -218,6 +218,25 @@ multiplexers before the app sees it; `Tab` still cycles panes if so.
 From reading mode, `i`, `a`, `A`, `I`, `o` and `O` open the editor already
 typing, `gg` returns to the top, and the scroll and jump keys work as above.
 
+`:` and `/` type along the bottom row, where every editor this is imitating puts
+them:
+
+```
+:w  :wq  :x       save, and close the tab      :q   :q!   close the tab
+:qa :qa!          quit the app                 :42        jump to a line
+:e <name>         open a note, creating it     :e         reload the vault
+:set nu           nonu wrap nowrap et noet ts=4 novim
+:mkconfig         write the current settings to config.toml
+/pattern  ?pattern    search; n and N step, :noh clears the highlight
+.                     repeat the last change, including the text typed
+```
+
+Search is a plain substring rather than a regular expression, and ignores case
+unless the pattern contains a capital — vim's `smartcase`. Every match on screen
+is highlighted, not just the one jumped to.
+
+`:q` closes the note, the way it closes a window in vim; `:qa` quits the app.
+
 With vim mode off, every key in this README behaves exactly as it always has.
 
 One thing worth knowing: `editor.auto_save` is on by default, so a note mangled
@@ -489,7 +508,7 @@ same state.
 ## Development
 
 ```sh
-cargo test --workspace          # 715 tests
+cargo test --workspace          # 731 tests
 cargo clippy --workspace --all-targets
 cargo fmt --all --check
 ```

@@ -324,6 +324,8 @@ pub struct Editor {
     /// where reaching the end of a long line is the whole point.
     pub hscroll: usize,
     modified: bool,
+    /// Bumped on every change, so a caller can tell whether one happened.
+    revision: u64,
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
     last_edit: Option<EditKind>,
@@ -346,6 +348,7 @@ impl Editor {
             scroll: 0,
             hscroll: 0,
             modified: false,
+            revision: 0,
             undo: Vec::new(),
             redo: Vec::new(),
             last_edit: None,
@@ -388,6 +391,22 @@ impl Editor {
 
     pub fn mark_saved(&mut self) {
         self.modified = false;
+    }
+
+    /// Records that the text changed.
+    ///
+    /// `modified` answers "is there unsaved work", which stays true once set;
+    /// `revision` answers "did *that* keystroke change anything", which needs a
+    /// number that moves every time. Vim's `.` uses the second to tell a
+    /// command worth repeating from a motion that merely moved the cursor.
+    fn touch(&mut self) {
+        self.modified = true;
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// The buffer as text, always newline-terminated.
@@ -761,7 +780,7 @@ impl Editor {
             self.lines[self.cursor.line] = String::new();
             self.cursor.col = 0;
             self.desired_col = None;
-            self.modified = true;
+            self.touch();
             return;
         }
 
@@ -832,7 +851,7 @@ impl Editor {
         };
         self.desired_col = None;
         self.selection_anchor = None;
-        self.modified = true;
+        self.touch();
     }
 
     pub fn backspace(&mut self) {
@@ -870,7 +889,7 @@ impl Editor {
             self.lines[self.cursor.line].push_str(&current);
         }
         self.desired_col = None;
-        self.modified = true;
+        self.touch();
     }
 
     pub fn delete_forward(&mut self) {
@@ -896,7 +915,7 @@ impl Editor {
             let next = self.lines.remove(self.cursor.line + 1);
             self.lines[self.cursor.line].push_str(&next);
         }
-        self.modified = true;
+        self.touch();
     }
 
     /// Deletes the current line, or every line the selection touches.
@@ -915,7 +934,7 @@ impl Editor {
         self.cursor.line = first.min(self.lines.len() - 1);
         self.cursor.col = 0;
         self.selection_anchor = None;
-        self.modified = true;
+        self.touch();
     }
 
     /// `x`: removes characters at the cursor and hands them back.
@@ -940,7 +959,7 @@ impl Editor {
             .collect();
         self.lines[self.cursor.line] = kept;
         self.desired_col = None;
-        self.modified = true;
+        self.touch();
         taken
     }
 
@@ -966,7 +985,7 @@ impl Editor {
         // Vim leaves the cursor on the last character replaced.
         self.cursor.col += count - 1;
         self.desired_col = None;
-        self.modified = true;
+        self.touch();
     }
 
     /// Characters on a line, for callers outside this module.
@@ -993,7 +1012,7 @@ impl Editor {
         self.cursor.col = 0;
         self.desired_col = None;
         self.selection_anchor = None;
-        self.modified = true;
+        self.touch();
 
         let mut text = taken.join("\n");
         text.push('\n');
@@ -1065,7 +1084,7 @@ impl Editor {
         self.cursor.col = 0;
         self.desired_col = None;
         self.selection_anchor = None;
-        self.modified = true;
+        self.touch();
     }
 
     /// `o` and `O`: a blank line below or above, cursor on it.
@@ -1078,7 +1097,7 @@ impl Editor {
             self.lines.insert(self.cursor.line, String::new());
             self.cursor.col = 0;
             self.desired_col = None;
-            self.modified = true;
+            self.touch();
             // Indentation comes from the line that was pushed down, since
             // there may be nothing above to copy.
             let indent: String = self.lines[self.cursor.line + 1]
@@ -1109,7 +1128,7 @@ impl Editor {
             // With no selection, insert the pair and place the cursor inside.
             self.insert_into_line(&format!("{marker}{marker}"));
             self.cursor.col -= marker.chars().count();
-            self.modified = true;
+            self.touch();
             return;
         };
 
@@ -1130,7 +1149,7 @@ impl Editor {
             }
             self.insert_into_line(part);
         }
-        self.modified = true;
+        self.touch();
     }
 
     fn delete_selection_inner(&mut self) {
@@ -1151,7 +1170,7 @@ impl Editor {
         self.cursor = start;
         self.desired_col = None;
         self.selection_anchor = None;
-        self.modified = true;
+        self.touch();
     }
 
     fn insert_into_line(&mut self, text: &str) {
@@ -1163,7 +1182,7 @@ impl Editor {
         self.lines[self.cursor.line] = line;
         self.cursor.col = col + text.chars().count();
         self.desired_col = None;
-        self.modified = true;
+        self.touch();
     }
 
     fn split_line(&mut self) {
@@ -1176,7 +1195,7 @@ impl Editor {
         self.cursor.line += 1;
         self.cursor.col = 0;
         self.desired_col = None;
-        self.modified = true;
+        self.touch();
     }
 
     // ---- undo ------------------------------------------------------------
@@ -1219,7 +1238,7 @@ impl Editor {
         self.cursor = snapshot.cursor;
         self.selection_anchor = None;
         self.last_edit = None;
-        self.modified = true;
+        self.touch();
         true
     }
 
@@ -1235,7 +1254,7 @@ impl Editor {
         self.cursor = snapshot.cursor;
         self.selection_anchor = None;
         self.last_edit = None;
-        self.modified = true;
+        self.touch();
         true
     }
 
@@ -1425,6 +1444,103 @@ impl Editor {
             line: from.line,
             col,
         })
+    }
+
+    /// The next occurrence of `pattern`, wrapping round the ends of the note.
+    ///
+    /// A plain substring rather than a regular expression: notes are prose, the
+    /// thing being looked for is almost always a word, and a half-supported
+    /// regex dialect would be worse than an honest literal one. Case is
+    /// ignored unless the pattern has a capital in it, which is vim's
+    /// `smartcase` and what people expect without knowing its name.
+    #[must_use]
+    pub fn find_next(&self, from: Cursor, pattern: &str, forward: bool) -> Option<Cursor> {
+        if pattern.is_empty() {
+            return None;
+        }
+        let sensitive = pattern.chars().any(char::is_uppercase);
+        let needle = if sensitive {
+            pattern.to_string()
+        } else {
+            pattern.to_lowercase()
+        };
+
+        let hay = |line: usize| {
+            let text = &self.lines[line];
+            if sensitive {
+                text.clone()
+            } else {
+                text.to_lowercase()
+            }
+        };
+        // Byte offsets from `match_indices` have to come back as characters, or
+        // a match after an accent lands the cursor mid-glyph.
+        let as_chars = |line: usize, byte: usize| self.lines[line][..byte].chars().count();
+
+        let count = self.lines.len();
+        for step in 0..=count {
+            let line = if forward {
+                (from.line + step) % count
+            } else {
+                (from.line + count - step % count) % count
+            };
+            let text = hay(line);
+
+            let found = if forward {
+                let after = if step == 0 { from.col + 1 } else { 0 };
+                let start = text
+                    .char_indices()
+                    .nth(after)
+                    .map_or(text.len(), |(byte, _)| byte);
+                text.get(start..)
+                    .and_then(|rest| rest.find(&needle).map(|at| at + start))
+            } else {
+                let before = if step == 0 {
+                    text.char_indices()
+                        .nth(from.col)
+                        .map_or(text.len(), |(byte, _)| byte)
+                } else {
+                    text.len()
+                };
+                text.get(..before).and_then(|head| head.rfind(&needle))
+            };
+
+            if let Some(byte) = found {
+                return Some(Cursor {
+                    line,
+                    col: as_chars(line, byte),
+                });
+            }
+        }
+        None
+    }
+
+    /// Every match of `pattern` on one line, as character ranges.
+    ///
+    /// For the renderer: showing only the match jumped to leaves the other
+    /// hits invisible, which is most of what a search is for.
+    #[must_use]
+    pub fn matches_on(&self, line: usize, pattern: &str) -> Vec<(usize, usize)> {
+        if pattern.is_empty() {
+            return Vec::new();
+        }
+        let Some(text) = self.lines.get(line) else {
+            return Vec::new();
+        };
+        let sensitive = pattern.chars().any(char::is_uppercase);
+        let (hay, needle) = if sensitive {
+            (text.clone(), pattern.to_string())
+        } else {
+            (text.to_lowercase(), pattern.to_lowercase())
+        };
+        let width = needle.chars().count();
+
+        hay.match_indices(&needle)
+            .map(|(byte, _)| {
+                let start = text[..byte].chars().count();
+                (start, start + width)
+            })
+            .collect()
     }
 
     // ---- text objects ----------------------------------------------------
@@ -1638,7 +1754,7 @@ impl Editor {
             self.lines[self.cursor.line] = format!("{current}{separator}{trimmed}");
         }
         self.desired_col = None;
-        self.modified = true;
+        self.touch();
     }
 
     /// `~`: flips the case of the characters under the cursor and moves past.
@@ -1665,7 +1781,7 @@ impl Editor {
         self.lines[self.cursor.line] = flipped;
         self.cursor.col = end.min(len.saturating_sub(1));
         self.desired_col = None;
-        self.modified = true;
+        self.touch();
     }
 
     /// `Ctrl+A` and `Ctrl+X`: adds to the number at or after the cursor.
@@ -1709,7 +1825,7 @@ impl Editor {
         self.cursor.col = head.chars().count() + body.chars().count() - 1;
         self.lines[self.cursor.line] = format!("{head}{body}{tail}");
         self.desired_col = None;
-        self.modified = true;
+        self.touch();
         true
     }
 

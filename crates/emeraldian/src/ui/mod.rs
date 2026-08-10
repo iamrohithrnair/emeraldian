@@ -185,7 +185,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if show_hints {
         draw_hints(frame, &palette, rows[2], hint_rows);
     }
-    draw_status_bar(frame, app, &palette, status_row);
+    // A vim `:` or `/` takes over the status row, which is where every editor
+    // it is imitating puts them.
+    match app.modal.as_ref() {
+        Some(Modal::Prompt(prompt)) if modal::is_command_line(prompt) => {
+            modal::draw_command_line(frame, prompt, &palette, status_row);
+        }
+        _ => draw_status_bar(frame, app, &palette, status_row),
+    }
     // Above the panes but below a real overlay: the leader menu is a prompt for
     // the next keystroke, not something to interrupt a dialog with.
     if app.config.editor.vim && app.vim.showing_leader() {
@@ -867,6 +874,44 @@ mod tests {
         for label in ["Find a note", "Command palette", "Graph", "Quit"] {
             assert!(screen.contains(label), "{label:?} is missing from the menu");
         }
+    }
+
+    #[test]
+    fn the_vim_command_line_takes_over_the_bottom_row() {
+        // Not a dialog in the middle of the screen: `:w` popping a box would be
+        // unlike every editor this is imitating.
+        let (_vault, mut app) = demo_app();
+        app.config.editor.vim = true;
+        crate::actions::dispatch(&mut app, crate::app::Action::ToggleMode);
+        app.focus = crate::app::Focus::Note;
+
+        crate::keys::handle(
+            &mut app,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(':'),
+                crossterm::event::KeyModifiers::empty(),
+            ),
+        );
+        for ch in "wq".chars() {
+            crate::keys::handle(
+                &mut app,
+                crossterm::event::KeyEvent::new(
+                    crossterm::event::KeyCode::Char(ch),
+                    crossterm::event::KeyModifiers::empty(),
+                ),
+            );
+        }
+
+        let rows = render(&mut app, 140, 40);
+        let bottom = rows.last().expect("a status row").clone();
+        assert!(
+            bottom.trim_start().starts_with(":wq"),
+            "expected the command on the bottom row, got {bottom:?}"
+        );
+        assert!(
+            !rows[..rows.len() - 1].iter().any(|r| r.contains(":wq")),
+            "and nowhere else on screen"
+        );
     }
 
     #[test]

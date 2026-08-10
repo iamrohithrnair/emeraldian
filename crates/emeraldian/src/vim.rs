@@ -17,6 +17,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{Action, App, Focus};
+use crate::modal::{Modal, Prompt, PromptIntent};
 
 /// Which vim mode the editor is in.
 ///
@@ -185,6 +186,13 @@ pub struct FindTarget {
     till: bool,
 }
 
+/// An active in-buffer search, kept so `n`, `N` and the highlight all agree.
+#[derive(Debug, Clone)]
+pub struct Search {
+    pub pattern: String,
+    forward: bool,
+}
+
 /// Everything vim mode remembers.
 #[derive(Debug, Clone, Default)]
 pub struct Vim {
@@ -195,6 +203,19 @@ pub struct Vim {
     /// Survives `reset`: `;` should still work after switching notes, the way
     /// the register does.
     last_find: Option<FindTarget>,
+    /// The live search, or `None` once `:noh` or `Esc` has cleared it. Read by
+    /// the renderer to highlight every match.
+    pub search: Option<Search>,
+    /// Keys of the command being typed, kept only while it might turn out to
+    /// have changed something.
+    recording: Option<Vec<KeyEvent>>,
+    /// The buffer's revision when that recording started.
+    recording_at: u64,
+    /// The last command that did change something — what `.` replays.
+    last_change: Vec<KeyEvent>,
+    /// Set while `.` is feeding those keys back in, so the replay is not itself
+    /// recorded as a new change.
+    replaying: bool,
     pub register: Register,
     /// The keys typed so far in an unfinished command, shown in the status bar
     /// the way vim's `showcmd` does — so a half-typed `2d` is visible rather
@@ -242,10 +263,84 @@ impl Vim {
 /// motions need the viewport the last frame recorded — the same reason
 /// [`crate::keys::move_in_editor`] does.
 pub fn handle(app: &mut App, key: KeyEvent) -> bool {
-    match app.vim.mode {
+    // `.` replays keys rather than re-running a parsed command. Recording what
+    // was typed is the one representation that covers every case uniformly —
+    // an operator with a motion, a lone `x`, and the literal text typed during
+    // an insert are all just keys.
+    if !app.vim.replaying {
+        start_or_continue_recording(app, key);
+    }
+
+    let used = match app.vim.mode {
         VimMode::Insert => insert(app, key),
         VimMode::Normal => normal(app, key),
         VimMode::Visual | VimMode::VisualLine => visual(app, key),
+    };
+
+    if !app.vim.replaying {
+        finish_recording(app);
+    }
+    used
+}
+
+/// Begins recording a candidate change, or adds to one already in progress.
+fn start_or_continue_recording(app: &mut App, key: KeyEvent) {
+    if app.vim.recording.is_none() {
+        // Only a command begun in Normal mode is repeatable; there is no
+        // meaningful `.` for "the last thing typed mid-sentence".
+        if app.vim.mode != VimMode::Normal {
+            return;
+        }
+        app.vim.recording_at = with_editor_out(app, |editor| editor.revision()).unwrap_or(0);
+        app.vim.recording = Some(Vec::new());
+    }
+    if let Some(keys) = app.vim.recording.as_mut() {
+        keys.push(key);
+    }
+}
+
+/// Decides what the recorded keys turned out to be.
+fn finish_recording(app: &mut App) {
+    // Still mid-command: a pending operator, or an insert that has not been
+    // left yet. Either way there is more to come.
+    if app.vim.pending != Pending::None || app.vim.mode == VimMode::Insert {
+        return;
+    }
+    let Some(keys) = app.vim.recording.take() else {
+        return;
+    };
+    let now = with_editor_out(app, |editor| editor.revision()).unwrap_or(0);
+    // A motion is not a change, and repeating one would be a surprise.
+    if now != app.vim.recording_at && !keys.is_empty() {
+        app.vim.last_change = keys;
+    }
+}
+
+/// `.` — runs the last change again.
+fn repeat_change(app: &mut App) {
+    // `.` must never be recorded as the change it just made, or the next `.`
+    // replays a replay — which recurses until the stack runs out. Dropping the
+    // in-progress recording here is what keeps `.` meaning the last *edit*
+    // however many times it is pressed.
+    app.vim.recording = None;
+
+    let keys = app.vim.last_change.clone();
+    if keys.is_empty() {
+        app.info("nothing to repeat");
+        return;
+    }
+    app.vim.replaying = true;
+    for key in keys {
+        // Through the full key handler, not `handle` directly: Insert mode
+        // deliberately declines ordinary characters so the shared editing path
+        // types them, and a replay has to take that same route or the text
+        // typed during a `ciw` never reappears.
+        crate::keys::handle(app, key);
+    }
+    app.vim.replaying = false;
+    // A replay that ended mid-insert would leave the editor typing.
+    if app.vim.mode == VimMode::Insert {
+        leave_insert(app);
     }
 }
 
@@ -899,6 +994,32 @@ fn normal(app: &mut App, key: KeyEvent) -> bool {
             return true;
         }
 
+        // ---- the command and search lines ----------------------------------
+        KeyCode::Char(':') => {
+            app.modal = Some(Modal::Prompt(Prompt::new(":", "", PromptIntent::VimEx)));
+            app.vim.clear_pending();
+            return true;
+        }
+        KeyCode::Char(ch @ ('/' | '?')) => {
+            let forward = ch == '/';
+            app.modal = Some(Modal::Prompt(Prompt::new(
+                ch.to_string(),
+                "",
+                PromptIntent::VimSearch(forward),
+            )));
+            app.vim.clear_pending();
+            return true;
+        }
+        KeyCode::Char('n' | 'N') => {
+            let same = key.code == KeyCode::Char('n');
+            let forward = app.vim.search.as_ref().is_some_and(|s| s.forward) == same;
+            jump_to_match(app, forward);
+        }
+        KeyCode::Char('.') => {
+            repeat_change(app);
+            return true;
+        }
+
         // Everything else is either a motion or nothing. Going through the same
         // resolver the operators use is what keeps `w` and `dw` agreeing about
         // where a word ends.
@@ -1170,6 +1291,159 @@ fn run_find(app: &mut App, ch: char, forward: bool, till: bool, operator: Option
         Some(operator) => apply(app, operator, &Motion { to, span }),
         None => with_editor(app, |editor| editor.set_cursor(to)),
     }
+}
+
+// ---------------------------------------------------------------------------
+// The `:` line
+// ---------------------------------------------------------------------------
+
+/// Runs an ex command.
+///
+/// Most of these are an existing [`Action`] under a different name, which is
+/// the point: `:w` and `Ctrl+S` should not be two implementations of saving.
+pub fn run_ex(app: &mut App, line: &str) {
+    let line = line.trim();
+    if line.is_empty() {
+        return;
+    }
+
+    // `:42` jumps to a line, which is why the number is checked before the
+    // names — nobody has a command called `42`.
+    if let Ok(number) = line.parse::<usize>() {
+        with_editor(app, |editor| {
+            editor.goto(number.saturating_sub(1), 0);
+            editor.move_first_nonblank(false);
+        });
+        clamp(app);
+        return;
+    }
+
+    let (name, argument) = match line.split_once(char::is_whitespace) {
+        Some((name, rest)) => (name, rest.trim()),
+        None => (line, ""),
+    };
+
+    // Writing and quitting compose — `:wq` is both — so they are read as a
+    // pair of intentions rather than a list of literal spellings.
+    let force = name.ends_with('!');
+    let base = name.trim_end_matches('!');
+    let all = base.ends_with('a') && base != "a";
+    let verb = base.trim_end_matches('a');
+
+    match verb {
+        "w" | "wq" | "x" | "q" => {
+            if verb != "q" {
+                crate::actions::dispatch(app, if all { Action::SaveAll } else { Action::Save });
+            }
+            if matches!(verb, "q" | "wq" | "x") {
+                let action = match (all, force) {
+                    (true, true) => Action::ForceQuit,
+                    (true, false) => Action::Quit,
+                    // `:q` closes the note, as it closes a window in vim; the
+                    // whole app is `:qa`.
+                    (false, _) => Action::CloseTab,
+                };
+                crate::actions::dispatch(app, action);
+            }
+        }
+        "e" | "edit" => {
+            if argument.is_empty() {
+                crate::actions::dispatch(app, Action::Refresh);
+            } else {
+                app.open_or_create(argument);
+            }
+        }
+        "h" | "help" => crate::actions::dispatch(app, Action::OpenHelp),
+        "set" => run_set(app, argument),
+        "mkconfig" => crate::actions::dispatch(app, Action::SaveSettings),
+        "noh" | "nohl" | "nohlsearch" => {
+            app.vim.search = None;
+        }
+        other => app.error(format!("not a command: :{other}")),
+    }
+}
+
+/// `:set nu`, `:set nowrap`, `:set ts=2`.
+///
+/// A deliberately short list — the settings someone would plausibly change
+/// mid-session. Everything else lives in `config.toml`, and `:mkconfig` writes
+/// what is set here into it.
+fn run_set(app: &mut App, argument: &str) {
+    if argument.is_empty() {
+        app.info("try :set nu / nonu / wrap / nowrap / et / noet / ts=4 / vim / novim");
+        return;
+    }
+    if let Some(width) = argument
+        .strip_prefix("ts=")
+        .or_else(|| argument.strip_prefix("tabstop="))
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        app.config.editor.tab_width = width.clamp(1, 16);
+        app.info(format!("tabstop {}", app.config.editor.tab_width));
+        return;
+    }
+
+    let (name, on) = match argument.strip_prefix("no") {
+        Some(rest) => (rest, false),
+        None => (argument, true),
+    };
+    match name {
+        "nu" | "number" => {
+            app.config.ui.line_numbers = on;
+            app.info(format!("number {}", if on { "on" } else { "off" }));
+        }
+        "wrap" => {
+            app.config.editor.wrap = on;
+            app.info(format!("wrap {}", if on { "on" } else { "off" }));
+        }
+        "et" | "expandtab" => {
+            app.config.editor.expand_tabs = on;
+            app.info(format!("expandtab {}", if on { "on" } else { "off" }));
+        }
+        // The one `:set` that persists, because it is the one that changes what
+        // every other key does. See `actions::toggle_vim`.
+        "vim" => {
+            if app.config.editor.vim != on {
+                crate::actions::toggle_vim(app);
+            }
+        }
+        other => app.error(format!("not an option: {other}")),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Search
+// ---------------------------------------------------------------------------
+
+/// Runs a `/` or `?` search and jumps to the first match.
+pub fn run_search(app: &mut App, pattern: &str, forward: bool) {
+    if pattern.is_empty() {
+        return;
+    }
+    app.vim.search = Some(Search {
+        pattern: pattern.to_string(),
+        forward,
+    });
+    jump_to_match(app, forward);
+}
+
+/// Steps to the next match in a direction, wrapping at the ends.
+fn jump_to_match(app: &mut App, forward: bool) {
+    let Some(search) = app.vim.search.clone() else {
+        app.info("no previous search");
+        return;
+    };
+    let found = with_editor_out(app, |editor| {
+        editor.find_next(editor.cursor(), &search.pattern, forward)
+    })
+    .flatten();
+
+    match found {
+        Some(at) => with_editor(app, |editor| editor.set_cursor(at)),
+        // Saying so beats a key that silently does nothing.
+        None => app.info(format!("no match for {}", search.pattern)),
+    }
+    clamp(app);
 }
 
 /// Runs a leader sequence, if it names one.
@@ -2826,6 +3100,181 @@ mod tests {
         let (_v, mut app) = reading_app("a\nb\nc\n");
         press(&mut app, 'j');
         assert_eq!(app.active().expect("tab").scroll, 1);
+    }
+
+    // ---- the : line, search, and . ----------------------------------------
+
+    /// Types a `:` or `/` line and submits it.
+    fn command(app: &mut App, line: &str) {
+        type_str(app, line);
+        crate::keys::handle(app, KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()));
+    }
+
+    #[test]
+    fn the_colon_line_saves_and_closes() {
+        let (vault, mut app, dir) = toggling("ex-wq", "text\n");
+        press(&mut app, 'i');
+        press(&mut app, 'X');
+        esc(&mut app);
+
+        command(&mut app, ":wq");
+        assert_eq!(vault.read("N.md"), "Xtext\n", ":w wrote the file");
+        assert!(app.tabs.is_empty(), ":q closed the tab");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_colon_line_jumps_to_a_line_number() {
+        let (_v, mut app) = app("one\ntwo\nthree\nfour\n");
+        command(&mut app, ":3");
+        assert_eq!(cursor(&mut app).0, 2, ":3 is the third line, 1-based");
+    }
+
+    #[test]
+    fn the_colon_line_opens_a_note_and_creates_a_missing_one() {
+        let (vault, mut app) = app("text\n");
+        command(&mut app, ":e Brand New");
+        assert!(vault.exists("Brand New.md"));
+        assert_eq!(
+            app.note_title(app.active_note().expect("open")),
+            "Brand New"
+        );
+    }
+
+    #[test]
+    fn set_changes_a_setting_for_the_session() {
+        let (_v, mut app) = app("text\n");
+        assert!(app.config.ui.line_numbers);
+
+        command(&mut app, ":set nonu");
+        assert!(!app.config.ui.line_numbers);
+        command(&mut app, ":set nu");
+        assert!(app.config.ui.line_numbers);
+
+        command(&mut app, ":set ts=2");
+        assert_eq!(app.config.editor.tab_width, 2);
+    }
+
+    #[test]
+    fn set_novim_leaves_vim_mode() {
+        let (_v, mut app, dir) = toggling("ex-novim", "text\n");
+        command(&mut app, ":set novim");
+        assert!(!app.config.editor.vim);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_unknown_command_says_so_rather_than_failing_silently() {
+        let (_v, mut app) = app("text\n");
+        command(&mut app, ":frobnicate");
+        assert!(app.status.is_error, "{}", app.status.text);
+        assert_eq!(text(&mut app), "text\n", "and nothing happened to the note");
+    }
+
+    #[test]
+    fn search_jumps_to_the_next_match_and_n_continues() {
+        let (_v, mut app) = app("alpha\nbeta\nalpha again\n");
+        command(&mut app, "/alpha");
+        assert_eq!(cursor(&mut app), (2, 0), "the next one, not the one under");
+
+        press(&mut app, 'n');
+        assert_eq!(cursor(&mut app), (0, 0), "and it wraps round");
+        press(&mut app, 'N');
+        assert_eq!(cursor(&mut app), (2, 0), "N goes back the other way");
+    }
+
+    #[test]
+    fn search_ignores_case_until_the_pattern_has_a_capital() {
+        // Vim's smartcase, which people expect without knowing its name.
+        let loose = {
+            let (_v, mut app) = app("hello\nHELLO\n");
+            command(&mut app, "/hello");
+            cursor(&mut app).0
+        };
+        assert_eq!(loose, 1, "lowercase matches either case");
+
+        let exact = {
+            let (_v, mut app) = app("hello\nHELLO\n");
+            command(&mut app, "/HELLO");
+            cursor(&mut app).0
+        };
+        assert_eq!(exact, 1, "a capital means exactly that");
+    }
+
+    #[test]
+    fn a_search_with_no_match_says_so() {
+        let (_v, mut app) = app("nothing here\n");
+        command(&mut app, "/absent");
+        assert!(!app.status.text.is_empty());
+        assert_eq!(cursor(&mut app), (0, 0), "and the cursor stays put");
+    }
+
+    #[test]
+    fn noh_clears_the_highlight() {
+        let (_v, mut app) = app("alpha beta alpha\n");
+        command(&mut app, "/alpha");
+        assert!(app.vim.search.is_some());
+        command(&mut app, ":noh");
+        assert!(app.vim.search.is_none());
+    }
+
+    #[test]
+    fn dot_repeats_the_last_change() {
+        let (_v, mut app) = app("aaaa\n");
+        press(&mut app, 'x');
+        assert_eq!(text(&mut app), "aaa\n");
+
+        press(&mut app, '.');
+        assert_eq!(text(&mut app), "aa\n");
+        press(&mut app, '.');
+        assert_eq!(text(&mut app), "a\n");
+    }
+
+    #[test]
+    fn dot_repeats_an_operator_with_its_motion() {
+        let (_v, mut app) = app("one two three four\n");
+        type_str(&mut app, "dw");
+        assert_eq!(text(&mut app), "two three four\n");
+
+        press(&mut app, '.');
+        assert_eq!(text(&mut app), "three four\n");
+    }
+
+    #[test]
+    fn dot_repeats_an_insert_including_what_was_typed() {
+        // The case that makes `.` worth having, and the one a command-replaying
+        // implementation would miss.
+        let (_v, mut app) = app("one two\n");
+        type_str(&mut app, "ciw");
+        for ch in "X".chars() {
+            press(&mut app, ch);
+        }
+        esc(&mut app);
+        assert_eq!(text(&mut app), "X two\n");
+
+        type_str(&mut app, "ww");
+        press(&mut app, '.');
+        assert_eq!(text(&mut app), "X X\n");
+    }
+
+    #[test]
+    fn a_motion_is_not_something_to_repeat() {
+        // `.` after moving around should still repeat the last *change*.
+        let (_v, mut app) = app("aaaa bbbb\n");
+        press(&mut app, 'x');
+        assert_eq!(text(&mut app), "aaa bbbb\n");
+
+        type_str(&mut app, "wl");
+        press(&mut app, '.');
+        assert_eq!(text(&mut app), "aaa bbb\n", "the x repeated, not the move");
+    }
+
+    #[test]
+    fn dot_with_nothing_to_repeat_says_so() {
+        let (_v, mut app) = app("text\n");
+        press(&mut app, '.');
+        assert_eq!(text(&mut app), "text\n");
+        assert!(!app.status.text.is_empty());
     }
 
     #[test]

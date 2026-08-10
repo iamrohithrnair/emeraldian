@@ -672,6 +672,8 @@ pub fn submit_prompt(app: &mut App, prompt: Prompt) {
                 Err(err) => app.error(format!("could not create: {err}")),
             }
         }
+        PromptIntent::VimEx => crate::vim::run_ex(app, &value),
+        PromptIntent::VimSearch(forward) => crate::vim::run_search(app, &value, forward),
         PromptIntent::NewFolder => {
             if value.is_empty() {
                 return;

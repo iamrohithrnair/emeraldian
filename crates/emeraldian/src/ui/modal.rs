@@ -20,6 +20,10 @@ pub fn draw(frame: &mut Frame, app: &mut App, palette: &Palette, area: Rect) {
     };
     match modal {
         Modal::Picker(picker) => draw_picker(frame, picker, palette, area),
+        // The vim command and search lines are drawn on the status row by
+        // `ui::draw`, where every editor puts them; a dialog in the middle of
+        // the screen for `:w` would be jarring.
+        Modal::Prompt(prompt) if is_command_line(prompt) => {}
         Modal::Prompt(prompt) => draw_prompt(frame, prompt, palette, area),
         Modal::Confirm(confirm) => draw_confirm(frame, confirm, palette, area),
         Modal::Help(scroll) => draw_help(frame, scroll, palette, area, vim),
@@ -314,6 +318,20 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
+        "Vim mode: the : and / lines",
+        &[
+            (":w :wq :q", "Save, save and close, close the tab"),
+            (":qa / :qa!", "Quit, asking first or not"),
+            (":e <name>", "Open a note, creating it if it's missing"),
+            (":42", "Jump to a line number"),
+            (":set nu", "nonu, wrap, nowrap, et, noet, ts=4, novim"),
+            (":mkconfig", "Write the current settings to config.toml"),
+            ("/ and ?", "Search the note forwards or backwards"),
+            ("n / N", "Next and previous match; :noh clears it"),
+            (".", "Repeat the last change, including what was typed"),
+        ],
+    ),
+    (
         "File explorer",
         &[
             ("Enter / l", "Open the note, or fold the folder"),
@@ -368,6 +386,29 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
 ];
+
+/// Whether a prompt is one of vim's bottom-row lines.
+#[must_use]
+pub fn is_command_line(prompt: &Prompt) -> bool {
+    matches!(
+        prompt.intent,
+        crate::modal::PromptIntent::VimEx | crate::modal::PromptIntent::VimSearch(_)
+    )
+}
+
+/// Draws `:` or `/` along the status row, with the caret in it.
+pub fn draw_command_line(frame: &mut Frame, prompt: &Prompt, palette: &Palette, area: Rect) {
+    let text = format!("{}{}", prompt.title, prompt.value);
+    Paragraph::new(Line::from(Span::styled(
+        text,
+        Style::default().fg(palette.text_normal),
+    )))
+    .style(Style::default().bg(palette.bg_primary))
+    .render(area, frame.buffer_mut());
+
+    let column = prompt.title.chars().count() + prompt.cursor;
+    frame.set_cursor_position((area.x + u16::try_from(column).unwrap_or(u16::MAX), area.y));
+}
 
 /// The leader menu, drawn while `<Space>` is waiting for its second key.
 ///

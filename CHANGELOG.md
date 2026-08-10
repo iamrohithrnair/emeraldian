@@ -46,6 +46,22 @@ All notable changes to this project are documented here. The format follows
   and friends open the editor already typing, `gg` returns to the top, and the
   scroll and jump keys work as they do in the editor.
 
+  A `:` line, typed along the bottom row rather than in a dialog: `:w` `:wq`
+  `:x` `:q` `:q!` `:qa` `:e <name>` `:42` `:h`, plus `:set` for the handful of
+  options worth changing mid-session and `:mkconfig` to write them down. Most
+  are an existing action under a different name, so `:w` and `Ctrl+S` are not
+  two implementations of saving.
+
+  In-buffer search on `/` and `?`, with `n`/`N` to step and `:noh` to clear.
+  A plain substring rather than a regular expression — notes are prose, and a
+  half-supported regex dialect would be worse than an honest literal one — and
+  case-insensitive until the pattern contains a capital, which is vim's
+  `smartcase`. Every match on screen is highlighted, not only the one jumped to.
+
+  `.` repeats the last change, including the text typed during it. It replays
+  the keys rather than a parsed command, which is the one representation that
+  covers an operator with a motion, a lone `x`, and an insert uniformly.
+
   Deliberately hard to get stuck in: the mode is named in the status bar, the
   cursor is a block in Normal and a bar in Insert, a pending `2d` is shown as
   it is typed, the hint bar leads with the way out, and the reference opens by

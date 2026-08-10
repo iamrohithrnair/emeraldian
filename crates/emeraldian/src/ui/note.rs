@@ -1118,6 +1118,14 @@ fn draw_editing(
     // two, so on an empty or just-ended line the block would otherwise be drawn
     // one column past the text it is supposed to be on.
     let on_character = app.config.editor.vim && app.vim.mode.is_normal_like();
+    // Highlighting only the match jumped to would hide the rest, which is most
+    // of what a search is for. Read before the editor is borrowed below.
+    let search = app
+        .config
+        .editor
+        .vim
+        .then(|| app.vim.search.as_ref().map(|s| s.pattern.clone()))
+        .flatten();
     let prose = prose_area(area, gutter);
     // One column is left for the scrollbar, which also gives the caret a place
     // to sit at the end of a full row.
@@ -1162,6 +1170,10 @@ fn draw_editing(
         }
         let Some((_, chars)) = &painted else { continue };
 
+        let hits = match &search {
+            Some(pattern) => editor.matches_on(row.line, pattern),
+            None => Vec::new(),
+        };
         body.push(row_line(
             row,
             &chars[row.start.min(chars.len())..row.end.min(chars.len())],
@@ -1174,8 +1186,10 @@ fn draw_editing(
                     palette.bg_primary
                 },
                 selection: palette.bg_selection,
+                search: palette.bg_selection,
             },
             selection,
+            &hits,
             text.width as usize + hscroll,
         ));
     }
@@ -1210,6 +1224,9 @@ fn draw_editing(
 struct RowStyle {
     background: ratatui::style::Color,
     selection: ratatui::style::Color,
+    /// Behind a search hit. Same colour as a selection, since both mean
+    /// "this is the text you asked about".
+    search: ratatui::style::Color,
 }
 
 /// The gutter cell for one row: a line number, or the wrap marker on a row that
@@ -1247,6 +1264,7 @@ fn row_line(
     chars: &[(char, Style)],
     colors: RowStyle,
     selection: Option<(Cursor, Cursor)>,
+    hits: &[(usize, usize)],
     width: usize,
 ) -> Line<'static> {
     let selected = |col: usize| {
@@ -1255,11 +1273,16 @@ fn row_line(
             at >= (start.line, start.col) && at < (end.line, end.col)
         })
     };
+    let matched = |col: usize| hits.iter().any(|(start, end)| col >= *start && col < *end);
     // A background already on the character — inline code — outranks the row's,
-    // and a selection outranks both.
+    // a search hit outranks that, and a selection outranks everything: the
+    // more deliberate the act, the louder it is drawn.
     let resolve = |style: Style, col: usize| {
         if selected(col) {
             return style.bg(colors.selection);
+        }
+        if matched(col) {
+            return style.bg(colors.search);
         }
         match style.bg {
             Some(_) => style,

@@ -254,6 +254,10 @@ pub enum PromptIntent {
     FilterExplorer,
     /// An API key for the named provider. Typed characters are masked.
     ApiKey(String),
+    /// A vim `:` command line.
+    VimEx,
+    /// A vim `/` or `?` search. The flag is the direction.
+    VimSearch(bool),
 }
 
 impl PromptIntent {
