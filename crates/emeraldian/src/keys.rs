@@ -92,20 +92,26 @@ fn vim_owns(app: &App, key: KeyEvent) -> bool {
     if !app.config.editor.vim || app.focus != Focus::Note {
         return false;
     }
-    // Reading mode has no Insert to be in, and the scroll and jumplist keys are
-    // as useful there as in the editor — arguably more so.
-    if app.editing()
-        && !matches!(
-            app.vim.mode,
-            VimMode::Normal | VimMode::Visual | VimMode::VisualLine
-        )
-    {
-        return false;
-    }
     // Vim binds none of these with Shift, and the app does — `Ctrl+Shift+F` is
     // the vault search. Claiming those too would cost a binding for nothing.
     if !key.modifiers.contains(KeyModifiers::CONTROL) || key.modifiers.contains(KeyModifiers::SHIFT)
     {
+        return false;
+    }
+
+    // Reading mode has no Insert to be in, and the scroll and jump keys are as
+    // useful on a rendered page as in the editor. But it understands only
+    // those: taking a key the reading pane cannot then handle would leave it
+    // doing nothing at all, which is how `Ctrl+W` and `Ctrl+R` briefly became
+    // dead keys here.
+    if !app.editing() {
+        return matches!(key.code, KeyCode::Char('o' | 'i' | 'd' | 'u' | 'f' | 'b'));
+    }
+
+    if !matches!(
+        app.vim.mode,
+        VimMode::Normal | VimMode::Visual | VimMode::VisualLine
+    ) {
         return false;
     }
     matches!(

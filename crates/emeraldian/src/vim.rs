@@ -3095,6 +3095,25 @@ mod tests {
     }
 
     #[test]
+    fn reading_mode_gives_back_every_ctrl_key_it_cannot_use() {
+        // The guard that lets vim claim keys in reading mode has to claim
+        // exactly what reading mode handles. Taking one it then ignores leaves
+        // the key doing nothing at all — which is what happened to Ctrl+W and
+        // Ctrl+R, both silently dead until this test existed.
+        let (_v, mut app) = reading_app("text\n");
+        let tabs = app.tabs.len();
+        ctrl(&mut app, 'w');
+        assert!(app.tabs.len() < tabs, "Ctrl+W must still close the tab");
+
+        let (_v2, mut app2) = reading_app("text\n");
+        ctrl(&mut app2, 'r');
+        assert!(
+            !app2.status.text.is_empty() || app2.index.stats().notes > 0,
+            "Ctrl+R must still reach the vault reload"
+        );
+    }
+
+    #[test]
     fn reading_mode_still_scrolls_with_j_and_k() {
         // Everything vim does not claim falls through to the pane's own keys.
         let (_v, mut app) = reading_app("a\nb\nc\n");
