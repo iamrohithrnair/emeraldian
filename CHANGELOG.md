@@ -42,9 +42,10 @@ All notable changes to this project are documented here. The format follows
   the keys, so a binding cannot exist without being listed. `Ctrl+W h/j/k/l`
   moves between the explorer, note and sidebar, `[b`/`]b` step through tabs.
 
-  Reading mode gets the subset that means anything on a rendered page: `i a o`
-  and friends open the editor already typing, `gg` returns to the top, and the
-  scroll and jump keys work as they do in the editor.
+  Vim mode applies to the editor and not to reading: a note being read has no
+  buffer to act on, so the reading pane keeps every key it always had and
+  `Ctrl+E` is still the way in. The two navigation keys are the exception,
+  because moving between panes and notes is not editing.
 
   A `:` line, typed along the bottom row rather than in a dialog: `:w` `:wq`
   `:x` `:q` `:q!` `:qa` `:e <name>` `:42` `:h`, plus `:set` for the handful of

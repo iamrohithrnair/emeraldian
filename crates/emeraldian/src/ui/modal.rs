@@ -311,10 +311,12 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Space", "The leader menu — every app command, listed"),
             ("Ctrl+W h/j/k/l", "Move to the explorer, note, or sidebar"),
-            ("Ctrl+W w", "Cycle panes; Ctrl+W c closes the tab"),
+            (
+                "Ctrl+W w / c",
+                "Cycle panes / close the tab — from any pane",
+            ),
             ("[b / ]b", "Previous / next tab"),
             ("Ctrl+O / Ctrl+I", "Back and forward through visited notes"),
-            ("i / a / o", "From reading, straight into the editor typing"),
         ],
     ),
     (

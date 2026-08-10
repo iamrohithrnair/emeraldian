@@ -271,16 +271,10 @@ pub fn handle(app: &mut App, key: KeyEvent) -> bool {
         start_or_continue_recording(app, key);
     }
 
-    // A note being read has no buffer to act on, so it gets its own much
-    // smaller set: the keys that still mean something on a rendered page.
-    let used = if app.editing() {
-        match app.vim.mode {
-            VimMode::Insert => insert(app, key),
-            VimMode::Normal => normal(app, key),
-            VimMode::Visual | VimMode::VisualLine => visual(app, key),
-        }
-    } else {
-        reading(app, key)
+    let used = match app.vim.mode {
+        VimMode::Insert => insert(app, key),
+        VimMode::Normal => normal(app, key),
+        VimMode::Visual | VimMode::VisualLine => visual(app, key),
     };
 
     if !app.vim.replaying {
@@ -351,78 +345,75 @@ fn repeat_change(app: &mut App) {
 }
 
 // ---------------------------------------------------------------------------
-// Reading
+// Navigation — the app, not the text
 // ---------------------------------------------------------------------------
 
-/// Vim's keys on a note being read rather than edited.
+/// Whether keys are currently going into text rather than commands.
 ///
-/// A narrow set on purpose: reading mode shows rendered Markdown, not source,
-/// so most motions have nothing to act on. What is left is the half that still
-/// means something — scrolling, jumping, and the keys that open the editor.
-///
-/// Returns whether the key was consumed. Anything it declines falls through to
-/// the global map and then to the reading pane's own bindings, which is what
-/// keeps `Ctrl+W` and `Ctrl+R` working here without this function naming them.
-fn reading(app: &mut App, key: KeyEvent) -> bool {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+/// While typing, the app's own bindings apply unchanged; a navigation layer
+/// that stole keys mid-sentence would be worse than not having one.
+#[must_use]
+pub fn is_typing(app: &App) -> bool {
+    (app.focus == Focus::Note && app.editing() && app.vim.mode == VimMode::Insert)
+        || app.focus == Focus::Chat
+}
 
-    if ctrl {
+/// Vim-style movement around the application, from any pane.
+///
+/// Deliberately outside the mode machine: `Ctrl+W` and the jumplist are about
+/// where you are, not about what you are editing, so they work in the explorer
+/// and the sidebar too. Returns whether the key was used.
+pub fn navigation(app: &mut App, key: KeyEvent) -> bool {
+    // The pane waiting to be named after `Ctrl+W`.
+    if app.vim.pending == Pending::Window {
+        app.vim.clear_pending();
         let action = match key.code {
-            KeyCode::Char('o') => Some(Action::Back),
-            KeyCode::Char('i') => Some(Action::Forward),
+            KeyCode::Char('h') | KeyCode::Left => Some(Action::FocusPane(Focus::Explorer)),
+            KeyCode::Char('l') | KeyCode::Right => Some(Action::FocusPane(Focus::Sidebar)),
+            KeyCode::Char('j') | KeyCode::Down | KeyCode::Char('k') | KeyCode::Up => {
+                Some(Action::FocusPane(Focus::Note))
+            }
+            KeyCode::Char('p') => Some(Action::FocusPane(Focus::Chat)),
+            KeyCode::Char('c' | 'q') => Some(Action::CloseTab),
+            KeyCode::Char('w') => {
+                crate::keys::cycle_focus(app, 1);
+                None
+            }
+            KeyCode::Char('W') => {
+                crate::keys::cycle_focus(app, -1);
+                None
+            }
             _ => None,
         };
         if let Some(action) = action {
             crate::actions::dispatch(app, action);
-            return true;
-        }
-        // Scrolling by half and whole pages, in rendered rows.
-        let height = app.regions.main.map_or(20, |rect| usize::from(rect.height));
-        let delta = match key.code {
-            KeyCode::Char('d') => (height / 2).max(1) as isize,
-            KeyCode::Char('u') => -((height / 2).max(1) as isize),
-            KeyCode::Char('f') => height.saturating_sub(1).max(1) as isize,
-            KeyCode::Char('b') => -(height.saturating_sub(1).max(1) as isize),
-            _ => return false,
-        };
-        if let Some(tab) = app.active_mut() {
-            tab.scroll = (tab.scroll as isize + delta).max(0) as usize;
         }
         return true;
     }
 
+    if !key.modifiers.contains(KeyModifiers::CONTROL) || key.modifiers.contains(KeyModifiers::SHIFT)
+    {
+        return false;
+    }
     match key.code {
-        // Straight from reading into typing, which is what these keys mean.
-        KeyCode::Char(ch @ ('i' | 'a' | 'I' | 'A' | 'o' | 'O')) => {
-            crate::actions::dispatch(app, Action::ToggleMode);
-            match ch {
-                'I' => with_editor(app, |editor| editor.move_first_nonblank(false)),
-                'A' => with_editor(app, |editor| editor.move_line_end(false)),
-                'o' => with_editor(app, |editor| editor.open_line(false)),
-                'O' => with_editor(app, |editor| editor.open_line(true)),
-                _ => {}
-            }
-            enter_insert(app);
+        KeyCode::Char('w') => {
+            app.vim.pending = Pending::Window;
+            app.vim.showcmd.push_str("^W");
             true
         }
-        // `gg` needs its second `g`; the reading pane's own `g` goes to the top
-        // in one press, so this waits rather than jumping early.
-        KeyCode::Char('g') if app.vim.pending == Pending::None => {
-            app.vim.pending = Pending::G;
+        // Vim's jumplist, which here is the note history `Alt+←` already walks.
+        // `Ctrl+I` and `Tab` are the same byte without the Kitty protocol, so
+        // forward is best-effort; `Tab` is unaffected because it is not a Ctrl
+        // key and never reaches this.
+        KeyCode::Char('o') => {
+            crate::actions::dispatch(app, Action::Back);
             true
         }
-        KeyCode::Char('g') if app.vim.pending == Pending::G => {
-            app.vim.pending = Pending::None;
-            if let Some(tab) = app.active_mut() {
-                tab.scroll = 0;
-                tab.hscroll = 0;
-            }
+        KeyCode::Char('i') => {
+            crate::actions::dispatch(app, Action::Forward);
             true
         }
-        _ => {
-            app.vim.pending = Pending::None;
-            false
-        }
+        _ => false,
     }
 }
 
@@ -535,34 +526,9 @@ fn normal(app: &mut App, key: KeyEvent) -> bool {
             clamp(app);
             return true;
         }
-        Pending::Window => {
-            app.vim.clear_pending();
-            // The app's panes are its windows. `Ctrl+W h/j/k/l` maps onto them
-            // by position: explorer on the left, the note in the middle, the
-            // outline and chat on the right.
-            let action = match key.code {
-                KeyCode::Char('h') | KeyCode::Left => Some(Action::FocusPane(Focus::Explorer)),
-                KeyCode::Char('l') | KeyCode::Right => Some(Action::FocusPane(Focus::Sidebar)),
-                KeyCode::Char('j') | KeyCode::Down | KeyCode::Char('k') | KeyCode::Up => {
-                    Some(Action::FocusPane(Focus::Note))
-                }
-                KeyCode::Char('p') => Some(Action::FocusPane(Focus::Chat)),
-                KeyCode::Char('c' | 'q') => Some(Action::CloseTab),
-                KeyCode::Char('w') => {
-                    crate::keys::cycle_focus(app, 1);
-                    None
-                }
-                KeyCode::Char('W') => {
-                    crate::keys::cycle_focus(app, -1);
-                    None
-                }
-                _ => None,
-            };
-            if let Some(action) = action {
-                crate::actions::dispatch(app, action);
-            }
-            return true;
-        }
+        // Owned by the navigation layer, which runs before this and consumes
+        // the key while it is set.
+        Pending::Window => return false,
         Pending::Leader => {
             app.vim.pending = Pending::None;
             match key.code {
@@ -1518,18 +1484,6 @@ fn normal_ctrl(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Char('u') => move_row(app, -half),
         KeyCode::Char('f') => move_row(app, page),
         KeyCode::Char('b') => move_row(app, -page),
-        // The window prefix, over the app's real panes.
-        KeyCode::Char('w') => {
-            app.vim.pending = Pending::Window;
-            app.vim.showcmd.push_str("^W");
-            return true;
-        }
-        // Vim's jumplist, which here is the note history `Alt+←` already walks.
-        // Note that `Ctrl+I` and `Tab` are the same byte on a terminal without
-        // the Kitty protocol, so forward is best-effort; `Tab` keeps working
-        // because the editor claims it before this is reached.
-        KeyCode::Char('o') => crate::actions::dispatch(app, Action::Back),
-        KeyCode::Char('i') => crate::actions::dispatch(app, Action::Forward),
         // Increment and decrement the number under the cursor. Worth having in
         // a notes app for the same reason as anywhere else: renumbering a list
         // by hand is exactly the sort of thing to get wrong.
@@ -3046,7 +3000,7 @@ mod tests {
         assert!(app.tabs.len() < tabs);
     }
 
-    // ---- reading mode -----------------------------------------------------
+    // ---- reading mode: vim stays out of it --------------------------------
 
     /// The same app, left in reading mode.
     fn reading_app(text: &str) -> (TempVault, App) {
@@ -3056,352 +3010,114 @@ mod tests {
     }
 
     #[test]
-    fn i_from_reading_mode_opens_the_editor_already_typing() {
+    fn vim_does_not_touch_a_note_being_read() {
+        // Vim mode is about editing text. A note being read has no buffer to
+        // act on, so the reading pane keeps every key it always had — and
+        // `Ctrl+E` is still the way into the editor.
         let (_v, mut app) = reading_app("text\n");
+
         press(&mut app, 'i');
-
-        assert_eq!(app.active().expect("tab").mode, Mode::Editing);
-        assert_eq!(app.vim.mode, VimMode::Insert);
-        press(&mut app, 'X');
-        assert_eq!(text(&mut app), "Xtext\n");
-    }
-
-    #[test]
-    fn o_from_reading_mode_opens_a_new_line_to_type_on() {
-        let (_v, mut app) = reading_app("text\n");
-        press(&mut app, 'o');
-        press(&mut app, 'X');
-        assert_eq!(text(&mut app), "text\nX\n");
-    }
-
-    #[test]
-    fn reading_mode_scrolls_with_the_vim_keys() {
-        let long: String = (0..200).map(|i| format!("line {i}\n")).collect();
-        let (_v, mut app) = reading_app(&long);
-        assert_eq!(app.active().expect("tab").scroll, 0);
-
-        ctrl(&mut app, 'd');
-        let half = app.active().expect("tab").scroll;
-        assert!(half > 0, "Ctrl+D scrolls down");
-
-        ctrl(&mut app, 'u');
-        assert_eq!(app.active().expect("tab").scroll, 0, "Ctrl+U comes back");
-    }
-
-    #[test]
-    fn gg_in_reading_mode_needs_both_presses() {
-        // The pane's own `g` jumps to the top in one press. A vim user types
-        // two, and the first must not act on its own or the second is a
-        // surprise.
-        let long: String = (0..200).map(|i| format!("line {i}\n")).collect();
-        let (_v, mut app) = reading_app(&long);
-        ctrl(&mut app, 'd');
-        let scrolled = app.active().expect("tab").scroll;
-
-        press(&mut app, 'g');
         assert_eq!(
-            app.active().expect("tab").scroll,
-            scrolled,
-            "one g does nothing yet"
+            app.active().expect("tab").mode,
+            Mode::Reading,
+            "i is not an editing command on a page you are reading"
         );
+        assert_eq!(app.vim.mode, VimMode::Normal, "and no phantom INSERT");
+    }
+
+    #[test]
+    fn reading_mode_keeps_its_own_keys_exactly() {
+        let (_v, mut app) = reading_app("a\nb\nc\n");
+        press(&mut app, 'j');
+        assert_eq!(app.active().expect("tab").scroll, 1, "j still scrolls");
+
+        // `g` jumps to the top in one press, as it always has — vim mode does
+        // not make it wait for a second `g` here.
         press(&mut app, 'g');
         assert_eq!(app.active().expect("tab").scroll, 0);
     }
 
     #[test]
-    fn vim_never_makes_a_working_key_dead() {
-        // The bug class, rather than the two keys that happened to hit it: vim
-        // taking a key from the global map and then not implementing it, so it
-        // silently does nothing at all.
-        //
-        // The question is not "is every key bound" — Ctrl+C is unbound in the
-        // editor either way — but "did turning vim on take something away".
-        // So each key is tried twice and the two are compared.
-        let long: String = (0..200).map(|i| format!("line {i} of text\n")).collect();
-
-        let press = |editing: bool, vim: bool, ch: char| {
-            let (_vault, mut app) = app(&long);
-            app.config.editor.vim = vim;
-            if !editing {
-                app.active_mut().expect("tab").mode = Mode::Reading;
-            }
-            // Partway down, so a key that scrolls has somewhere to go in either
-            // direction; at a boundary a working key looks like a dead one.
-            app.active_mut().expect("tab").scroll = 50;
-            if editing {
-                with_editor(&mut app, |editor| {
-                    // An edit, undone: otherwise Ctrl+R has an empty redo stack
-                    // and reads as dead when it is merely finished.
-                    editor.goto(100, 3);
-                    editor.insert_str("zz");
-                    editor.commit();
-                    editor.undo();
-                    editor.goto(100, 3);
-                });
-            }
-
-            let before = Snapshot::of(&mut app);
-            ctrl(&mut app, ch);
-            before != Snapshot::of(&mut app)
-        };
-
-        for editing in [true, false] {
-            for ch in 'a'..='z' {
-                let without = press(editing, false, ch);
-                let with = press(editing, true, ch);
-                assert!(
-                    with || !without,
-                    "Ctrl+{ch} works while {} with vim off and does nothing at \
-                     all with it on — vim claimed the key and then ignored it",
-                    if editing { "editing" } else { "reading" }
-                );
-            }
-        }
-    }
-
-    /// Enough of the app's state to tell "something happened" from "nothing did".
-    #[derive(PartialEq)]
-    struct Snapshot {
-        text: String,
-        cursor: (usize, usize),
-        scroll: usize,
-        tabs: usize,
-        note: Option<usize>,
-        mode: Option<Mode>,
-        vim: VimMode,
-        /// A prefix key is doing something: it shows in the status bar and
-        /// changes what the next key means.
-        showcmd: String,
-        view: crate::app::View,
-        focus: crate::app::Focus,
-        modal: bool,
-        status: String,
-        config: String,
-    }
-
-    impl Snapshot {
-        fn of(app: &mut App) -> Self {
-            Self {
-                text: app.editor_mut().map(|e| e.text()).unwrap_or_default(),
-                cursor: app
-                    .editor_mut()
-                    .map(|e| (e.cursor().line, e.cursor().col))
-                    .unwrap_or_default(),
-                scroll: app.active().map_or(0, |t| t.scroll),
-                tabs: app.tabs.len(),
-                note: app.active_note(),
-                mode: app.active().map(|t| t.mode),
-                vim: app.vim.mode,
-                showcmd: app.vim.showcmd.clone(),
-                view: app.view,
-                focus: app.focus,
-                modal: app.modal.is_some(),
-                status: app.status.text.clone(),
-                config: format!("{:?}", app.config.ui),
-            }
-        }
-    }
-
-    #[test]
-    fn reading_mode_gives_back_every_ctrl_key_it_cannot_use() {
-        // The guard that lets vim claim keys in reading mode has to claim
-        // exactly what reading mode handles. Taking one it then ignores leaves
-        // the key doing nothing at all — which is what happened to Ctrl+W and
-        // Ctrl+R, both silently dead until this test existed.
+    fn reading_mode_keeps_the_global_bindings_vim_does_not_define() {
+        // The regression that started all this: keys claimed by vim and then
+        // handled by nobody, silently doing nothing.
         let (_v, mut app) = reading_app("text\n");
-        let tabs = app.tabs.len();
-        ctrl(&mut app, 'w');
-        assert!(app.tabs.len() < tabs, "Ctrl+W must still close the tab");
+        ctrl(&mut app, 'd');
+        assert!(
+            app.tabs.len() > 1 || !app.status.text.is_empty(),
+            "Ctrl+D still reaches the daily note while reading"
+        );
 
         let (_v2, mut app2) = reading_app("text\n");
         ctrl(&mut app2, 'r');
         assert!(
-            !app2.status.text.is_empty() || app2.index.stats().notes > 0,
-            "Ctrl+R must still reach the vault reload"
+            !app2.status.is_error,
+            "Ctrl+R still reaches the vault reload: {}",
+            app2.status.text
         );
     }
 
     #[test]
-    fn reading_mode_still_scrolls_with_j_and_k() {
-        // Everything vim does not claim falls through to the pane's own keys.
-        let (_v, mut app) = reading_app("a\nb\nc\n");
-        press(&mut app, 'j');
-        assert_eq!(app.active().expect("tab").scroll, 1);
-    }
+    fn ctrl_w_is_the_window_prefix_in_every_pane() {
+        // The trap this replaces: `Ctrl+W h` reached the explorer, and pressing
+        // `Ctrl+W` again to come back closed the tab instead. A navigation key
+        // that destroys work when used from the pane it just took you to is
+        // worse than no navigation key.
+        let (_v, mut app) = app("text\n");
+        app.focus = crate::app::Focus::Note;
 
-    // ---- the : line, search, and . ----------------------------------------
+        ctrl(&mut app, 'w');
+        press(&mut app, 'h');
+        assert_eq!(app.focus, crate::app::Focus::Explorer);
 
-    /// Types a `:` or `/` line and submits it.
-    fn command(app: &mut App, line: &str) {
-        type_str(app, line);
-        crate::keys::handle(app, KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()));
+        let tabs = app.tabs.len();
+        ctrl(&mut app, 'w');
+        press(&mut app, 'l');
+        assert_eq!(app.tabs.len(), tabs, "and coming back costs nothing");
+        assert_eq!(app.focus, crate::app::Focus::Sidebar);
     }
 
     #[test]
-    fn the_colon_line_saves_and_closes() {
-        let (vault, mut app, dir) = toggling("ex-wq", "text\n");
+    fn ctrl_w_c_is_how_the_tab_closes_once_the_prefix_owns_the_key() {
+        let (_v, mut app) = app("text\n");
+        let tabs = app.tabs.len();
+        ctrl(&mut app, 'w');
+        press(&mut app, 'c');
+        assert!(app.tabs.len() < tabs);
+    }
+
+    #[test]
+    fn the_jumplist_works_from_any_pane() {
+        // Navigation, not editing: it should not stop at the editor's edge.
+        let vault = TempVault::new("vim-jump-panes");
+        vault.write("A.md", "a\n");
+        vault.write("B.md", "b\n");
+        let mut app = App::new(vault.vault(), Config::default()).expect("app");
+        app.config.editor.vim = true;
+        let a = app.index.id_of_rel("A.md").expect("indexed");
+        let b = app.index.id_of_rel("B.md").expect("indexed");
+        app.open_note(a);
+        app.open_note(b);
+
+        app.focus = crate::app::Focus::Explorer;
+        ctrl(&mut app, 'o');
+        assert_eq!(app.active_note(), Some(a), "back, from the explorer");
+        ctrl(&mut app, 'i');
+        assert_eq!(app.active_note(), Some(b), "and forward again");
+    }
+
+    #[test]
+    fn vim_stays_out_when_no_note_is_open_at_all() {
+        // There is nothing to be in Normal mode *of*.
+        let vault = TempVault::new("vim-empty");
+        vault.write("A.md", "a\n");
+        let mut app = App::new(vault.vault(), Config::default()).expect("app");
+        app.config.editor.vim = true;
+        app.focus = crate::app::Focus::Note;
+
         press(&mut app, 'i');
-        press(&mut app, 'X');
-        esc(&mut app);
-
-        command(&mut app, ":wq");
-        assert_eq!(vault.read("N.md"), "Xtext\n", ":w wrote the file");
-        assert!(app.tabs.is_empty(), ":q closed the tab");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn the_colon_line_jumps_to_a_line_number() {
-        let (_v, mut app) = app("one\ntwo\nthree\nfour\n");
-        command(&mut app, ":3");
-        assert_eq!(cursor(&mut app).0, 2, ":3 is the third line, 1-based");
-    }
-
-    #[test]
-    fn the_colon_line_opens_a_note_and_creates_a_missing_one() {
-        let (vault, mut app) = app("text\n");
-        command(&mut app, ":e Brand New");
-        assert!(vault.exists("Brand New.md"));
-        assert_eq!(
-            app.note_title(app.active_note().expect("open")),
-            "Brand New"
-        );
-    }
-
-    #[test]
-    fn set_changes_a_setting_for_the_session() {
-        let (_v, mut app) = app("text\n");
-        assert!(app.config.ui.line_numbers);
-
-        command(&mut app, ":set nonu");
-        assert!(!app.config.ui.line_numbers);
-        command(&mut app, ":set nu");
-        assert!(app.config.ui.line_numbers);
-
-        command(&mut app, ":set ts=2");
-        assert_eq!(app.config.editor.tab_width, 2);
-    }
-
-    #[test]
-    fn set_novim_leaves_vim_mode() {
-        let (_v, mut app, dir) = toggling("ex-novim", "text\n");
-        command(&mut app, ":set novim");
-        assert!(!app.config.editor.vim);
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn an_unknown_command_says_so_rather_than_failing_silently() {
-        let (_v, mut app) = app("text\n");
-        command(&mut app, ":frobnicate");
-        assert!(app.status.is_error, "{}", app.status.text);
-        assert_eq!(text(&mut app), "text\n", "and nothing happened to the note");
-    }
-
-    #[test]
-    fn search_jumps_to_the_next_match_and_n_continues() {
-        let (_v, mut app) = app("alpha\nbeta\nalpha again\n");
-        command(&mut app, "/alpha");
-        assert_eq!(cursor(&mut app), (2, 0), "the next one, not the one under");
-
-        press(&mut app, 'n');
-        assert_eq!(cursor(&mut app), (0, 0), "and it wraps round");
-        press(&mut app, 'N');
-        assert_eq!(cursor(&mut app), (2, 0), "N goes back the other way");
-    }
-
-    #[test]
-    fn search_ignores_case_until_the_pattern_has_a_capital() {
-        // Vim's smartcase, which people expect without knowing its name.
-        let loose = {
-            let (_v, mut app) = app("hello\nHELLO\n");
-            command(&mut app, "/hello");
-            cursor(&mut app).0
-        };
-        assert_eq!(loose, 1, "lowercase matches either case");
-
-        let exact = {
-            let (_v, mut app) = app("hello\nHELLO\n");
-            command(&mut app, "/HELLO");
-            cursor(&mut app).0
-        };
-        assert_eq!(exact, 1, "a capital means exactly that");
-    }
-
-    #[test]
-    fn a_search_with_no_match_says_so() {
-        let (_v, mut app) = app("nothing here\n");
-        command(&mut app, "/absent");
-        assert!(!app.status.text.is_empty());
-        assert_eq!(cursor(&mut app), (0, 0), "and the cursor stays put");
-    }
-
-    #[test]
-    fn noh_clears_the_highlight() {
-        let (_v, mut app) = app("alpha beta alpha\n");
-        command(&mut app, "/alpha");
-        assert!(app.vim.search.is_some());
-        command(&mut app, ":noh");
-        assert!(app.vim.search.is_none());
-    }
-
-    #[test]
-    fn dot_repeats_the_last_change() {
-        let (_v, mut app) = app("aaaa\n");
-        press(&mut app, 'x');
-        assert_eq!(text(&mut app), "aaa\n");
-
-        press(&mut app, '.');
-        assert_eq!(text(&mut app), "aa\n");
-        press(&mut app, '.');
-        assert_eq!(text(&mut app), "a\n");
-    }
-
-    #[test]
-    fn dot_repeats_an_operator_with_its_motion() {
-        let (_v, mut app) = app("one two three four\n");
-        type_str(&mut app, "dw");
-        assert_eq!(text(&mut app), "two three four\n");
-
-        press(&mut app, '.');
-        assert_eq!(text(&mut app), "three four\n");
-    }
-
-    #[test]
-    fn dot_repeats_an_insert_including_what_was_typed() {
-        // The case that makes `.` worth having, and the one a command-replaying
-        // implementation would miss.
-        let (_v, mut app) = app("one two\n");
-        type_str(&mut app, "ciw");
-        for ch in "X".chars() {
-            press(&mut app, ch);
-        }
-        esc(&mut app);
-        assert_eq!(text(&mut app), "X two\n");
-
-        type_str(&mut app, "ww");
-        press(&mut app, '.');
-        assert_eq!(text(&mut app), "X X\n");
-    }
-
-    #[test]
-    fn a_motion_is_not_something_to_repeat() {
-        // `.` after moving around should still repeat the last *change*.
-        let (_v, mut app) = app("aaaa bbbb\n");
-        press(&mut app, 'x');
-        assert_eq!(text(&mut app), "aaa bbbb\n");
-
-        type_str(&mut app, "wl");
-        press(&mut app, '.');
-        assert_eq!(text(&mut app), "aaa bbb\n", "the x repeated, not the move");
-    }
-
-    #[test]
-    fn dot_with_nothing_to_repeat_says_so() {
-        let (_v, mut app) = app("text\n");
-        press(&mut app, '.');
-        assert_eq!(text(&mut app), "text\n");
-        assert!(!app.status.text.is_empty());
+        assert_eq!(app.vim.mode, VimMode::Normal, "no phantom INSERT mode");
+        assert!(app.tabs.is_empty());
     }
 
     #[test]

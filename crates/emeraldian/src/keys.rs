@@ -41,19 +41,32 @@ pub fn handle(app: &mut App, key: KeyEvent) {
         return;
     }
 
-    // Vim gets first refusal on the note pane, ahead of the global map.
+    // Vim comes in two layers, and keeping them apart is what stops each from
+    // leaking into the other's territory.
     //
-    // Order rather than a list of exceptions, deliberately. The obvious
-    // alternative — a table naming the keys vim wants, consulted before the
-    // global bindings — means two lists that have to agree, and they will not:
-    // `Ctrl+W` and `Ctrl+R` were once claimed by such a table and implemented
-    // by nobody, so they silently did nothing at all. Here the handler's own
-    // match arms are the only list. What vim declines falls through below and
-    // keeps the meaning it always had.
-    if app.config.editor.vim && app.focus == Focus::Note && app.view == View::Notes {
-        // A key release cannot reach here, so anything consumed was a real
-        // press.
-        if crate::vim::handle(app, normalize_legacy_ctrl(key)) {
+    // The first is navigation — moving between panes and through the notes
+    // you have visited. That is about the application, not about text, so it
+    // works from every pane. Confining it to the editor made `Ctrl+W` a trap:
+    // it would take you to the explorer and then, pressed again to come back,
+    // close your tab instead.
+    //
+    // The second is text editing — the modes, motions and operators. That is
+    // only meaningful on a buffer you are editing, so it engages nowhere else.
+    // Letting it reach a note being *read* gave a phantom `INSERT` on a note
+    // that wasn't open, and quietly took `Ctrl+D` away from the daily note.
+    //
+    // Both layers get first refusal ahead of the global map, and both return
+    // whether they used the key. Anything declined falls through below and
+    // keeps the meaning it always had — there is no list of exceptions to keep
+    // in step with the handlers.
+    // The graph has its own keys and its own way out; neither layer applies
+    // there.
+    if app.config.editor.vim && app.view == View::Notes {
+        let key = normalize_legacy_ctrl(key);
+        if !crate::vim::is_typing(app) && crate::vim::navigation(app, key) {
+            return;
+        }
+        if app.focus == Focus::Note && app.editing() && crate::vim::handle(app, key) {
             return;
         }
     }

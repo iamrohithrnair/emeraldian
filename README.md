@@ -202,7 +202,8 @@ the two things an nvim user's hands already expect:
 
 ```
 Ctrl+W h/j/k/l   explorer / note / sidebar      Ctrl+W w  cycle
-Ctrl+W c         close the tab                  [b  ]b    previous / next tab
+Ctrl+W c         close the tab (Ctrl+W alone is the prefix now)
+[b  ]b           previous / next tab
 
 Space ff  find a note      Space e  explorer     Space g  graph
 Space fg  grep the vault   Space p  palette      Space G  local graph
@@ -215,8 +216,11 @@ Pressing `Space` draws that menu on screen and the next key picks from it, so
 none of it has to be memorised. `Ctrl+W` is claimed by some terminals and
 multiplexers before the app sees it; `Tab` still cycles panes if so.
 
-From reading mode, `i`, `a`, `A`, `I`, `o` and `O` open the editor already
-typing, `gg` returns to the top, and the scroll and jump keys work as above.
+**Vim mode applies to the editor, not to reading.** A note you are reading has
+no buffer to act on, so the reading pane keeps every key it always had — `j`/`k`
+to scroll, `g`/`G` for top and bottom — and `Ctrl+E` is still the way in. Only
+the two navigation keys above, `Ctrl+W` and `Ctrl+O`/`Ctrl+I`, reach outside the
+editor, because moving between panes and notes is not editing.
 
 `:` and `/` type along the bottom row, where every editor this is imitating puts
 them:
@@ -508,7 +512,7 @@ same state.
 ## Development
 
 ```sh
-cargo test --workspace          # 733 tests
+cargo test --workspace          # 718 tests
 cargo clippy --workspace --all-targets
 cargo fmt --all --check
 ```
