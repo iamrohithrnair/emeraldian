@@ -1114,6 +1114,10 @@ fn draw_editing(
     let wrap = app.config.editor.wrap;
     // A caret in an unfocused pane claims input that would go somewhere else.
     let focused = app.focus == crate::app::Focus::Note;
+    // Vim's Normal-mode cursor covers a character rather than sitting between
+    // two, so on an empty or just-ended line the block would otherwise be drawn
+    // one column past the text it is supposed to be on.
+    let on_character = app.config.editor.vim && app.vim.mode.is_normal_like();
     let prose = prose_area(area, gutter);
     // One column is left for the scrollbar, which also gives the caret a place
     // to sit at the end of a full row.
@@ -1126,6 +1130,9 @@ fn draw_editing(
     let Some(editor) = app.editor_mut() else {
         return;
     };
+    if on_character {
+        editor.clamp_normal();
+    }
     let layout = editor.layout(text.width as usize, wrap);
     editor.scroll_into_view(&layout, height);
 

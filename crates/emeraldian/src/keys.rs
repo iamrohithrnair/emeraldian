@@ -27,6 +27,15 @@ pub fn handle(app: &mut App, key: KeyEvent) {
     // A message from the last action is stale as soon as the user acts again.
     app.status.text.clear();
 
+    // The vim toggle outranks even an overlay. Turning vim on opens its
+    // reference the first time, and if that overlay then swallowed F4 the way
+    // out would stop working at exactly the moment a new user goes looking for
+    // it. Dispatching closes the overlay on the way past.
+    if key.code == KeyCode::F(4) {
+        dispatch(app, Action::ToggleVimMode);
+        return;
+    }
+
     if app.modal.is_some() {
         handle_modal(app, key);
         return;
@@ -67,9 +76,43 @@ fn normalize_legacy_ctrl(key: KeyEvent) -> KeyEvent {
     KeyEvent { code, ..key }
 }
 
+/// Whether vim's meaning for a key beats the app's.
+///
+/// Only ever true in vim mode, in the note editor, outside Insert — so with the
+/// setting off, or in any other pane, the global map is exactly what it always
+/// was. `F4` is matched before this is consulted, or vim could be switched on
+/// and never off again.
+///
+/// These are the keys vim defines that the app had already spent. A vim user
+/// pressing `Ctrl+R` means redo, and reloading the vault instead is not a
+/// near-miss — it throws away the redo stack along with everything else.
+fn vim_owns(app: &App, key: KeyEvent) -> bool {
+    use crate::vim::VimMode;
+
+    if !app.config.editor.vim || app.focus != Focus::Note || !app.editing() {
+        return false;
+    }
+    if !matches!(
+        app.vim.mode,
+        VimMode::Normal | VimMode::Visual | VimMode::VisualLine
+    ) {
+        return false;
+    }
+    // Vim binds none of these with Shift, and the app does — `Ctrl+Shift+F` is
+    // the vault search. Claiming those too would cost a binding for nothing.
+    if !key.modifiers.contains(KeyModifiers::CONTROL) || key.modifiers.contains(KeyModifiers::SHIFT)
+    {
+        return false;
+    }
+    matches!(key.code, KeyCode::Char('r' | 'd' | 'u' | 'f' | 'b'))
+}
+
 /// Bindings that work everywhere. Returns whether the key was consumed.
 fn handle_global(app: &mut App, key: KeyEvent) -> bool {
     let key = normalize_legacy_ctrl(key);
+    if vim_owns(app, key) {
+        return false;
+    }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -95,6 +138,10 @@ fn handle_global(app: &mut App, key: KeyEvent) -> bool {
         (true, true, KeyCode::Tab | KeyCode::BackTab) => Some(Action::PreviousTab),
         (true, false, KeyCode::Tab) => Some(Action::NextTab),
         (_, _, KeyCode::F(2)) => Some(Action::RenameNote),
+        // Matched here, ahead of everything vim claims, because it has to work
+        // from inside Normal mode too — a toggle that can be switched on but
+        // not off is a trap. F-keys are the only ones vim leaves alone.
+        (_, _, KeyCode::F(4)) => Some(Action::ToggleVimMode),
         _ => None,
     };
 
@@ -351,6 +398,14 @@ fn follow_first_link(app: &mut App) {
 }
 
 fn handle_editing(app: &mut App, key: KeyEvent) {
+    // Vim gets first refusal on every key. What it declines — the whole of
+    // Insert mode, and Escape with nothing pending — falls through to the
+    // ordinary editing path below, so there is one implementation of typing
+    // rather than two that can drift apart.
+    if app.config.editor.vim && crate::vim::handle(app, key) {
+        return;
+    }
+
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 

@@ -27,6 +27,13 @@ pub struct State {
     /// don't overwrite each other.
     #[serde(default)]
     vaults: HashMap<String, VaultState>,
+    /// Whether vim mode's reference has been shown once already.
+    ///
+    /// Not per vault: it is a fact about the person, not the notes. Kept here
+    /// rather than in the config because nobody would ever type it, which is
+    /// exactly the line this file draws.
+    #[serde(default)]
+    pub seen_vim_intro: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

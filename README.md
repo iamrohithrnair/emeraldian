@@ -136,6 +136,7 @@ doesn't. `?` shows the full list in the app.
 | `Tab` | Move between panes |
 | `hjkl`, `g`, `G` | Move within a pane |
 | `Enter` | Open / follow a link |
+| `F4` | Vim mode on / off |
 
 In the editor: `↑`/`↓`, `Home` and `End` follow the rows on screen, so a wrapped
 paragraph moves through a line at a time as it looks rather than as it is stored.
@@ -156,6 +157,43 @@ or a search field it types a `q`, and `Ctrl+Q` is the way out.
 
 A context-sensitive hint bar sits above the status bar showing the keys that
 apply where you are; `Ctrl+P` → "Toggle shortcut hints" turns it off.
+
+## Vim mode
+
+`F4` switches the editor between **emeraldian mode** — the default, described
+above — and **vim mode**. It works from anywhere, including from inside vim's
+own Normal mode, so it is always the way back out. `/vim on`, `:set vim` and
+`Ctrl+P` → "Toggle vim mode" do the same thing.
+
+Unlike every other setting, this one is written to `config.toml` the moment you
+change it. It decides what every key on the keyboard does, and having that
+quietly reset on the next launch would be a poor trade for consistency.
+
+```
+modes     Normal · Insert · Visual · V-Line, named in the status bar
+motions   h j k l   gj gk   0 ^ $   gg G
+counts    3j  2dd  5x
+edits     i I a A o O   x   dd   yy p P   r   u   Ctrl+R
+visual    v  V  then  d  y  c  >  <
+scroll    Ctrl+D / Ctrl+U   Ctrl+F / Ctrl+B
+```
+
+`j` and `k` move by source line, as they do in vim, so one press crosses a
+wrapped paragraph; `gj` and `gk` move by the row on screen, which is what the
+arrow keys do in both modes. The cursor is drawn as a block in Normal mode and a
+bar in Insert, on terminals that support it.
+
+In Normal and Visual mode, `Ctrl+R`, `Ctrl+D`, `Ctrl+U`, `Ctrl+F` and `Ctrl+B`
+mean what vim means by them rather than what the table above says — redo, and
+scrolling. They keep their usual meanings in Insert mode, in every other pane,
+and whenever vim mode is off. `Esc` in Insert returns to Normal, and `Esc` again
+leaves for the reading view, which is where one press used to take you.
+
+With vim mode off, every key in this README behaves exactly as it always has.
+
+One thing worth knowing: `editor.auto_save` is on by default, so a note mangled
+by a mistyped command is written to disk when you switch tabs or close it. `u`
+undoes as far back as you like while the tab is open.
 
 ## Mouse
 
@@ -372,6 +410,14 @@ the config — not in it, since it isn't something you'd type by hand. Set
 `OTUI_STATE_FILE` to keep it somewhere else, or delete it to start with every
 folder collapsed again.
 
+Vim mode lives under `[editor]`, and is the one key written as soon as it is
+toggled rather than when settings are saved:
+
+```toml
+[editor]
+vim = false               # F4, /vim on, or :set vim
+```
+
 Pictures can be turned off, and capped, under `[images]`:
 
 ```toml
@@ -414,7 +460,7 @@ same state.
 ## Development
 
 ```sh
-cargo test --workspace          # 542 tests
+cargo test --workspace          # 657 tests
 cargo clippy --workspace --all-targets
 cargo fmt --all --check
 ```

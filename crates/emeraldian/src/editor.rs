@@ -542,6 +542,102 @@ impl Editor {
         }
     }
 
+    /// Moves `delta` **source lines**, which is what vim's `j` and `k` do.
+    ///
+    /// Distinct from [`Editor::move_row`], which follows the text as it was
+    /// wrapped: on a paragraph filling four rows, this crosses it in one press
+    /// and `move_row` takes four. Vim binds both — `j` here, `gj` there — so
+    /// the two coexist rather than one replacing the other.
+    ///
+    /// The aimed-for column is kept in display columns, like `move_row`, so
+    /// travelling through a short line and back out lands where it started.
+    /// `usize::MAX` means "the end of whatever line you land on", which is how
+    /// `$` then `j` stays at the end — vim's `curswant`.
+    pub fn move_line(&mut self, delta: isize, extend: bool) {
+        let want = self
+            .desired_col
+            .unwrap_or_else(|| u16::try_from(self.display_col(self.cursor)).unwrap_or(u16::MAX));
+        self.prepare_move(extend);
+
+        let last = self.lines.len().saturating_sub(1) as isize;
+        self.cursor.line = (self.cursor.line as isize + delta).clamp(0, last) as usize;
+        self.cursor.col = self.col_at_display(self.cursor.line, want);
+        self.desired_col = Some(want);
+    }
+
+    /// Sticks the cursor to the end of the line, so a following `j` stays there.
+    pub fn move_line_end_sticky(&mut self, extend: bool) {
+        self.move_line_end(extend);
+        self.desired_col = Some(u16::MAX);
+    }
+
+    /// `^`: the first character that isn't blank.
+    pub fn move_first_nonblank(&mut self, extend: bool) {
+        self.prepare_move(extend);
+        self.cursor.col = self.lines[self.cursor.line]
+            .chars()
+            .take_while(|c| *c == ' ' || *c == '\t')
+            .count()
+            .min(self.line_len(self.cursor.line));
+    }
+
+    /// `0`: the very start of the line, without the indent-first toggle that
+    /// [`Editor::move_line_start`] applies for `Home`.
+    pub fn move_line_zero(&mut self, extend: bool) {
+        self.prepare_move(extend);
+        self.cursor.col = 0;
+    }
+
+    /// Display column a cursor sits at, ignoring wrapping.
+    fn display_col(&self, cursor: Cursor) -> usize {
+        let mut column = 0;
+        if let Some(text) = self.lines.get(cursor.line) {
+            for ch in text.chars().take(cursor.col) {
+                column += char_width(ch, self.tab_width, column);
+            }
+        }
+        column
+    }
+
+    /// The character offset nearest a display column on `line`.
+    fn col_at_display(&self, line: usize, want: u16) -> usize {
+        let len = self.line_len(line);
+        if want == u16::MAX {
+            return len;
+        }
+        let target = usize::from(want);
+        let mut column = 0;
+        let mut col = 0;
+        if let Some(text) = self.lines.get(line) {
+            for ch in text.chars() {
+                let width = char_width(ch, self.tab_width, column);
+                if column + width > target {
+                    break;
+                }
+                column += width;
+                col += 1;
+            }
+        }
+        col.min(len)
+    }
+
+    /// Places the cursor without disturbing the selection, for visual mode.
+    pub fn goto_extend(&mut self, line: usize, col: usize) {
+        let anchor = self.selection_anchor;
+        self.goto(line, col);
+        self.selection_anchor = anchor;
+    }
+
+    /// Pulls the cursor back onto a character.
+    ///
+    /// Vim's Normal mode cursor sits *on* a character rather than between two,
+    /// so it can never rest one past the end of a line the way an insertion
+    /// caret does. Called whenever a command finishes in Normal mode.
+    pub fn clamp_normal(&mut self) {
+        let len = self.line_len(self.cursor.line);
+        self.cursor.col = self.cursor.col.min(len.saturating_sub(1));
+    }
+
     pub fn move_document_start(&mut self, extend: bool) {
         self.prepare_move(extend);
         self.cursor = Cursor::default();
@@ -781,6 +877,182 @@ impl Editor {
         self.cursor.col = 0;
         self.selection_anchor = None;
         self.modified = true;
+    }
+
+    /// `x`: removes characters at the cursor and hands them back.
+    ///
+    /// Stops at the end of the line rather than pulling the next one up, which
+    /// is what vim does and what keeps `5x` on a three-character line from
+    /// eating the line break.
+    #[must_use]
+    pub fn take_chars(&mut self, count: usize) -> String {
+        let len = self.line_len(self.cursor.line);
+        if self.cursor.col >= len {
+            return String::new();
+        }
+        self.push_undo(EditKind::Delete);
+
+        let chars: Vec<char> = self.lines[self.cursor.line].chars().collect();
+        let end = (self.cursor.col + count.max(1)).min(len);
+        let taken: String = chars[self.cursor.col..end].iter().collect();
+        let kept: String = chars[..self.cursor.col]
+            .iter()
+            .chain(chars[end..].iter())
+            .collect();
+        self.lines[self.cursor.line] = kept;
+        self.desired_col = None;
+        self.modified = true;
+        taken
+    }
+
+    /// `r`: overwrites the characters under the cursor, staying in place.
+    ///
+    /// Refuses when the count runs past the end of the line, exactly as vim
+    /// does — a partial replace would be worse than none.
+    pub fn replace_char(&mut self, ch: char, count: usize) {
+        let len = self.line_len(self.cursor.line);
+        let count = count.max(1);
+        if self.cursor.col + count > len {
+            return;
+        }
+        self.push_undo(EditKind::Structural);
+
+        let chars: Vec<char> = self.lines[self.cursor.line].chars().collect();
+        let mut line: String = chars[..self.cursor.col].iter().collect();
+        for _ in 0..count {
+            line.push(ch);
+        }
+        line.extend(chars[self.cursor.col + count..].iter());
+        self.lines[self.cursor.line] = line;
+        // Vim leaves the cursor on the last character replaced.
+        self.cursor.col += count - 1;
+        self.desired_col = None;
+        self.modified = true;
+    }
+
+    /// Characters on a line, for callers outside this module.
+    #[must_use]
+    pub fn line_len_at(&self, line: usize) -> usize {
+        self.line_len(line)
+    }
+
+    /// `dd`: removes whole lines and hands them back to be yanked.
+    ///
+    /// Distinct from [`Editor::delete_line`], which discards them. Vim's delete
+    /// always fills the register, so the text has to come back out.
+    #[must_use]
+    pub fn take_lines(&mut self, first: usize, count: usize) -> String {
+        self.push_undo(EditKind::Structural);
+        let first = first.min(self.lines.len().saturating_sub(1));
+        let last = (first + count.max(1) - 1).min(self.lines.len() - 1);
+
+        let taken: Vec<String> = self.lines.drain(first..=last).collect();
+        if self.lines.is_empty() {
+            self.lines.push(String::new());
+        }
+        self.cursor.line = first.min(self.lines.len() - 1);
+        self.cursor.col = 0;
+        self.desired_col = None;
+        self.selection_anchor = None;
+        self.modified = true;
+
+        let mut text = taken.join("\n");
+        text.push('\n');
+        text
+    }
+
+    /// `yy`: the lines themselves, left where they are.
+    #[must_use]
+    pub fn copy_lines(&self, first: usize, count: usize) -> String {
+        let first = first.min(self.lines.len().saturating_sub(1));
+        let last = (first + count.max(1) - 1).min(self.lines.len() - 1);
+        let mut text = self.lines[first..=last].join("\n");
+        text.push('\n');
+        text
+    }
+
+    /// `p` and `P`.
+    ///
+    /// Linewise text goes on its own line below or above and takes the cursor
+    /// with it; charwise text goes after or before the cursor, which is the
+    /// distinction that makes `yy`/`p` duplicate a line rather than splice it
+    /// into the middle of one.
+    pub fn put(&mut self, text: &str, linewise: bool, after: bool) {
+        if text.is_empty() {
+            return;
+        }
+        self.push_undo(EditKind::Structural);
+
+        if !linewise {
+            if after && self.cursor.col < self.line_len(self.cursor.line) {
+                self.cursor.col += 1;
+            }
+            let start = self.cursor;
+            for (i, part) in text.split('\n').enumerate() {
+                if i > 0 {
+                    self.split_line();
+                }
+                if !part.is_empty() {
+                    self.insert_into_line(part);
+                }
+            }
+            // Vim leaves the cursor on the last character pasted, not past it.
+            if start.line == self.cursor.line && self.cursor.col > start.col {
+                self.cursor.col -= 1;
+            }
+            return;
+        }
+
+        let mut lines: Vec<String> = text.split('\n').map(str::to_string).collect();
+        // A linewise register always ends in a newline, so the split leaves an
+        // empty tail that is not a line.
+        if lines.last().is_some_and(String::is_empty) {
+            lines.pop();
+        }
+        if lines.is_empty() {
+            return;
+        }
+
+        let at = if after {
+            self.cursor.line + 1
+        } else {
+            self.cursor.line
+        };
+        let at = at.min(self.lines.len());
+        for (offset, line) in lines.drain(..).enumerate() {
+            self.lines.insert(at + offset, line);
+        }
+        self.cursor.line = at;
+        self.cursor.col = 0;
+        self.desired_col = None;
+        self.selection_anchor = None;
+        self.modified = true;
+    }
+
+    /// `o` and `O`: a blank line below or above, cursor on it.
+    ///
+    /// Carries indentation and continues a list, exactly as `Enter` does — the
+    /// two keys mean the same thing and would be baffling if they disagreed.
+    pub fn open_line(&mut self, above: bool) {
+        if above {
+            self.push_undo(EditKind::Structural);
+            self.lines.insert(self.cursor.line, String::new());
+            self.cursor.col = 0;
+            self.desired_col = None;
+            self.modified = true;
+            // Indentation comes from the line that was pushed down, since
+            // there may be nothing above to copy.
+            let indent: String = self.lines[self.cursor.line + 1]
+                .chars()
+                .take_while(|c| *c == ' ' || *c == '\t')
+                .collect();
+            if !indent.is_empty() {
+                self.insert_into_line(&indent);
+            }
+            return;
+        }
+        self.move_line_end(false);
+        self.newline();
     }
 
     pub fn delete_selection(&mut self) {
@@ -1079,16 +1351,6 @@ fn split_lines(text: &str) -> Vec<String> {
         lines.push(String::new());
     }
     lines
-}
-
-#[cfg(test)]
-impl Editor {
-    /// Test helper: move the cursor while extending the selection.
-    fn goto_extend(&mut self, line: usize, col: usize) {
-        let anchor = self.selection_anchor;
-        self.goto(line, col);
-        self.selection_anchor = anchor;
-    }
 }
 
 #[cfg(test)]

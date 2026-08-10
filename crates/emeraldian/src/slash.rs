@@ -93,6 +93,11 @@ pub const COMMANDS: &[SlashCommand] = &[
         argument_hint: None,
     },
     SlashCommand {
+        name: "vim",
+        description: "Modal editing in the note editor (also F4)",
+        argument_hint: Some("[on|off]"),
+    },
+    SlashCommand {
         name: "writes",
         description: "Allow or forbid the agent editing notes",
         argument_hint: Some("[on|off]"),
@@ -237,6 +242,7 @@ pub fn run(app: &mut App, input: &str) -> Outcome {
             let text = status_text(app);
             say(app, &text);
         }
+        "vim" => vim(app, args),
         "writes" => writes(app, args),
         "context" => context(app, args),
         "reasoning" => reasoning(app, args),
@@ -573,6 +579,33 @@ fn status_text(app: &App) -> String {
     )
 }
 
+/// `/vim [on|off]`.
+///
+/// Runs through the same action the palette and `F4` use, so all three write
+/// the config and clear any pending state rather than each doing it their own
+/// way.
+fn vim(app: &mut App, args: &str) {
+    let Some(value) = toggle(args, app.config.editor.vim) else {
+        say(app, "/vim on | off");
+        return;
+    };
+    if value != app.config.editor.vim {
+        crate::actions::toggle_vim(app);
+    }
+    say(
+        app,
+        &format!(
+            "vim mode {}{}",
+            on_off(app.config.editor.vim),
+            if app.config.editor.vim {
+                " — F4 or /vim off to leave"
+            } else {
+                ""
+            }
+        ),
+    );
+}
+
 fn writes(app: &mut App, args: &str) {
     let Some(value) = toggle(args, app.config.agent.allow_writes) else {
         say(app, "/writes on | off");
@@ -699,7 +732,7 @@ fn sort(app: &mut App, args: &str) {
 }
 
 fn save_config(app: &mut App) {
-    match app.config.save() {
+    match app.save_config() {
         Ok(path) => say(app, &format!("settings written to {}", path.display())),
         Err(err) => say(app, &format!("could not write the config: {err}")),
     }
@@ -729,7 +762,11 @@ mod tests {
         let vault = TempVault::new("slash");
         vault.write("A.md", "# A\n\nlinks to [[B]]\n");
         vault.write("B.md", "# B\n\n#topic\n");
-        let app = App::new(vault.vault(), Config::default()).expect("build app");
+        let mut app = App::new(vault.vault(), Config::default()).expect("build app");
+        // Several commands write settings — `/config` always, and `/vim` as
+        // part of toggling. Pointed at the vault's own temp directory, none of
+        // them can reach the config directory of the machine running the tests.
+        app.config_dir = Some(vault.vault().path.clone());
         (vault, app)
     }
 
@@ -1098,9 +1135,10 @@ mod tests {
     #[test]
     fn every_command_runs_without_panicking() {
         for command in COMMANDS {
-            // Quitting and the help overlay are covered above; running them
-            // here too would just re-assert the same thing.
-            if command.name == "quit" || command.name == "config" {
+            // Quitting is covered above; running it here too would just
+            // re-assert the same thing. `/config` and `/vim` both write
+            // settings, which is safe now that the harness redirects them.
+            if command.name == "quit" {
                 continue;
             }
             let (_v, mut app) = app();

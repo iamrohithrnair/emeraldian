@@ -107,6 +107,13 @@ pub struct EditorConfig {
     pub expand_tabs: bool,
     /// Wrap long lines instead of scrolling horizontally.
     pub wrap: bool,
+    /// Modal editing: `hjkl`, operators, counts and a `:` line.
+    ///
+    /// Unlike every other setting here, toggling this writes the file straight
+    /// away. It changes what every key on the keyboard does, so losing it
+    /// silently on a restart is a different order of problem from losing a
+    /// sidebar width.
+    pub vim: bool,
     /// Save automatically when switching away from a modified note.
     pub auto_save: bool,
     /// Folder new notes are created in, vault-relative.
@@ -123,6 +130,7 @@ impl Default for EditorConfig {
             tab_width: 4,
             expand_tabs: true,
             wrap: true,
+            vim: false,
             auto_save: true,
             new_note_folder: String::new(),
             daily_folder: "Daily".into(),
@@ -370,13 +378,24 @@ impl Config {
                 "no config directory on this platform",
             )
         })?;
+        self.save_to(&path)
+    }
+
+    /// The same write, against a named file.
+    ///
+    /// Exists for the same reason [`crate::state::State::save_to`] does: a test
+    /// that writes settings must not reach into the real config directory,
+    /// because a test suite that writes there is a test suite that changes the
+    /// machine it runs on. It matters more since vim mode, which is written the
+    /// moment it is toggled rather than when the user asks.
+    pub fn save_to(&self, path: &Path) -> std::io::Result<PathBuf> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
         let text = toml::to_string_pretty(self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        fs::write(&path, text)?;
-        Ok(path)
+        fs::write(path, text)?;
+        Ok(path.to_path_buf())
     }
 
     /// Creates the config file with defaults if it doesn't exist yet.

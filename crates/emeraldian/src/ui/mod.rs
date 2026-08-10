@@ -221,23 +221,56 @@ fn hints_for(app: &App) -> &'static [(&'static str, &'static str)] {
         ]
     } else {
         match app.focus {
+            // The app opens focused here, so this is the row a first-time user
+            // actually reads — which is why the vim toggle is advertised on it
+            // rather than left to be found in the palette.
             Focus::Explorer => &[
                 ("Enter", "open"),
                 ("Space", "fold"),
                 ("/", "filter"),
+                ("F4", "vim"),
                 ("s", "sort"),
                 ("^N", "new"),
                 ("^W", "close tab"),
                 ("^\\", "files"),
-                ("^]", "outline"),
                 ("^L", "chat"),
                 ("?", "help"),
                 ("q", "quit"),
             ],
+            // In vim mode the way *out* leads, before anything else. Someone
+            // who pressed F4 by accident and can no longer type is the case
+            // this bar exists for, and the overflow is dropped from the end —
+            // so an escape hatch further down the row is an escape hatch that
+            // vanishes on exactly the narrow terminal where it is needed.
+            Focus::Note if app.config.editor.vim && app.editing() => match app.vim.mode {
+                crate::vim::VimMode::Insert => &[
+                    ("Esc", "normal"),
+                    ("F4", "leave vim"),
+                    ("^S", "save"),
+                    ("^B/^I", "bold/italic"),
+                    ("Tab", "indent list"),
+                ],
+                crate::vim::VimMode::Visual | crate::vim::VimMode::VisualLine => &[
+                    ("Esc", "cancel"),
+                    ("d/y", "delete/yank"),
+                    ("c", "change"),
+                    ("></<", "indent"),
+                    ("F4", "leave vim"),
+                ],
+                crate::vim::VimMode::Normal => &[
+                    ("F4", "leave vim"),
+                    ("i", "insert"),
+                    ("v", "select"),
+                    ("u", "undo"),
+                    ("dd/yy/p", "cut/copy/paste"),
+                    ("?", "help"),
+                ],
+            },
             Focus::Note => match app.active().map(|t| t.mode) {
                 Some(crate::app::Mode::Editing) => &[
                     ("^S", "save"),
                     ("Esc", "read"),
+                    ("F4", "vim"),
                     ("^B/^I", "bold/italic"),
                     ("Tab", "indent list"),
                     ("^Z", "undo"),
@@ -245,13 +278,12 @@ fn hints_for(app: &App) -> &'static [(&'static str, &'static str)] {
                     ("^W", "close tab"),
                     ("^\\", "files"),
                     ("^]", "outline"),
-                    ("^L", "chat"),
                     ("^P", "palette"),
                 ],
                 _ => &[
                     ("^E", "edit"),
+                    ("F4", "vim"),
                     ("Enter", "follow link"),
-                    ("←→", "pan wide"),
                     ("^O", "switcher"),
                     ("^G", "graph"),
                     ("^W", "close tab"),
@@ -507,8 +539,15 @@ fn position(app: &App) -> String {
     let selected = editor.selected_text().map_or(String::new(), |text| {
         format!("{} selected  ", text.chars().count())
     });
+    // Vim's `showcmd`: a half-typed `2d` on screen is the difference between a
+    // command in progress and an editor that has stopped responding.
+    let pending = if app.config.editor.vim && !app.vim.showcmd.is_empty() {
+        format!("{}  ", app.vim.showcmd)
+    } else {
+        String::new()
+    };
     format!(
-        "{selected}Ln {}/{}, Col {}  ",
+        "{pending}{selected}Ln {}/{}, Col {}  ",
         cursor.line + 1,
         editor.line_count(),
         cursor.col + 1
@@ -521,6 +560,12 @@ fn mode_label(app: &App) -> String {
         View::Notes => match app.active() {
             Some(tab) => match tab.mode {
                 crate::app::Mode::Reading => "READING".into(),
+                // In vim mode the vim mode *is* the mode: showing "EDITING"
+                // alongside it would say the same thing twice and hide the one
+                // word that matters, which is whether typing will insert text.
+                crate::app::Mode::Editing if app.config.editor.vim => {
+                    app.vim.mode.label().to_string()
+                }
                 crate::app::Mode::Editing => "EDITING".into(),
             },
             None => "emeraldian  ·  Ctrl+O to open a note, ? for help".into(),
@@ -744,6 +789,89 @@ mod tests {
         for hint in ["^W close tab", "^\\ files", "^] outline", "^L chat"] {
             assert!(screen.contains(hint), "{hint:?} is missing from the bar");
         }
+    }
+
+    #[test]
+    fn the_vim_toggle_is_advertised_where_a_new_user_first_looks() {
+        // The app opens focused on the explorer, so that row is what a
+        // first-time user actually reads. A feature reachable only through the
+        // command palette is a feature nobody finds.
+        let (_vault, mut app) = demo_app();
+        app.focus = crate::app::Focus::Explorer;
+
+        let screen = render(&mut app, 140, 40).join("\n");
+        assert!(screen.contains("F4 vim"), "the explorer row must offer it");
+    }
+
+    #[test]
+    fn the_way_out_of_vim_mode_survives_a_narrow_terminal() {
+        // The bar drops overflow from the end and shrinks to a single row on a
+        // short terminal — so an escape hatch positioned late is an escape
+        // hatch that disappears in exactly the case it is needed.
+        let palette = crate::app::App::new(
+            TempVault::new("vim-hint-width").vault(),
+            crate::config::Config::default(),
+        )
+        .expect("app")
+        .theme
+        .palette
+        .clone();
+
+        let (_vault, mut app) = demo_app();
+        app.config.editor.vim = true;
+        crate::actions::dispatch(&mut app, crate::app::Action::ToggleMode);
+        app.focus = crate::app::Focus::Note;
+
+        let rendered = hint_lines(hints_for(&app), &palette, 34, 1)
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("");
+
+        assert!(
+            rendered.contains("F4"),
+            "the exit was dropped from a one-row bar: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn the_status_bar_names_the_vim_mode_rather_than_just_editing() {
+        // Whether the next keystroke types a letter or deletes a line is the
+        // one thing the bar has to answer.
+        let (_vault, mut app) = demo_app();
+        app.config.editor.vim = true;
+        crate::actions::dispatch(&mut app, crate::app::Action::ToggleMode);
+
+        let normal = render(&mut app, 140, 40).join("\n");
+        assert!(
+            normal.contains("NORMAL"),
+            "expected the vim mode on the bar"
+        );
+
+        crate::keys::handle(
+            &mut app,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char('i'),
+                crossterm::event::KeyModifiers::empty(),
+            ),
+        );
+        let insert = render(&mut app, 140, 40).join("\n");
+        assert!(insert.contains("INSERT"));
+    }
+
+    #[test]
+    fn with_vim_off_the_status_bar_is_unchanged() {
+        let (_vault, mut app) = demo_app();
+        crate::actions::dispatch(&mut app, crate::app::Action::ToggleMode);
+
+        let screen = render(&mut app, 140, 40).join("\n");
+        assert!(screen.contains("EDITING"));
+        assert!(!screen.contains("NORMAL"), "no vim vocabulary leaks in");
     }
 
     #[test]

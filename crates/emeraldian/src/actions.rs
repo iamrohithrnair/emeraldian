@@ -53,6 +53,7 @@ pub fn commands() -> Vec<Entry> {
         Entry::new("Toggle shortcut hints", "", Action::ToggleHints),
         Entry::new("Change sort order", "s", Action::CycleSortOrder),
         Entry::new("Toggle line numbers", "", Action::ToggleLineNumbers),
+        Entry::new("Toggle vim mode", "F4", Action::ToggleVimMode),
         Entry::new("Change theme", "Ctrl+T", Action::OpenThemePicker),
         Entry::new("Open another vault", "", Action::OpenVaultPicker),
         Entry::new("Graph: toggle labels", "", Action::ToggleGraphLabels),
@@ -82,6 +83,45 @@ pub fn commands() -> Vec<Entry> {
 /// else it does by reading and writing Markdown directly, which is why it works
 /// with the app closed. Opening in the GUI is the exception, since only the
 /// running app can do it.
+/// Switches between emeraldian mode and vim mode.
+///
+/// This is the one setting that writes `config.toml` as soon as it changes.
+/// Every other toggle waits for "Save settings", which is the right default for
+/// a sidebar width — but this one changes what every key on the keyboard does,
+/// and having that silently evaporate on the next launch is a different order
+/// of problem. A failed write is reported rather than swallowed, and the toggle
+/// still applies: a read-only home directory is no reason to refuse to work.
+pub fn toggle_vim(app: &mut App) {
+    let on = !app.config.editor.vim;
+    app.config.editor.vim = on;
+
+    // Whichever way it went, nothing half-typed survives the switch — a pending
+    // `2d` and a block cursor left behind in emeraldian mode would look like a
+    // hung editor.
+    app.vim.reset();
+
+    let saved = app.save_config();
+    if on {
+        // The first time only, open the reference rather than making someone
+        // guess how to get back out.
+        let mut state = app.load_state();
+        if !state.seen_vim_intro {
+            state.seen_vim_intro = true;
+            app.store_state(&state);
+            app.modal = Some(Modal::Help(0));
+        }
+    }
+
+    match saved {
+        Ok(_) if on => app.info("vim mode on — NORMAL, i to insert, F4 to leave"),
+        Ok(_) => app.info("vim mode off — saved to config.toml"),
+        Err(err) => app.error(format!(
+            "vim mode {} for this session — could not save the config: {err}",
+            if on { "on" } else { "off" }
+        )),
+    }
+}
+
 /// Steps the explorer to the next sort order.
 ///
 /// The config is updated in memory, like every other setting the UI changes;
@@ -338,8 +378,12 @@ pub fn dispatch(app: &mut App, action: Action) {
                     Mode::Editing => Mode::Reading,
                 };
             }
+            // Entering the editor lands in Normal mode, which is what a vim
+            // user expects and what stops `Ctrl+E` from starting an insert.
+            app.vim.reset();
             app.focus = Focus::Note;
         }
+        Action::ToggleVimMode => toggle_vim(app),
         Action::ToggleLeftSidebar => {
             app.config.ui.show_left_sidebar = !app.config.ui.show_left_sidebar;
             if !app.config.ui.show_left_sidebar && app.focus == Focus::Explorer {
@@ -522,7 +566,7 @@ pub fn dispatch(app: &mut App, action: Action) {
             app.refresh();
             app.info("reloaded from disk");
         }
-        Action::SaveSettings => match app.config.save() {
+        Action::SaveSettings => match app.save_config() {
             Ok(path) => app.info(format!("settings saved to {}", path.display())),
             Err(err) => app.error(format!("could not save settings: {err}")),
         },

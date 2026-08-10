@@ -23,6 +23,7 @@ mod slash;
 mod state;
 mod tools;
 mod ui;
+mod vim;
 
 use std::io;
 use std::path::PathBuf;
@@ -240,6 +241,9 @@ fn run(app: &mut App) -> io::Result<()> {
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
+        // Vim mode leaves a block caret behind, which would otherwise outlive
+        // the process and follow the user into their shell.
+        reset_cursor_style();
         ratatui::restore();
         hook(info);
     }));
@@ -311,13 +315,43 @@ fn run(app: &mut App) -> io::Result<()> {
     app.save_ui_state();
 
     let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
+    reset_cursor_style();
     ratatui::restore();
     result
+}
+
+/// The caret shape that matches a vim mode, or `None` in emeraldian mode.
+///
+/// A block on a character and a bar between two is how every modal editor says
+/// which one it is, and it is read without looking away from the text. `None`
+/// means "don't touch it": with vim off the terminal's own caret is left
+/// exactly as the user configured it.
+fn cursor_style(app: &App) -> Option<crossterm::cursor::SetCursorStyle> {
+    use crossterm::cursor::SetCursorStyle;
+
+    if !app.config.editor.vim || !app.editing() || app.focus != app::Focus::Note {
+        return None;
+    }
+    Some(match app.vim.mode {
+        vim::VimMode::Insert => SetCursorStyle::SteadyBar,
+        _ => SetCursorStyle::SteadyBlock,
+    })
+}
+
+/// Puts the caret back the way it was found.
+fn reset_cursor_style() {
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::cursor::SetCursorStyle::DefaultUserShape
+    );
 }
 
 fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> io::Result<()> {
     let mut needs_redraw = true;
     let mut last_status = Instant::now();
+    // Only written when it changes: re-sending the escape on every frame makes
+    // some terminals flicker the caret.
+    let mut cursor_shape: Option<crossterm::cursor::SetCursorStyle> = None;
 
     loop {
         // A settling graph animates and streamed agent text arrives between
@@ -331,6 +365,17 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> io::Res
         if needs_redraw || graph_running {
             terminal.draw(|frame| ui::draw(frame, app))?;
             needs_redraw = false;
+
+            let wanted = cursor_style(app);
+            if wanted != cursor_shape {
+                match wanted {
+                    Some(style) => {
+                        let _ = crossterm::execute!(std::io::stdout(), style);
+                    }
+                    None => reset_cursor_style(),
+                }
+                cursor_shape = wanted;
+            }
         }
 
         if event::poll(TICK)? {

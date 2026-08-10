@@ -13,6 +13,8 @@ use crate::modal::{Confirm, Modal, Picker, Prompt};
 use crate::ui::{centered, pane_block, scrollbar, truncate};
 
 pub fn draw(frame: &mut Frame, app: &mut App, palette: &Palette, area: Rect) {
+    // Read before the modal is borrowed mutably below.
+    let vim = app.config.editor.vim;
     let Some(modal) = app.modal.as_mut() else {
         return;
     };
@@ -20,7 +22,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, palette: &Palette, area: Rect) {
         Modal::Picker(picker) => draw_picker(frame, picker, palette, area),
         Modal::Prompt(prompt) => draw_prompt(frame, prompt, palette, area),
         Modal::Confirm(confirm) => draw_confirm(frame, confirm, palette, area),
-        Modal::Help(scroll) => draw_help(frame, scroll, palette, area),
+        Modal::Help(scroll) => draw_help(frame, scroll, palette, area, vim),
     }
 }
 
@@ -271,6 +273,27 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
+        "Vim mode",
+        &[
+            ("F4", "Turn vim mode on and off — saved straight away"),
+            ("i / a / o", "Insert before, after, or on a new line"),
+            ("Esc", "Back to Normal mode; again to stop editing"),
+            (
+                "h j k l",
+                "Left, down, up, right — j/k by line, gj/gk by row",
+            ),
+            ("0 / ^ / $", "Start of line / first word / end of line"),
+            ("gg / G", "Top / bottom of the note"),
+            ("v / V", "Select by character / by line"),
+            ("x / dd", "Delete the character / the line"),
+            ("yy / p / P", "Yank the line / put after / put before"),
+            ("r", "Replace the character under the cursor"),
+            ("u / Ctrl+R", "Undo / redo"),
+            ("3dd, 5j", "A count repeats what follows it"),
+            ("Ctrl+D / Ctrl+U", "Half a page down / up"),
+        ],
+    ),
+    (
         "File explorer",
         &[
             ("Enter / l", "Open the note, or fold the folder"),
@@ -326,7 +349,13 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     ),
 ];
 
-fn draw_help(frame: &mut Frame, scroll: &mut usize, palette: &Palette, area: Rect) {
+/// The section that only applies once vim mode is switched on.
+///
+/// Hidden until then, so `?` reads exactly as it always has for the people who
+/// never turn it on — a page of keys that don't work is worse than no page.
+const VIM_SECTION: &str = "Vim mode";
+
+fn draw_help(frame: &mut Frame, scroll: &mut usize, palette: &Palette, area: Rect, vim: bool) {
     let rect = centered(
         area,
         72.min(area.width),
@@ -340,6 +369,9 @@ fn draw_help(frame: &mut Frame, scroll: &mut usize, palette: &Palette, area: Rec
 
     let mut lines = Vec::new();
     for (section, bindings) in HELP {
+        if *section == VIM_SECTION && !vim {
+            continue;
+        }
         lines.push(Line::from(Span::styled(
             (*section).to_string(),
             Style::default()

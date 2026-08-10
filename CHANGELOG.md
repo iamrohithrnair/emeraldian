@@ -4,6 +4,36 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Vim mode in the note editor, on `F4`.** Normal, Insert, Visual and
+  Visual-Line, with `hjkl`, `gg`/`G`, `0`/`^`/`$`, counts, `i I a A o O`, `x`,
+  `dd`, `yy`, `p`/`P`, `r`, `u`, `Ctrl+R`, and `d`/`y`/`c`/`>`/`<` over a
+  selection. `j` and `k` move by source line as they do in vim, and `gj`/`gk`
+  by the row on screen.
+
+  In Normal and Visual mode, `Ctrl+R`, `Ctrl+D`, `Ctrl+U`, `Ctrl+F` and
+  `Ctrl+B` take vim's meanings rather than the app's — redo and scrolling. They
+  are unchanged in Insert mode, in every other pane, and with vim mode off.
+
+  Deliberately hard to get stuck in: the mode is named in the status bar, the
+  cursor is a block in Normal and a bar in Insert, a pending `2d` is shown as
+  it is typed, the hint bar leads with the way out, and the reference opens by
+  itself the first time it is ever switched on. `F4` works from anywhere,
+  including from inside Normal mode and over an open overlay.
+
+  Off by default, and with it off the editor behaves exactly as it did before.
+
+- `editor.vim` in `config.toml`, also reachable as `/vim on|off` and from the
+  command palette. It is the one setting written the moment it changes rather
+  than when settings are saved, because it decides what every key does and
+  silently losing it on the next launch is a different order of problem.
+
+- `Config::save_to`, mirroring `State::save_to`, so tests that write settings
+  do not reach into the config directory of the machine running them.
+
 ## [0.4.2] — 2026-08-07
 
 Nothing in the app changed. This release exists to carry the packaging work,
