@@ -64,6 +64,63 @@ pub struct Register {
     pub linewise: bool,
 }
 
+/// What an operator does to the span a motion picks out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Operator {
+    Delete,
+    Change,
+    Yank,
+    Indent,
+    Outdent,
+}
+
+impl Operator {
+    /// The key that names it, and the doubled key that means "this line".
+    #[must_use]
+    fn from_key(ch: char) -> Option<Self> {
+        Some(match ch {
+            'd' => Self::Delete,
+            'c' => Self::Change,
+            'y' => Self::Yank,
+            '>' => Self::Indent,
+            '<' => Self::Outdent,
+            _ => return None,
+        })
+    }
+
+    #[must_use]
+    fn key(self) -> char {
+        match self {
+            Self::Delete => 'd',
+            Self::Change => 'c',
+            Self::Yank => 'y',
+            Self::Indent => '>',
+            Self::Outdent => '<',
+        }
+    }
+}
+
+/// How a motion's span is measured.
+///
+/// The distinction is vim's and it is not cosmetic: `dw` stops before the next
+/// word while `de` eats the last letter of this one, and the only difference
+/// between them is which of these they are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Span {
+    /// Up to but not including the target — `w`, `b`, `0`.
+    Exclusive,
+    /// Including the character landed on — `e`, `$`, `f`.
+    Inclusive,
+    /// Whole lines, however far along them the ends sit — `j`, `G`, `}`.
+    Linewise,
+}
+
+/// Where a motion ended up, and how much of the way there it covers.
+struct Motion {
+    to: crate::editor::Cursor,
+    span: Span,
+}
+
 /// A key that is waiting for the one after it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Pending {
@@ -73,10 +130,27 @@ enum Pending {
     G,
     /// `r` typed, waiting for the replacement character.
     Replace,
-    /// `d` typed, waiting for the second `d`.
-    Delete,
-    /// `y` typed, waiting for the second `y`.
-    Yank,
+    /// An operator typed, waiting for the motion or object to apply it to.
+    Operator(Operator),
+    /// `dg` typed, waiting for the `g` of `dgg`.
+    OperatorG(Operator),
+    /// `di` or `da` typed, waiting for the object — the `w` of `diw`.
+    Object(Operator, bool),
+    /// `f`, `F`, `t` or `T` typed, waiting for the character to search for.
+    /// The flags are forward, and whether it stops short.
+    Find {
+        operator: Option<Operator>,
+        forward: bool,
+        till: bool,
+    },
+}
+
+/// The last `f`/`t` search, so `;` and `,` can repeat it.
+#[derive(Debug, Clone, Copy)]
+pub struct FindTarget {
+    ch: char,
+    forward: bool,
+    till: bool,
 }
 
 /// Everything vim mode remembers.
@@ -86,6 +160,9 @@ pub struct Vim {
     /// The count being typed, as in the `3` of `3dd`.
     count: Option<usize>,
     pending: Pending,
+    /// Survives `reset`: `;` should still work after switching notes, the way
+    /// the register does.
+    last_find: Option<FindTarget>,
     pub register: Register,
     /// The keys typed so far in an unfinished command, shown in the status bar
     /// the way vim's `showcmd` does — so a half-typed `2d` is visible rather
@@ -202,46 +279,105 @@ fn normal(app: &mut App, key: KeyEvent) -> bool {
             app.vim.clear_pending();
             return true;
         }
-        // An operator waits for the key that says what to act on. Phase one
-        // understands only the doubled form — `dd`, `yy` — so anything else
-        // abandons the command rather than guessing at it.
-        Pending::Delete => {
-            let count = app.vim.count();
+        Pending::Find {
+            operator,
+            forward,
+            till,
+        } => {
             app.vim.pending = Pending::None;
-            if key.code == KeyCode::Char('d') {
-                let text = with_editor_out(app, |editor| {
-                    let line = editor.cursor().line;
-                    let text = editor.take_lines(line, count);
-                    editor.move_first_nonblank(false);
-                    editor.commit();
-                    text
-                });
-                if let Some(text) = text {
-                    app.vim.register = Register {
-                        text,
-                        linewise: true,
-                    };
-                }
+            if let KeyCode::Char(ch) = key.code {
+                app.vim.last_find = Some(FindTarget { ch, forward, till });
+                run_find(app, ch, forward, till, operator);
             }
             app.vim.clear_pending();
             clamp(app);
             return true;
         }
-        Pending::Yank => {
-            let count = app.vim.count();
+        Pending::Object(operator, around) => {
             app.vim.pending = Pending::None;
-            if key.code == KeyCode::Char('y') {
-                let text = with_editor_out(app, |editor| {
-                    let line = editor.cursor().line;
-                    editor.copy_lines(line, count)
-                });
-                if let Some(text) = text {
-                    let lines = text.lines().count();
-                    app.vim.register = Register {
-                        text,
-                        linewise: true,
+            if let KeyCode::Char(ch) = key.code {
+                run_object(app, operator, around, ch);
+            }
+            app.vim.clear_pending();
+            clamp(app);
+            return true;
+        }
+        Pending::OperatorG(operator) => {
+            app.vim.pending = Pending::None;
+            // `dgg` — delete from here to the top of the note.
+            if key.code == KeyCode::Char('g') {
+                let to = crate::editor::Cursor {
+                    line: app.vim.count.map_or(0, |n| n.saturating_sub(1)),
+                    col: 0,
+                };
+                apply(
+                    app,
+                    operator,
+                    &Motion {
+                        to,
+                        span: Span::Linewise,
+                    },
+                );
+            }
+            app.vim.clear_pending();
+            clamp(app);
+            return true;
+        }
+        Pending::Operator(operator) => {
+            app.vim.pending = Pending::None;
+            let count = app.vim.count();
+
+            match key.code {
+                // The doubled form means "this line", whichever operator it is.
+                KeyCode::Char(ch) if ch == operator.key() => {
+                    let line = with_editor_out(app, |editor| editor.cursor().line).unwrap_or(0);
+                    let to = crate::editor::Cursor {
+                        line: line + count - 1,
+                        col: 0,
                     };
-                    app.info_yank(lines);
+                    apply(
+                        app,
+                        operator,
+                        &Motion {
+                            to,
+                            span: Span::Linewise,
+                        },
+                    );
+                }
+                // `i`/`a` start a text object rather than being motions here.
+                KeyCode::Char(ch @ ('i' | 'a')) => {
+                    app.vim.pending = Pending::Object(operator, ch == 'a');
+                    app.vim.showcmd.push(ch);
+                    return true;
+                }
+                KeyCode::Char('g') => {
+                    app.vim.pending = Pending::OperatorG(operator);
+                    app.vim.showcmd.push('g');
+                    return true;
+                }
+                KeyCode::Char(ch @ ('f' | 'F' | 't' | 'T')) => {
+                    app.vim.pending = Pending::Find {
+                        operator: Some(operator),
+                        forward: ch == 'f' || ch == 't',
+                        till: ch == 't' || ch == 'T',
+                    };
+                    app.vim.showcmd.push(ch);
+                    return true;
+                }
+                // A digit here is a second count: `d3w`, which multiplies.
+                KeyCode::Char(ch @ '1'..='9') => {
+                    app.vim.pending = Pending::Operator(operator);
+                    app.vim.push_count(ch.to_digit(10).unwrap_or(0));
+                    app.vim.showcmd.push(ch);
+                    return true;
+                }
+                // Not a motion: vim abandons the operator rather than guessing,
+                // which is what stops a stray key from deleting something
+                // nobody asked about.
+                code => {
+                    if let Some(motion) = motion_for(app, code, count) {
+                        apply(app, operator, &motion);
+                    }
                 }
             }
             app.vim.clear_pending();
@@ -261,6 +397,14 @@ fn normal(app: &mut App, key: KeyEvent) -> bool {
                 // `gj`/`gk` are the by-screen-row counterparts of `j`/`k`.
                 KeyCode::Char('j') => move_row(app, 1),
                 KeyCode::Char('k') => move_row(app, -1),
+                KeyCode::Char('e') => {
+                    let count = app.vim.count();
+                    with_editor(app, |editor| {
+                        let to = editor.word_back(editor.cursor(), count, false);
+                        let to = editor.word_end_from(to, false);
+                        editor.set_cursor(to);
+                    });
+                }
                 _ => {}
             }
             app.vim.clear_pending();
@@ -274,52 +418,55 @@ fn normal(app: &mut App, key: KeyEvent) -> bool {
         return normal_ctrl(app, key);
     }
 
+    let count = app.vim.count();
+
     match key.code {
-        // A leading zero is the motion; any later digit is part of a count.
-        KeyCode::Char('0') if app.vim.count.is_none() => {
-            with_editor(app, |editor| editor.move_line_zero(false));
+        KeyCode::Char(ch @ '1'..='9') => {
+            app.vim.push_count(ch.to_digit(10).unwrap_or(0));
+            app.vim.showcmd.push(ch);
+            return true;
         }
-        KeyCode::Char(ch @ '0'..='9') => {
+        KeyCode::Char(ch @ '0') if app.vim.count.is_some() => {
             app.vim.push_count(ch.to_digit(10).unwrap_or(0));
             app.vim.showcmd.push(ch);
             return true;
         }
 
-        // ---- motions ----------------------------------------------------
-        KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => repeat(app, |app| {
-            with_editor(app, |editor| editor.move_left(false));
-        }),
-        KeyCode::Char('l') | KeyCode::Right | KeyCode::Char(' ') => repeat(app, |app| {
-            with_editor(app, |editor| editor.move_right(false));
-        }),
-        KeyCode::Char('j') | KeyCode::Down => {
-            let count = app.vim.count() as isize;
-            with_editor(app, |editor| editor.move_line(count, false));
+        // ---- operators ----------------------------------------------------
+        // An operator does nothing on its own — it waits to be told what to act
+        // on, which is the `w` of `dw` or the second `d` of `dd`.
+        KeyCode::Char(ch @ ('d' | 'c' | 'y' | '>' | '<')) => {
+            if let Some(operator) = Operator::from_key(ch) {
+                app.vim.pending = Pending::Operator(operator);
+                app.vim.showcmd.push(ch);
+            }
+            return true;
         }
-        KeyCode::Char('k') | KeyCode::Up => {
-            let count = app.vim.count() as isize;
-            with_editor(app, |editor| editor.move_line(-count, false));
-        }
-        KeyCode::Char('^') | KeyCode::Home => {
-            with_editor(app, |editor| editor.move_first_nonblank(false));
-        }
-        KeyCode::Char('$') | KeyCode::End => {
-            with_editor(app, |editor| editor.move_line_end_sticky(false));
-        }
-        KeyCode::Char('G') => {
-            let line = app.vim.count.map(|n| n.saturating_sub(1));
-            with_editor(app, |editor| match line {
-                Some(line) => {
-                    editor.goto(line, 0);
-                    editor.move_first_nonblank(false);
-                }
-                None => editor.move_document_end(false),
-            });
-        }
+
         KeyCode::Char('g') => {
             app.vim.pending = Pending::G;
             app.vim.showcmd.push('g');
             return true;
+        }
+        KeyCode::Char(ch @ ('f' | 'F' | 't' | 'T')) => {
+            app.vim.pending = Pending::Find {
+                operator: None,
+                forward: ch == 'f' || ch == 't',
+                till: ch == 't' || ch == 'T',
+            };
+            app.vim.showcmd.push(ch);
+            return true;
+        }
+        // `;` and `,` repeat the last f/t, forwards and backwards.
+        KeyCode::Char(ch @ (';' | ',')) => {
+            if let Some(find) = app.vim.last_find {
+                let forward = if ch == ';' {
+                    find.forward
+                } else {
+                    !find.forward
+                };
+                run_find(app, find.ch, forward, find.till, None);
+            }
         }
 
         // ---- entering insert ---------------------------------------------
@@ -373,18 +520,6 @@ fn normal(app: &mut App, key: KeyEvent) -> bool {
                 };
             }
         }
-        // An operator does nothing on its own — it waits to be told what to act
-        // on, which is the second `d` in `dd`.
-        KeyCode::Char('d') => {
-            app.vim.pending = Pending::Delete;
-            app.vim.showcmd.push('d');
-            return true;
-        }
-        KeyCode::Char('y') => {
-            app.vim.pending = Pending::Yank;
-            app.vim.showcmd.push('y');
-            return true;
-        }
         KeyCode::Char('p' | 'P') => {
             let after = key.code == KeyCode::Char('p');
             let register = app.vim.register.clone();
@@ -404,6 +539,116 @@ fn normal(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Char('u') => {
             with_editor(app, |editor| {
                 editor.undo();
+            });
+        }
+
+        // ---- shorthands ----------------------------------------------------
+        // Each of these is an operator and a motion in one key, which is how
+        // vim spells the combinations worth a single keystroke.
+        KeyCode::Char('D') => {
+            let to = with_editor_out(app, |editor| crate::editor::Cursor {
+                line: editor.cursor().line,
+                col: editor.line_len_at(editor.cursor().line),
+            });
+            if let Some(to) = to {
+                apply(
+                    app,
+                    Operator::Delete,
+                    &Motion {
+                        to,
+                        span: Span::Exclusive,
+                    },
+                );
+            }
+        }
+        KeyCode::Char('C') => {
+            let to = with_editor_out(app, |editor| crate::editor::Cursor {
+                line: editor.cursor().line,
+                col: editor.line_len_at(editor.cursor().line),
+            });
+            if let Some(to) = to {
+                apply(
+                    app,
+                    Operator::Change,
+                    &Motion {
+                        to,
+                        span: Span::Exclusive,
+                    },
+                );
+            }
+            return true;
+        }
+        KeyCode::Char('Y') => {
+            let line = with_editor_out(app, |editor| editor.cursor().line).unwrap_or(0);
+            apply(
+                app,
+                Operator::Yank,
+                &Motion {
+                    to: crate::editor::Cursor {
+                        line: line + count - 1,
+                        col: 0,
+                    },
+                    span: Span::Linewise,
+                },
+            );
+        }
+        KeyCode::Char('S') => {
+            let line = with_editor_out(app, |editor| editor.cursor().line).unwrap_or(0);
+            apply(
+                app,
+                Operator::Change,
+                &Motion {
+                    to: crate::editor::Cursor {
+                        line: line + count - 1,
+                        col: 0,
+                    },
+                    span: Span::Linewise,
+                },
+            );
+            return true;
+        }
+        KeyCode::Char('s') => {
+            let text = with_editor_out(app, |editor| editor.take_chars(count));
+            if let Some(text) = text.filter(|t| !t.is_empty()) {
+                app.vim.register = Register {
+                    text,
+                    linewise: false,
+                };
+            }
+            enter_insert(app);
+            return true;
+        }
+        KeyCode::Char('X') => {
+            let text = with_editor_out(app, |editor| {
+                let cursor = editor.cursor();
+                let start = cursor.col.saturating_sub(count);
+                let text = editor.delete_range(
+                    crate::editor::Cursor {
+                        line: cursor.line,
+                        col: start,
+                    },
+                    cursor,
+                );
+                editor.commit();
+                text
+            });
+            if let Some(text) = text.filter(|t| !t.is_empty()) {
+                app.vim.register = Register {
+                    text,
+                    linewise: false,
+                };
+            }
+        }
+        KeyCode::Char('J') => {
+            with_editor(app, |editor| {
+                editor.join_lines(count);
+                editor.commit();
+            });
+        }
+        KeyCode::Char('~') => {
+            with_editor(app, |editor| {
+                editor.toggle_case(count);
+                editor.commit();
             });
         }
 
@@ -438,12 +683,305 @@ fn normal(app: &mut App, key: KeyEvent) -> bool {
         // so it is deliberately inert rather than surprising.
         KeyCode::Char('q') => {}
 
-        _ => return false,
+        // Everything else is either a motion or nothing. Going through the same
+        // resolver the operators use is what keeps `w` and `dw` agreeing about
+        // where a word ends.
+        code => match motion_for(app, code, count) {
+            Some(motion) => move_to(app, code, count, &motion),
+            None => return false,
+        },
     }
 
     app.vim.clear_pending();
     clamp(app);
     true
+}
+
+/// Where a motion key lands, and how the span up to there is measured.
+///
+/// The single definition of every motion. An operator applies to the span this
+/// returns, and a bare keypress moves to its target — so `dw` cannot disagree
+/// with `w` about where the next word starts.
+fn motion_for(app: &mut App, code: KeyCode, count: usize) -> Option<Motion> {
+    // Read before the editor is borrowed: `G` needs the raw count to tell
+    // "go to line 5" from a bare "go to the end".
+    let explicit = app.vim.count;
+    let editor = app.editor_mut()?;
+    let at = editor.cursor();
+    let line_len = editor.line_len_at(at.line);
+
+    let (to, span) = match code {
+        KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => (
+            crate::editor::Cursor {
+                line: at.line,
+                col: at.col.saturating_sub(count),
+            },
+            Span::Exclusive,
+        ),
+        KeyCode::Char('l') | KeyCode::Right | KeyCode::Char(' ') => (
+            crate::editor::Cursor {
+                line: at.line,
+                col: (at.col + count).min(line_len),
+            },
+            Span::Exclusive,
+        ),
+        KeyCode::Char('j') | KeyCode::Down => (
+            crate::editor::Cursor {
+                line: at.line + count,
+                col: at.col,
+            },
+            Span::Linewise,
+        ),
+        KeyCode::Char('k') | KeyCode::Up => (
+            crate::editor::Cursor {
+                line: at.line.saturating_sub(count),
+                col: at.col,
+            },
+            Span::Linewise,
+        ),
+        KeyCode::Char('0') => (
+            crate::editor::Cursor {
+                line: at.line,
+                col: 0,
+            },
+            Span::Exclusive,
+        ),
+        KeyCode::Char('^') | KeyCode::Home => {
+            let col = editor.lines()[at.line]
+                .chars()
+                .take_while(|c| *c == ' ' || *c == '\t')
+                .count();
+            (
+                crate::editor::Cursor {
+                    line: at.line,
+                    col: col.min(line_len),
+                },
+                Span::Exclusive,
+            )
+        }
+        // `$` is inclusive, which is why `d$` clears to the end of the line
+        // rather than leaving the last character behind.
+        KeyCode::Char('$') | KeyCode::End => (
+            crate::editor::Cursor {
+                line: at.line,
+                col: line_len.saturating_sub(1),
+            },
+            Span::Inclusive,
+        ),
+        KeyCode::Char('w') => (editor.word_forward(at, count, false), Span::Exclusive),
+        KeyCode::Char('W') => (editor.word_forward(at, count, true), Span::Exclusive),
+        KeyCode::Char('b') => (editor.word_back(at, count, false), Span::Exclusive),
+        KeyCode::Char('B') => (editor.word_back(at, count, true), Span::Exclusive),
+        KeyCode::Char('e') => (editor.word_end(at, count, false), Span::Inclusive),
+        KeyCode::Char('E') => (editor.word_end(at, count, true), Span::Inclusive),
+        KeyCode::Char('{') => (editor.paragraph(at, false, count), Span::Exclusive),
+        KeyCode::Char('}') => (editor.paragraph(at, true, count), Span::Exclusive),
+        KeyCode::Char('G') => {
+            let line = match explicit {
+                Some(n) => n.saturating_sub(1),
+                None => editor.line_count().saturating_sub(1),
+            };
+            (crate::editor::Cursor { line, col: 0 }, Span::Linewise)
+        }
+        _ => return None,
+    };
+    Some(Motion { to, span })
+}
+
+/// Moves the cursor to a motion's target.
+///
+/// Three keys go through the editor's own methods rather than a bare jump,
+/// because they carry the column the cursor is aiming for: `j` and `k` keep it
+/// across short lines, and `$` sticks to the end of every line it passes.
+fn move_to(app: &mut App, code: KeyCode, count: usize, motion: &Motion) {
+    let to = motion.to;
+    with_editor(app, |editor| match code {
+        KeyCode::Char('j') | KeyCode::Down => editor.move_line(count as isize, false),
+        KeyCode::Char('k') | KeyCode::Up => editor.move_line(-(count as isize), false),
+        KeyCode::Char('$') | KeyCode::End => editor.move_line_end_sticky(false),
+        _ => editor.set_cursor(to),
+    });
+}
+
+/// Runs an operator over the span between the cursor and a motion's target.
+fn apply(app: &mut App, operator: Operator, motion: &Motion) {
+    let Some(at) = with_editor_out(app, |editor| editor.cursor()) else {
+        return;
+    };
+    let to = motion.to;
+
+    if motion.span == Span::Linewise {
+        let first = at.line.min(to.line);
+        let last = at.line.max(to.line);
+        operate_lines(app, operator, first, last - first + 1);
+        return;
+    }
+
+    let (start, mut end) = if at <= to { (at, to) } else { (to, at) };
+    if motion.span == Span::Inclusive {
+        // The buffer's ranges stop short of their end; vim's inclusive motions
+        // cover the character landed on, so it has to be added back.
+        let len = with_editor_out(app, |editor| editor.line_len_at(end.line)).unwrap_or(0);
+        end.col = (end.col + 1).min(len);
+    }
+    operate_chars(app, operator, start, end);
+}
+
+/// The linewise form of every operator.
+fn operate_lines(app: &mut App, operator: Operator, first: usize, count: usize) {
+    match operator {
+        Operator::Yank => {
+            if let Some(text) = with_editor_out(app, |editor| editor.copy_lines(first, count)) {
+                let lines = text.lines().count();
+                app.vim.register = Register {
+                    text,
+                    linewise: true,
+                };
+                app.info_yank(lines);
+            }
+        }
+        Operator::Delete => {
+            if let Some(text) = with_editor_out(app, |editor| {
+                let text = editor.take_lines(first, count);
+                editor.move_first_nonblank(false);
+                editor.commit();
+                text
+            }) {
+                app.vim.register = Register {
+                    text,
+                    linewise: true,
+                };
+            }
+        }
+        Operator::Change => {
+            // A linewise change leaves an empty line to type on rather than
+            // closing the gap, which is the whole difference from `d`.
+            if let Some(text) = with_editor_out(app, |editor| {
+                let text = editor.take_lines(first, count);
+                editor.open_line(true);
+                text
+            }) {
+                app.vim.register = Register {
+                    text,
+                    linewise: true,
+                };
+            }
+            enter_insert(app);
+        }
+        Operator::Indent | Operator::Outdent => {
+            let last = first + count.saturating_sub(1);
+            with_editor(app, |editor| {
+                editor.goto(first, 0);
+                editor.begin_selection();
+                editor.goto_extend(last, 0);
+                editor.indent(operator == Operator::Indent);
+                // Vim leaves the cursor on the first line of the range. Left on
+                // the last, a following `<j` would shift a different pair of
+                // lines from the `>j` that preceded it.
+                editor.goto(first, 0);
+                editor.move_first_nonblank(false);
+                editor.commit();
+            });
+        }
+    }
+}
+
+/// The charwise form. `end` is exclusive.
+fn operate_chars(
+    app: &mut App,
+    operator: Operator,
+    start: crate::editor::Cursor,
+    end: crate::editor::Cursor,
+) {
+    match operator {
+        Operator::Yank => {
+            if let Some(text) = with_editor_out(app, |editor| {
+                let text = editor.copy_range(start, end);
+                // Vim leaves the cursor at the start of what was yanked.
+                editor.set_cursor(start);
+                text
+            }) {
+                if !text.is_empty() {
+                    app.info_yank(text.lines().count().max(1));
+                }
+                app.vim.register = Register {
+                    text,
+                    linewise: false,
+                };
+            }
+        }
+        Operator::Delete | Operator::Change => {
+            if let Some(text) = with_editor_out(app, |editor| {
+                let text = editor.delete_range(start, end);
+                editor.commit();
+                text
+            }) {
+                app.vim.register = Register {
+                    text,
+                    linewise: false,
+                };
+            }
+            if operator == Operator::Change {
+                enter_insert(app);
+            }
+        }
+        // Indenting is a line operation however the span was measured.
+        Operator::Indent | Operator::Outdent => {
+            operate_lines(app, operator, start.line, end.line - start.line + 1);
+        }
+    }
+}
+
+/// `f`, `F`, `t`, `T` — and the operator forms `df,` and friends.
+fn run_find(app: &mut App, ch: char, forward: bool, till: bool, operator: Option<Operator>) {
+    let count = app.vim.count();
+    let Some(to) = with_editor_out(app, |editor| {
+        editor.find_in_line(editor.cursor(), ch, forward, till, count)
+    })
+    .flatten() else {
+        return;
+    };
+
+    // Searching backwards stops before the character; forwards covers it.
+    let span = if forward {
+        Span::Inclusive
+    } else {
+        Span::Exclusive
+    };
+    match operator {
+        Some(operator) => apply(app, operator, &Motion { to, span }),
+        None => with_editor(app, |editor| editor.set_cursor(to)),
+    }
+}
+
+/// `diw`, `ci"`, `da(` and the rest.
+fn run_object(app: &mut App, operator: Operator, around: bool, ch: char) {
+    let range = with_editor_out(app, |editor| {
+        let at = editor.cursor();
+        match ch {
+            'w' => editor.word_object(at, around, false),
+            'W' => editor.word_object(at, around, true),
+            '"' | '\'' | '`' => editor.quoted_object(at, ch, around),
+            '(' | ')' | 'b' => editor.bracket_object(at, '(', ')', around),
+            '[' | ']' => editor.bracket_object(at, '[', ']', around),
+            '{' | '}' | 'B' => editor.bracket_object(at, '{', '}', around),
+            '<' | '>' => editor.bracket_object(at, '<', '>', around),
+            _ => None,
+        }
+    })
+    .flatten();
+
+    let Some((start, end)) = range else {
+        return;
+    };
+    // Objects come back inclusive of both ends.
+    let len = with_editor_out(app, |editor| editor.line_len_at(end.line)).unwrap_or(0);
+    let end = crate::editor::Cursor {
+        line: end.line,
+        col: (end.col + 1).min(len),
+    };
+    with_editor(app, |editor| editor.set_cursor(start));
+    operate_chars(app, operator, start, end);
 }
 
 /// The Ctrl keys vim defines, which the global map lets through in Normal mode.
@@ -462,6 +1000,20 @@ fn normal_ctrl(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Char('u') => move_row(app, -half),
         KeyCode::Char('f') => move_row(app, page),
         KeyCode::Char('b') => move_row(app, -page),
+        // Increment and decrement the number under the cursor. Worth having in
+        // a notes app for the same reason as anywhere else: renumbering a list
+        // by hand is exactly the sort of thing to get wrong.
+        KeyCode::Char(ch @ ('a' | 'x')) => {
+            let step = app.vim.count() as i64 * if ch == 'a' { 1 } else { -1 };
+            let found = with_editor_out(app, |editor| {
+                let found = editor.adjust_number(step);
+                editor.commit();
+                found
+            });
+            if found != Some(true) {
+                app.info("no number on this line");
+            }
+        }
         _ => return false,
     }
 
@@ -494,24 +1046,22 @@ fn visual(app: &mut App, key: KeyEvent) -> bool {
             return true;
         }
 
-        KeyCode::Char('h') | KeyCode::Left => repeat(app, |app| {
-            with_editor(app, |editor| editor.move_left(true));
-        }),
-        KeyCode::Char('l') | KeyCode::Right => repeat(app, |app| {
-            with_editor(app, |editor| editor.move_right(true));
-        }),
-        KeyCode::Char('j') | KeyCode::Down => {
-            let count = app.vim.count() as isize;
-            with_editor(app, |editor| editor.move_line(count, true));
+        // `f`/`t` work here too, and are the quickest way to stretch a
+        // selection to a punctuation mark you can see.
+        KeyCode::Char(ch @ ('f' | 'F' | 't' | 'T')) => {
+            app.vim.pending = Pending::Find {
+                operator: None,
+                forward: ch == 'f' || ch == 't',
+                till: ch == 't' || ch == 'T',
+            };
+            app.vim.showcmd.push(ch);
+            return true;
         }
-        KeyCode::Char('k') | KeyCode::Up => {
-            let count = app.vim.count() as isize;
-            with_editor(app, |editor| editor.move_line(-count, true));
+        KeyCode::Char('g') => {
+            app.vim.pending = Pending::G;
+            app.vim.showcmd.push('g');
+            return true;
         }
-        KeyCode::Char('0') => with_editor(app, |editor| editor.move_line_zero(true)),
-        KeyCode::Char('^') => with_editor(app, |editor| editor.move_first_nonblank(true)),
-        KeyCode::Char('$') => with_editor(app, |editor| editor.move_line_end(true)),
-        KeyCode::Char('G') => with_editor(app, |editor| editor.move_document_end(true)),
 
         // Switching between the two visual flavours, as vim does.
         KeyCode::Char('v') => {
@@ -589,7 +1139,19 @@ fn visual(app: &mut App, key: KeyEvent) -> bool {
             return true;
         }
 
-        _ => return false,
+        // Motions extend the selection rather than replacing it, through the
+        // same resolver Normal mode uses — so `vw` and `dw` cover exactly the
+        // same text.
+        code => {
+            let count = app.vim.count();
+            match motion_for(app, code, count) {
+                Some(motion) => {
+                    let to = motion.to;
+                    with_editor(app, |editor| editor.goto_extend(to.line, to.col));
+                }
+                None => return false,
+            }
+        }
     }
 
     if app.vim.mode == VimMode::VisualLine {
@@ -716,13 +1278,6 @@ fn with_editor<T>(app: &mut App, f: impl FnOnce(&mut crate::editor::Editor) -> T
 
 fn with_editor_out<T>(app: &mut App, f: impl FnOnce(&mut crate::editor::Editor) -> T) -> Option<T> {
     app.editor_mut().map(f)
-}
-
-/// Runs an action the count number of times.
-fn repeat(app: &mut App, f: impl Fn(&mut App)) {
-    for _ in 0..app.vim.count() {
-        f(app);
-    }
 }
 
 /// Moves by screen rows, which needs the geometry the last frame recorded.
@@ -1358,6 +1913,402 @@ mod tests {
             KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
         );
         assert!(app.tabs.len() < tabs, "Ctrl+W still closes the tab");
+    }
+
+    // ---- motions ---------------------------------------------------------
+
+    #[test]
+    fn w_and_b_step_by_word_treating_punctuation_as_its_own() {
+        // `foo.bar` is three words in vim, not one — the letters and the dot
+        // are different kinds of character.
+        let (_v, mut app) = app("foo.bar baz\n");
+        press(&mut app, 'w');
+        assert_eq!(cursor(&mut app), (0, 3), "the dot is a word of its own");
+        press(&mut app, 'w');
+        assert_eq!(cursor(&mut app), (0, 4));
+        press(&mut app, 'w');
+        assert_eq!(cursor(&mut app), (0, 8), "on to baz");
+
+        press(&mut app, 'b');
+        assert_eq!(cursor(&mut app), (0, 4));
+    }
+
+    #[test]
+    fn capital_w_and_b_step_over_punctuation() {
+        let (_v, mut app) = app("foo.bar baz\n");
+        press(&mut app, 'W');
+        assert_eq!(cursor(&mut app), (0, 8), "a WORD stops only at blanks");
+        press(&mut app, 'B');
+        assert_eq!(cursor(&mut app), (0, 0));
+    }
+
+    #[test]
+    fn e_lands_on_the_last_character_of_a_word() {
+        let (_v, mut app) = app("alpha beta\n");
+        press(&mut app, 'e');
+        assert_eq!(cursor(&mut app), (0, 4), "the a of alpha, not the space");
+        press(&mut app, 'e');
+        assert_eq!(cursor(&mut app), (0, 9));
+    }
+
+    #[test]
+    fn word_motions_cross_lines() {
+        let (_v, mut app) = app("one\ntwo\n");
+        press(&mut app, 'w');
+        assert_eq!(cursor(&mut app), (1, 0));
+        press(&mut app, 'b');
+        assert_eq!(cursor(&mut app), (0, 0));
+    }
+
+    #[test]
+    fn paragraph_motions_jump_between_blocks() {
+        let (_v, mut app) = app("one\ntwo\n\nthree\nfour\n\nfive\n");
+        press(&mut app, '}');
+        assert_eq!(cursor(&mut app).0, 2, "the blank line after the block");
+        press(&mut app, '}');
+        assert_eq!(cursor(&mut app).0, 5);
+        press(&mut app, '{');
+        assert_eq!(cursor(&mut app).0, 2);
+    }
+
+    #[test]
+    fn f_and_t_aim_at_a_character_on_the_line() {
+        let (_v, mut app) = app("a,b,c\n");
+        type_str(&mut app, "f,");
+        assert_eq!(cursor(&mut app), (0, 1));
+        press(&mut app, ';');
+        assert_eq!(cursor(&mut app), (0, 3), "; repeats the search");
+        press(&mut app, ',');
+        assert_eq!(cursor(&mut app), (0, 1), ", repeats it backwards");
+    }
+
+    #[test]
+    fn t_stops_one_short_of_its_target() {
+        let (_v, mut app) = app("a,b\n");
+        type_str(&mut app, "t,");
+        assert_eq!(cursor(&mut app), (0, 0));
+    }
+
+    #[test]
+    fn f_stays_on_its_own_line() {
+        // It is a motion you aim by eye, so running onto the next line would
+        // take the cursor somewhere the user never looked.
+        let (_v, mut app) = app("abc\nx,y\n");
+        type_str(&mut app, "f,");
+        assert_eq!(cursor(&mut app), (0, 0), "no comma here, so nothing moves");
+    }
+
+    // ---- operators -------------------------------------------------------
+
+    #[test]
+    fn dw_deletes_to_the_start_of_the_next_word() {
+        let (_v, mut app) = app("alpha beta gamma\n");
+        type_str(&mut app, "dw");
+        assert_eq!(text(&mut app), "beta gamma\n");
+        assert_eq!(app.vim.register.text, "alpha ");
+        assert!(!app.vim.register.linewise);
+    }
+
+    #[test]
+    fn de_stops_on_the_last_character_rather_than_before_the_next_word() {
+        // The exclusive/inclusive distinction: `dw` takes the trailing space
+        // and `de` leaves it.
+        let (_v, mut app) = app("alpha beta\n");
+        type_str(&mut app, "de");
+        assert_eq!(text(&mut app), " beta\n");
+    }
+
+    #[test]
+    fn a_count_multiplies_wherever_it_is_typed() {
+        for keys in ["d3w", "3dw"] {
+            let (_v, mut app) = app("one two three four\n");
+            type_str(&mut app, keys);
+            assert_eq!(text(&mut app), "four\n", "{keys} should take three words");
+        }
+    }
+
+    #[test]
+    fn d_dollar_clears_to_the_end_of_the_line() {
+        let (_v, mut app) = app("keep this\n");
+        type_str(&mut app, "ll");
+        type_str(&mut app, "d$");
+        assert_eq!(text(&mut app), "ke\n", "$ is inclusive");
+    }
+
+    #[test]
+    fn dj_takes_both_lines_because_j_is_linewise() {
+        let (_v, mut app) = app("one\ntwo\nthree\n");
+        type_str(&mut app, "dj");
+        assert_eq!(text(&mut app), "three\n");
+        assert!(app.vim.register.linewise);
+    }
+
+    #[test]
+    fn cw_deletes_the_word_and_starts_typing() {
+        let (_v, mut app) = app("alpha beta\n");
+        type_str(&mut app, "cw");
+        assert_eq!(app.vim.mode, VimMode::Insert);
+        for ch in "omega".chars() {
+            press(&mut app, ch);
+        }
+        assert_eq!(text(&mut app), "omegabeta\n");
+    }
+
+    #[test]
+    fn yw_copies_without_changing_anything() {
+        let (_v, mut app) = app("alpha beta\n");
+        type_str(&mut app, "yw");
+        assert_eq!(text(&mut app), "alpha beta\n");
+        assert_eq!(app.vim.register.text, "alpha ");
+        assert_eq!(cursor(&mut app), (0, 0), "the cursor stays at the start");
+    }
+
+    #[test]
+    fn an_operator_over_a_line_range_indents_it() {
+        let (_v, mut app) = app("one\ntwo\nthree\n");
+        type_str(&mut app, ">j");
+        assert_eq!(text(&mut app), "    one\n    two\nthree\n");
+        type_str(&mut app, "<j");
+        assert_eq!(text(&mut app), "one\ntwo\nthree\n");
+    }
+
+    #[test]
+    fn df_deletes_up_to_and_including_the_character() {
+        let (_v, mut app) = app("keep,drop rest\n");
+        type_str(&mut app, "df,");
+        assert_eq!(text(&mut app), "drop rest\n");
+    }
+
+    #[test]
+    fn dgg_deletes_back_to_the_top() {
+        let (_v, mut app) = app("one\ntwo\nthree\n");
+        press(&mut app, 'j');
+        type_str(&mut app, "dgg");
+        assert_eq!(text(&mut app), "three\n");
+    }
+
+    #[test]
+    fn an_operator_followed_by_nonsense_does_nothing() {
+        // Guessing at what a stray key meant is how an editor eats a paragraph
+        // nobody asked it to touch.
+        let (_v, mut app) = app("untouched\n");
+        type_str(&mut app, "dZ");
+        assert_eq!(text(&mut app), "untouched\n");
+        assert!(app.vim.showcmd.is_empty(), "and the operator is abandoned");
+    }
+
+    // ---- text objects ----------------------------------------------------
+
+    #[test]
+    fn diw_takes_the_word_under_the_cursor_from_anywhere_in_it() {
+        for start in 0..5 {
+            let (_v, mut app) = app("alpha beta\n");
+            for _ in 0..start {
+                press(&mut app, 'l');
+            }
+            type_str(&mut app, "diw");
+            assert_eq!(text(&mut app), " beta\n", "from column {start}");
+        }
+    }
+
+    #[test]
+    fn daw_takes_the_trailing_space_too() {
+        let (_v, mut app) = app("alpha beta\n");
+        type_str(&mut app, "daw");
+        assert_eq!(text(&mut app), "beta\n");
+    }
+
+    #[test]
+    fn ciw_replaces_a_word_in_place() {
+        let (_v, mut app) = app("the quick fox\n");
+        type_str(&mut app, "w");
+        type_str(&mut app, "ciw");
+        for ch in "slow".chars() {
+            press(&mut app, ch);
+        }
+        assert_eq!(text(&mut app), "the slow fox\n");
+    }
+
+    #[test]
+    fn a_quoted_object_takes_what_is_between_the_quotes() {
+        let (_v, mut app) = app("say \"hello there\" now\n");
+        type_str(&mut app, "ci\"");
+        for ch in "bye".chars() {
+            press(&mut app, ch);
+        }
+        assert_eq!(text(&mut app), "say \"bye\" now\n");
+    }
+
+    #[test]
+    fn a_bracketed_object_takes_what_is_between_the_brackets() {
+        let (_v, mut app) = app("call(alpha, beta)\n");
+        type_str(&mut app, "wci(");
+        press(&mut app, 'x');
+        assert_eq!(text(&mut app), "call(x)\n");
+    }
+
+    #[test]
+    fn an_around_object_takes_the_delimiters_as_well() {
+        let (_v, mut app) = app("call(alpha)\n");
+        type_str(&mut app, "wda(");
+        assert_eq!(text(&mut app), "call\n");
+    }
+
+    #[test]
+    fn a_nested_bracket_takes_the_pair_the_cursor_is_actually_in() {
+        let (_v, mut app) = app("f(g(x))\n");
+        // On the `x`, inside the inner pair.
+        type_str(&mut app, "llll");
+        type_str(&mut app, "di(");
+        assert_eq!(text(&mut app), "f(g())\n");
+    }
+
+    #[test]
+    fn an_object_with_no_match_leaves_the_note_alone() {
+        let (_v, mut app) = app("no brackets here\n");
+        type_str(&mut app, "di(");
+        assert_eq!(text(&mut app), "no brackets here\n");
+    }
+
+    // ---- the remaining single keys ---------------------------------------
+
+    #[test]
+    fn d_capital_clears_the_rest_of_the_line() {
+        let (_v, mut app) = app("keep this\n");
+        type_str(&mut app, "llD");
+        assert_eq!(text(&mut app), "ke\n");
+    }
+
+    #[test]
+    fn c_capital_replaces_the_rest_of_the_line() {
+        let (_v, mut app) = app("keep this\n");
+        type_str(&mut app, "llC");
+        press(&mut app, 'y');
+        assert_eq!(text(&mut app), "key\n");
+    }
+
+    #[test]
+    fn capital_x_deletes_backwards() {
+        let (_v, mut app) = app("abc\n");
+        press(&mut app, 'l');
+        press(&mut app, 'X');
+        assert_eq!(text(&mut app), "bc\n");
+    }
+
+    #[test]
+    fn s_deletes_a_character_and_starts_typing() {
+        let (_v, mut app) = app("abc\n");
+        press(&mut app, 's');
+        press(&mut app, 'X');
+        assert_eq!(text(&mut app), "Xbc\n");
+    }
+
+    #[test]
+    fn j_joins_the_next_line_with_a_single_space() {
+        let (_v, mut app) = app("one\n   two\nthree\n");
+        press(&mut app, 'J');
+        assert_eq!(
+            text(&mut app),
+            "one two\nthree\n",
+            "the indent is absorbed rather than left mid-sentence"
+        );
+    }
+
+    #[test]
+    fn a_count_joins_several_lines() {
+        let (_v, mut app) = app("a\nb\nc\n");
+        type_str(&mut app, "3J");
+        assert_eq!(text(&mut app), "a b c\n");
+    }
+
+    #[test]
+    fn tilde_flips_the_case_and_moves_on() {
+        let (_v, mut app) = app("abc\n");
+        press(&mut app, '~');
+        assert_eq!(text(&mut app), "Abc\n");
+        assert_eq!(cursor(&mut app), (0, 1), "and steps past what it changed");
+    }
+
+    #[test]
+    fn ctrl_a_and_ctrl_x_adjust_the_number_on_the_line() {
+        let (_v, mut app) = app("item 41 here\n");
+        crate::keys::handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(text(&mut app), "item 42 here\n");
+
+        crate::keys::handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(text(&mut app), "item 41 here\n");
+    }
+
+    #[test]
+    fn decrementing_past_zero_goes_negative_rather_than_mangling_digits() {
+        let (_v, mut app) = app("n = 1\n");
+        for _ in 0..3 {
+            crate::keys::handle(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+            );
+        }
+        assert_eq!(text(&mut app), "n = -2\n");
+    }
+
+    #[test]
+    fn ctrl_a_says_so_when_there_is_no_number() {
+        let (_v, mut app) = app("no digits\n");
+        crate::keys::handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+        );
+        assert!(!app.status.text.is_empty(), "silence looks like a bug");
+    }
+
+    #[test]
+    fn visual_motions_land_where_normal_mode_motions_do() {
+        // The shared resolver's actual guarantee. Note that `vwd` and `dw` do
+        // *not* delete the same text, in this editor or in vim: a visual
+        // selection covers the character the cursor ends on and an exclusive
+        // motion stops before it. Asserting the cursor rather than the text is
+        // what tests the thing that is really shared.
+        for keys in ["w", "b", "e", "$", "0", "}"] {
+            let plain = {
+                let (_v, mut app) = app("alpha beta gamma\n\nnext\n");
+                type_str(&mut app, "ll");
+                type_str(&mut app, keys);
+                cursor(&mut app)
+            };
+            let visual = {
+                let (_v, mut app) = app("alpha beta gamma\n\nnext\n");
+                type_str(&mut app, "ll");
+                press(&mut app, 'v');
+                type_str(&mut app, keys);
+                cursor(&mut app)
+            };
+            assert_eq!(plain, visual, "{keys} disagrees between the two modes");
+        }
+    }
+
+    #[test]
+    fn a_visual_selection_covers_the_character_it_ends_on() {
+        // Vim's rule, and the reason `vld` deletes two characters where `dl`
+        // deletes one.
+        let visual = {
+            let (_v, mut app) = app("abcdef\n");
+            type_str(&mut app, "vld");
+            text(&mut app)
+        };
+        assert_eq!(visual, "cdef\n", "v l d takes two characters");
+
+        let operator = {
+            let (_v, mut app) = app("abcdef\n");
+            type_str(&mut app, "dl");
+            text(&mut app)
+        };
+        assert_eq!(operator, "bcdef\n", "d l takes one");
     }
 
     #[test]

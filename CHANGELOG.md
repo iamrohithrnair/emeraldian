@@ -9,10 +9,25 @@ All notable changes to this project are documented here. The format follows
 ### Added
 
 - **Vim mode in the note editor, on `F4`.** Normal, Insert, Visual and
-  Visual-Line, with `hjkl`, `gg`/`G`, `0`/`^`/`$`, counts, `i I a A o O`, `x`,
-  `dd`, `yy`, `p`/`P`, `r`, `u`, `Ctrl+R`, and `d`/`y`/`c`/`>`/`<` over a
-  selection. `j` and `k` move by source line as they do in vim, and `gj`/`gk`
-  by the row on screen.
+  Visual-Line.
+
+  Motions `h j k l`, `gj`/`gk`, `w W b B e E ge`, `0 ^ $`, `gg G`, `{ }`, and
+  `f F t T` with `;`/`,` to repeat. `j` and `k` move by source line as they do
+  in vim; `gj`/`gk` move by the row on screen.
+
+  Operators `d c y > <` over any motion, or doubled for the line — `dd`, `cc`,
+  `yy`, `>>`, `<<` — with counts anywhere they are accepted in vim, so `d3w`
+  and `3dw` agree. Text objects `iw aw`, `i" a"`, `i( a(`, `i[ a[`, `i{ a{`,
+  with nesting counted so an inner pair wins.
+
+  Single keys `i I a A o O`, `x X s S`, `D C Y`, `p P`, `r`, `J`, `~`, `u`,
+  `Ctrl+R`, and `Ctrl+A`/`Ctrl+X` to increment and decrement.
+
+  One resolver defines every motion, and both operators and visual-mode
+  movement go through it, so `dw` and `w` cannot disagree about where a word
+  ends. Vim's exclusive/inclusive distinction is modelled rather than
+  approximated: `dw` stops before the next word and `de` takes the last letter
+  of this one.
 
   In Normal and Visual mode, `Ctrl+R`, `Ctrl+D`, `Ctrl+U`, `Ctrl+F` and
   `Ctrl+B` take vim's meanings rather than the app's — redo and scrolling. They

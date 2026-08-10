@@ -171,9 +171,13 @@ quietly reset on the next launch would be a poor trade for consistency.
 
 ```
 modes     Normal · Insert · Visual · V-Line, named in the status bar
-motions   h j k l   gj gk   0 ^ $   gg G
-counts    3j  2dd  5x
-edits     i I a A o O   x   dd   yy p P   r   u   Ctrl+R
+motions   h j k l   gj gk   w W b B e E ge   0 ^ $   gg G   { }
+          f F t T  and  ; ,  to repeat the last one
+counts    3j  2dd  d3w  5x
+operators d c y > <   over any motion, or doubled for the line: dd cc yy >> <<
+objects   iw aw  i" a"  i( a( ib ab  i[ a[  i{ a{ iB aB
+edits     i I a A o O   x X s S   D C Y   r   J   ~   u   Ctrl+R
+numbers   Ctrl+A / Ctrl+X to increment and decrement
 visual    v  V  then  d  y  c  >  <
 scroll    Ctrl+D / Ctrl+U   Ctrl+F / Ctrl+B
 ```
@@ -460,7 +464,7 @@ same state.
 ## Development
 
 ```sh
-cargo test --workspace          # 657 tests
+cargo test --workspace          # 696 tests
 cargo clippy --workspace --all-targets
 cargo fmt --all --check
 ```
