@@ -159,13 +159,22 @@ fn handle_global(app: &mut App, key: KeyEvent) -> bool {
         return true;
     }
 
-    // Pane cycling skips panes that aren't on screen. The note editor and the
-    // graph both bind Tab themselves — indent and next-node — so they keep it;
-    // Ctrl+Tab still switches document tabs from anywhere. The chat claims Tab
-    // only while a slash command is being typed, where completing it is what
-    // the key obviously means.
+    // Pane cycling skips panes that aren't on screen. A pane keeps Tab only
+    // while it has something to do with it; anything else would make the key
+    // vanish rather than move on, which is worse than either meaning. The graph
+    // qualifies always — Tab steps to the next node — and the chat only while a
+    // slash command is being typed, where completing it is what the key
+    // obviously means. Ctrl+Tab still switches document tabs from anywhere.
+    //
+    // The note pane qualifies only while the note is being *edited*, where Tab
+    // indents. Claiming it for the pane as a whole trapped the focus: a note
+    // being read, and the empty pane before one is open, bind nothing to Tab, so
+    // it reached them and was silently swallowed. Tab could get you into the
+    // note and never back out. Editing keeps the key, and `Esc` — which commits
+    // and returns to reading — is the way back to a Tab that cycles.
     let completing = app.focus == Focus::Chat && crate::slash::is_command(&app.chat.input);
-    let owns_tab = matches!(app.focus, Focus::Note | Focus::Graph) || completing;
+    let editing_note = app.focus == Focus::Note && app.editing();
+    let owns_tab = editing_note || app.focus == Focus::Graph || completing;
     if key.code == KeyCode::Tab && !ctrl && !owns_tab {
         cycle_focus(app, 1);
         return true;
@@ -757,6 +766,63 @@ mod tests {
         vault.write("B.md", "# B\n");
         let app = App::new(vault.vault(), Config::default()).expect("app");
         (vault, app)
+    }
+
+    #[test]
+    fn tab_cycles_out_of_a_note_being_read() {
+        let (_v, mut app) = app();
+        let a = app.index.id_of_rel("A.md").unwrap();
+        app.open_note(a);
+        app.focus = Focus::Note;
+
+        handle(&mut app, key(KeyCode::Tab));
+        assert_eq!(
+            app.focus,
+            Focus::Sidebar,
+            "reading binds nothing to Tab, so it must keep cycling panes"
+        );
+    }
+
+    #[test]
+    fn shift_tab_cycles_out_of_a_note_being_read() {
+        let (_v, mut app) = app();
+        let a = app.index.id_of_rel("A.md").unwrap();
+        app.open_note(a);
+        app.focus = Focus::Note;
+
+        handle(
+            &mut app,
+            KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+        );
+        assert_eq!(app.focus, Focus::Explorer);
+    }
+
+    #[test]
+    fn tab_cycles_out_of_an_empty_note_pane() {
+        let (_v, mut app) = app();
+        app.focus = Focus::Note;
+        assert!(app.active().is_none(), "no note is open");
+
+        handle(&mut app, key(KeyCode::Tab));
+        assert_eq!(app.focus, Focus::Sidebar);
+    }
+
+    #[test]
+    fn tab_still_indents_while_editing() {
+        let (_v, mut app) = app();
+        let a = app.index.id_of_rel("A.md").unwrap();
+        app.open_note(a);
+        app.active_mut().unwrap().mode = Mode::Editing;
+        app.focus = Focus::Note;
+
+        handle(&mut app, key(KeyCode::Tab));
+        assert_eq!(app.focus, Focus::Note, "the editor keeps Tab for indent");
+        assert!(
+            app.editor_mut()
+                .and_then(|e| e.lines().first().cloned())
+                .is_some_and(|line| line.starts_with(' ')),
+            "Tab indented the line"
+        );
     }
 
     #[test]
