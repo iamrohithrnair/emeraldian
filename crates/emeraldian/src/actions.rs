@@ -41,6 +41,7 @@ pub fn commands() -> Vec<Entry> {
             Action::ToggleRightSidebar,
         ),
         Entry::new("Cycle sidebar panel", "Ctrl+K", Action::CycleSidePanel),
+        Entry::new("Cycle sidebar panel back", "h", Action::CycleSidePanelBack),
         Entry::new("Toggle assistant panel", "Ctrl+L", Action::ToggleChat),
         Entry::new(
             "Assistant: choose provider",
@@ -439,6 +440,10 @@ pub fn dispatch(app: &mut App, action: Action) {
         Action::CycleSortOrder => cycle_sort_order(app),
         Action::CycleSidePanel => {
             app.side_panel = app.side_panel.next();
+            app.side_selected = 0;
+        }
+        Action::CycleSidePanelBack => {
+            app.side_panel = app.side_panel.prev();
             app.side_selected = 0;
         }
         Action::OpenGraph => app.open_graph(None),

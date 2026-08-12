@@ -528,7 +528,17 @@ fn handle_sidebar(app: &mut App, key: KeyEvent) {
         KeyCode::Char('G') | KeyCode::End => {
             app.side_selected = targets.len().saturating_sub(1);
         }
-        KeyCode::Tab if key.modifiers.is_empty() => dispatch(app, Action::CycleSidePanel),
+        // The panels are drawn as a row of tabs, so the keys that walk a row
+        // are the ones a user reaches for. `Ctrl+K` cycles them from anywhere
+        // and stays, but it only goes forwards and it is not what you press
+        // when the tab strip is right there under the cursor.
+        //
+        // Tab cannot do this job: pane cycling claims it before the sidebar is
+        // ever asked, which is right — leaving the pane has to work from every
+        // pane — so the arm that used to sit here was dead code contradicted by
+        // the hint bar's own "Tab · panes".
+        KeyCode::Char('l') | KeyCode::Right => dispatch(app, Action::CycleSidePanel),
+        KeyCode::Char('h') | KeyCode::Left => dispatch(app, Action::CycleSidePanelBack),
         KeyCode::Enter => match targets.get(app.side_selected).cloned() {
             Some(SidebarTarget::Heading(line)) => {
                 // Jumping to a heading scrolls the reading view and moves the
@@ -1033,6 +1043,46 @@ mod tests {
         assert_eq!(app.focus, Focus::Note);
         cycle_focus(&mut app, 1);
         assert_eq!(app.focus, Focus::Explorer, "wraps past the hidden panes");
+    }
+
+    #[test]
+    fn h_and_l_walk_the_sidebar_panels_both_ways() {
+        use crate::app::SidePanel;
+
+        let (_v, mut app) = app();
+        app.focus = Focus::Sidebar;
+        app.side_panel = SidePanel::Outline;
+        app.side_selected = 3;
+
+        handle(&mut app, key(KeyCode::Char('l')));
+        assert_eq!(app.side_panel, SidePanel::Backlinks);
+        assert_eq!(app.side_selected, 0, "a new panel starts at its first row");
+
+        handle(&mut app, key(KeyCode::Right));
+        assert_eq!(app.side_panel, SidePanel::Tags);
+
+        handle(&mut app, key(KeyCode::Char('h')));
+        assert_eq!(app.side_panel, SidePanel::Backlinks);
+
+        handle(&mut app, key(KeyCode::Left));
+        assert_eq!(app.side_panel, SidePanel::Outline);
+
+        handle(&mut app, key(KeyCode::Char('h')));
+        assert_eq!(app.side_panel, SidePanel::Tags, "wraps backwards");
+    }
+
+    #[test]
+    fn tab_leaves_the_sidebar_rather_than_changing_its_panel() {
+        use crate::app::SidePanel;
+
+        let (_v, mut app) = app();
+        app.focus = Focus::Sidebar;
+        app.side_panel = SidePanel::Outline;
+
+        handle(&mut app, key(KeyCode::Tab));
+
+        assert_ne!(app.focus, Focus::Sidebar, "Tab is the pane cycle");
+        assert_eq!(app.side_panel, SidePanel::Outline);
     }
 
     #[test]

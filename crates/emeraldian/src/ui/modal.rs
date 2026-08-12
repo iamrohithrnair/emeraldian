@@ -345,11 +345,20 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
+        "Outline sidebar",
+        &[
+            ("h / l", "Previous / next panel — outline, backlinks, tags"),
+            ("j / k", "Move down and up the list"),
+            ("g / G", "First / last row"),
+            ("Enter", "Jump to the heading, note or tag"),
+            ("Ctrl+K", "Cycle the panels from any pane"),
+        ],
+    ),
+    (
         "Panes",
         &[
             ("Ctrl+\\", "Toggle the file explorer"),
             ("Ctrl+]", "Toggle the outline sidebar"),
-            ("Ctrl+K", "Cycle outline / backlinks / tags"),
             ("Ctrl+T", "Theme picker"),
         ],
     ),
