@@ -309,7 +309,7 @@ fn hints_for(app: &App) -> &'static [(&'static str, &'static str)] {
             },
             Focus::Sidebar => &[
                 ("Enter", "jump"),
-                ("^K", "next panel"),
+                ("h/l", "panel"),
                 ("Tab", "panes"),
                 ("F3", "close tab"),
                 ("^\\", "files"),
