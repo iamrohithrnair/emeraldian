@@ -44,6 +44,13 @@ brew install iamrohithrnair/tap/emeraldian
 are left out rather than listed, because one that looks right and then fails is
 worse than one that is plainly missing.
 
+**Nix** (flake-enabled Linux or macOS):
+
+```sh
+nix run github:iamrohithrnair/emeraldian       # try it without installing
+nix profile install github:iamrohithrnair/emeraldian
+```
+
 **Cargo** (needs Rust 1.90 or newer):
 
 ```sh
