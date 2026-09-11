@@ -7,7 +7,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use emeraldian_agent::{Effort, ProviderKind};
+use emeraldian_agent::ProviderKind;
 use emeraldian_core::sort::SortOrder;
 use serde::{Deserialize, Serialize};
 
@@ -250,11 +250,6 @@ impl AgentConfig {
         ProviderKind::parse(&self.provider).unwrap_or(ProviderKind::Offline)
     }
 
-    #[must_use]
-    pub fn effort(&self) -> Effort {
-        Effort::parse(&self.effort).unwrap_or(Effort::High)
-    }
-
     /// The model to request, falling back to the provider's default.
     #[must_use]
     pub fn model(&self) -> String {
@@ -270,17 +265,6 @@ impl AgentConfig {
             }
         } else {
             self.model.clone()
-        }
-    }
-
-    #[must_use]
-    pub fn to_session_config(&self) -> emeraldian_agent::AgentConfig {
-        emeraldian_agent::AgentConfig {
-            model: self.model(),
-            max_tokens: self.max_tokens,
-            effort: self.effort(),
-            show_reasoning: self.show_reasoning,
-            max_tool_rounds: self.max_tool_rounds,
         }
     }
 }
@@ -480,15 +464,6 @@ mod tests {
 
         agent.model = "llama3.1".into();
         assert_eq!(agent.model(), "llama3.1");
-    }
-
-    #[test]
-    fn agent_effort_falls_back_when_misspelled() {
-        let agent = AgentConfig {
-            effort: "enormous".into(),
-            ..Default::default()
-        };
-        assert_eq!(agent.effort(), Effort::High);
     }
 
     #[test]

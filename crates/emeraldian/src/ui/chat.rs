@@ -40,28 +40,14 @@ pub fn draw(frame: &mut Frame, app: &mut App, palette: &Palette, area: Rect) {
 
 /// What the panel calls itself.
 ///
-/// The model answering is worth the space: "why is nothing happening" is almost
-/// always a missing key or the wrong model, and neither was visible anywhere
-/// before you went looking for it.
+/// Naming the wire is worth the space: "why is nothing happening" is almost
+/// always a missing agent binary, and that was invisible before you went looking.
 fn title(app: &App) -> String {
     if app.chat.busy {
         return "Assistant  ·  working…".to_string();
     }
-    let provider = &app.config.agent.provider;
-    let Some(preset) = emeraldian_agent::catalog::find(provider) else {
-        return format!("Assistant  ·  {provider}?");
-    };
-    if preset.kind == emeraldian_agent::ProviderKind::Offline {
-        return "Assistant  ·  no model — /provider".to_string();
-    }
-    if !crate::agent::ready(app) {
-        return format!("Assistant  ·  {} — /key", preset.label);
-    }
-    format!(
-        "Assistant  ·  {} {}",
-        preset.label,
-        app.config.agent.model()
-    )
+    // The agent is a subprocess now; the panel describes the wire, not a provider.
+    "Assistant  ·  crow-cli acp".to_string()
 }
 
 /// The slash-command list, shown while the user is typing one.
@@ -308,23 +294,14 @@ fn draw_input(frame: &mut Frame, app: &App, palette: &Palette, area: Rect, focus
         frame.set_cursor_position((x, inner.y));
     }
 
-    // A second line shows token usage once a turn has run.
-    if inner.height > 1 && app.chat.usage.output_tokens > 0 {
-        let usage = &app.chat.usage;
-        let text = format!(
-            "{} in · {} out{}",
-            usage.input_tokens,
-            usage.output_tokens,
-            if usage.cache_read_tokens > 0 {
-                format!(" · {} cached", usage.cache_read_tokens)
-            } else {
-                String::new()
-            }
-        );
+    // A second line shows the context window once the agent reports it.
+    if inner.height > 1
+        && let Some(context) = &app.chat.context
+    {
         frame.buffer_mut().set_string(
             inner.x,
             inner.y + 1,
-            crate::ui::truncate(&text, width),
+            crate::ui::truncate(context, width),
             Style::default().fg(palette.text_faint),
         );
     }
@@ -438,34 +415,11 @@ mod tests {
     }
 
     #[test]
-    fn the_panel_says_which_model_is_answering_or_what_is_missing() {
-        let (vault, mut app) = app();
-        app.auth = crate::auth::Auth::at(vault.path().join("auth.json"));
+    fn the_panel_says_what_is_answering_and_when_it_is_working() {
+        let (_vault, mut app) = app();
 
-        crate::actions::set_provider(&mut app, "offline").expect("a known provider");
-        assert!(
-            title(&app).contains("/provider"),
-            "with nothing set up, the title is the instructions: {}",
-            title(&app)
-        );
-
-        crate::actions::set_provider(&mut app, "anthropic").expect("a known provider");
-        if crate::auth::key_for("anthropic", &app.auth).is_none() {
-            assert!(
-                title(&app).contains("/key"),
-                "a provider with no key says so: {}",
-                title(&app)
-            );
-        }
-
-        // A local server needs no key, so it is ready as soon as it is chosen.
-        crate::actions::set_provider(&mut app, "ollama").expect("a known provider");
-        let ready = title(&app);
-        assert!(ready.contains("Ollama"), "{ready}");
-        assert!(
-            ready.contains(&app.config.agent.model()),
-            "and names the model, which is the other half of 'why did that fail': {ready}"
-        );
+        // The agent is a subprocess now; the title names the wire, not a provider.
+        assert!(title(&app).contains("crow-cli acp"), "{}", title(&app));
 
         app.chat.busy = true;
         assert!(

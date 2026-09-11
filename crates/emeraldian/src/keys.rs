@@ -316,11 +316,9 @@ fn handle_explorer(app: &mut App, key: KeyEvent) {
                 PromptIntent::FilterExplorer,
             )));
         }
-        KeyCode::Esc => {
-            if !app.explorer.filter.is_empty() {
-                app.explorer.filter.clear();
-                app.explorer.rebuild(&app.index);
-            }
+        KeyCode::Esc if !app.explorer.filter.is_empty() => {
+            app.explorer.filter.clear();
+            app.explorer.rebuild(&app.index);
         }
         KeyCode::Char('?') => dispatch(app, Action::OpenHelp),
         KeyCode::Char('q') => dispatch(app, Action::Quit),
@@ -663,7 +661,20 @@ fn run_command(app: &mut App) {
     let input = app.chat.input.trim().to_string();
     app.chat.clear_input();
     if let crate::slash::Outcome::Unknown(name) = crate::slash::run(app, &input) {
-        app.error(format!("unknown command '/{name}'; /help lists them"));
+        // The agent advertises its own commands over the wire (/compact, /stop,
+        // …). An unknown slash command is one of those when the agent says so —
+        // send it through and let crow-cli decide; otherwise it was a typo.
+        let known = app
+            .chat
+            .available_commands
+            .iter()
+            .any(|(wire_name, _)| *wire_name == name);
+        if known {
+            app.chat.input = input;
+            crate::agent::send(app);
+        } else {
+            app.error(format!("unknown command '/{name}'; /help lists them"));
+        }
     }
 }
 
@@ -1146,8 +1157,8 @@ mod chat_command_tests {
 
         assert!(!app.config.agent.allow_writes, "the command took effect");
         assert!(
-            app.chat.conversation.is_empty(),
-            "a command must never reach the model"
+            app.chat.transcript.len() == 1,
+            "a local command says its piece and reaches no one"
         );
         assert!(app.chat.input.is_empty(), "the input box is cleared");
     }
@@ -1264,11 +1275,14 @@ mod chat_command_tests {
         type_str(&mut app, "/nope");
         press(&mut app, KeyCode::Enter);
 
-        assert!(app.chat.conversation.is_empty());
+        assert!(app.chat.transcript.is_empty());
         assert!(
             app.status.text.contains("unknown command"),
             "the user is told, rather than the typo silently vanishing"
         );
+        // A command the agent advertises over the wire takes the other branch —
+        // it is sent as a prompt. That path needs a live crow-cli, so it is
+        // covered by the tmux check, not here.
     }
 
     #[test]

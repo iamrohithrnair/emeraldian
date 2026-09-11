@@ -6,6 +6,7 @@
 // locally: re-introducing it should be a deliberate change to this line.
 #![forbid(unsafe_code)]
 
+mod acp;
 mod actions;
 mod agent;
 mod app;
