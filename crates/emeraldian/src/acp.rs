@@ -11,13 +11,14 @@
 //! [`crate::agent::poll`] drains between frames. A tokio runtime lives inside the
 //! connection's thread because the wire client is async; nothing else here is.
 
-use std::collections::HashSet;
-use std::path::PathBuf;
-
 use agent_client_protocol::schema::v1::{
-    ContentBlock, SessionNotification, SessionUpdate, ToolCallContent, ToolCallStatus,
+    ContentBlock, SessionNotification, SessionUpdate, StopReason, ToolCallContent, ToolCallStatus,
     ToolCallUpdate, ToolCallUpdateFields,
 };
+use std::collections::HashSet;
+use std::future::Future;
+use std::path::PathBuf;
+use std::pin::Pin;
 use tokio::sync::mpsc;
 
 use crow_term_acp::{self as wire, McpServer};
@@ -153,8 +154,26 @@ async fn run(
     // id are progress, and re-announcing them would duplicate panel entries.
     let mut announced = HashSet::new();
 
+    // The turn's future is a select branch, not an inline await. Awaiting the
+    // prompt inside the command arm starves `updates.recv()` for the whole turn:
+    // every `session/update` piles up behind it and flushes only after `Done`,
+    // which is what "the whole answer appears at once" was. Pinned here, chunks
+    // drain while the turn runs, `session/cancel` stays callable mid-turn, and
+    // every event still leaves this one task in order.
+    let mut turn: Option<Pin<Box<dyn Future<Output = anyhow::Result<StopReason>> + '_>>> = None;
     loop {
         tokio::select! {
+            biased;
+
+            notification = updates.recv() => match notification {
+                None => break,
+                Some(note) => {
+                    for event in map_notification(&note, &mut announced) {
+                        let _ = events.send(event);
+                    }
+                }
+            },
+
             command = commands.recv() => match command {
                 // The UI dropped the connection: shut down, which ends the agent subprocess.
                 None => break,
@@ -164,26 +183,37 @@ async fn run(
                     }
                 }
                 Some(Command::Prompt(text)) => {
-                    let _ = events.send(Event::Started);
-                    match client.prompt(&session, text).await {
-                        Ok(_reason) => {
-                            let _ = events.send(Event::TurnEnd);
-                            let _ = events.send(Event::Done);
-                        }
-                        Err(error) => {
-                            let _ = events.send(Event::Failed(format!("error · {error:#}")));
-                            let _ = events.send(Event::Done);
-                        }
+                    // The UI refuses to send while a turn runs (`busy` gates Enter),
+                    // so this only defends the protocol's one-request-at-a-time rule.
+                    if turn.is_some() {
+                        continue;
                     }
+                    let _ = events.send(Event::Started);
+                    turn = Some(Box::pin(client.prompt(&session, text)));
                 }
             },
-            notification = updates.recv() => match notification {
-                None => break,
-                Some(note) => {
-                    for event in map_notification(&note, &mut announced) {
-                        let _ = events.send(event);
-                    }
+
+            settled = async {
+                match turn.as_mut() {
+                    // No turn in flight: never resolve. The branch's type is inferred
+                    // from the `Some` arm.
+                    Some(future) => Some(future.as_mut().await),
+                    None => loop {
+                        std::future::pending::<()>().await;
+                    },
                 }
+            } => match settled {
+                Some(Ok(_reason)) => {
+                    let _ = events.send(Event::TurnEnd);
+                    let _ = events.send(Event::Done);
+                    turn = None;
+                }
+                Some(Err(error)) => {
+                    let _ = events.send(Event::Failed(format!("error · {error:#}")));
+                    let _ = events.send(Event::Done);
+                    turn = None;
+                }
+                None => {}
             },
         }
     }
