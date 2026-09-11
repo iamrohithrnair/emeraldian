@@ -15,6 +15,11 @@ fixed (`19c94a2`). Proven end-to-end:
   fails, and its deferred restore slams cooked termios over raw mode) and fixed
   locally by enabling raw mode *before* the probe. Upstream report filed:
   ratatui/ratatui-image#202.
+- streaming root-caused: awaiting the prompt inside the select's command arm
+  starved `updates.recv()` for the whole turn, so every session/update flushed
+  only after Done (whole answer at once). The turn is now a pinned select
+  branch in `crates/emeraldian/src/acp.rs` (`d1b5a49`) — chunks drain while it
+  runs; proven in tmux with per-frame tail growth.
 
 ## The two forks (user's spec, 2026-09-10)
 
