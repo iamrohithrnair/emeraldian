@@ -56,6 +56,13 @@ pub struct Chat {
     pub scroll: usize,
     /// True while a turn is in flight.
     pub busy: bool,
+    /// Set once the wire reports the turn over (`Done`).
+    ///
+    /// Scripted runs wait on this rather than on `busy`, which is false both
+    /// before the first event arrives and after the last one — those two
+    /// states are otherwise indistinguishable, and waiting on `busy` alone
+    /// races straight past a turn that has not started yet.
+    pub turn_done: bool,
     /// Context-window usage as the agent reported it (`ctx used/size`).
     pub context: Option<String>,
     /// Slash commands the agent advertised (`available_commands/update`) —
@@ -81,6 +88,7 @@ impl Chat {
             completion: 0,
             scroll: 0,
             busy: false,
+            turn_done: false,
             context: None,
             available_commands: Vec::new(),
             follow: true,
@@ -98,6 +106,7 @@ impl Chat {
         self.scroll = 0;
         self.connection = None;
         self.busy = false;
+        self.turn_done = false;
     }
 
     pub fn insert_char(&mut self, ch: char) {
@@ -166,7 +175,10 @@ impl Chat {
 
     fn apply(&mut self, event: Event) {
         match event {
-            Event::Started => self.busy = true,
+            Event::Started => {
+                self.busy = true;
+                self.turn_done = false;
+            }
             Event::Text(text) => self.push_text(&text),
             Event::Reasoning(text) => self.push_reasoning(&text),
             Event::ToolCall { name, summary, .. } => self.transcript.push(Entry::Tool {
@@ -201,7 +213,10 @@ impl Chat {
             Event::Commands(commands) => self.available_commands = commands,
             Event::Failed(message) => self.transcript.push(Entry::Error(message)),
             Event::TurnEnd => {}
-            Event::Done => self.busy = false,
+            Event::Done => {
+                self.busy = false;
+                self.turn_done = true;
+            }
         }
     }
 
@@ -210,11 +225,6 @@ impl Chat {
         if let Some(connection) = self.connection.as_ref() {
             connection.cancel();
         }
-    }
-
-    #[must_use]
-    pub fn is_running(&self) -> bool {
-        self.busy
     }
 }
 
@@ -450,6 +460,25 @@ mod tests {
         assert!(chat.busy);
         chat.apply(Event::Done);
         assert!(!chat.busy);
+    }
+
+    #[test]
+    fn the_turn_done_flag_waits_for_the_wire_not_the_busy_race() {
+        let mut chat = Chat::new(&AgentConfig::default());
+        // Before the first event, both busy and turn_done are false — which is
+        // why waiting on `busy` alone raced past whole turns.
+        assert!(!chat.busy);
+        assert!(!chat.turn_done);
+
+        chat.apply(Event::Started);
+        assert!(chat.busy);
+        assert!(!chat.turn_done, "a turn that started is not over");
+
+        chat.apply(Event::Done);
+        assert!(chat.turn_done, "and now the scripted run may print");
+
+        chat.apply(Event::Started);
+        assert!(!chat.turn_done, "the next turn re-arms the wait");
     }
 
     #[test]

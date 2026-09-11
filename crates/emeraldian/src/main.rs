@@ -211,11 +211,13 @@ fn run_prompt(app: &mut App, prompt: &str) -> io::Result<()> {
     app.chat.input = prompt.to_string();
     agent::send(app);
 
-    while app.chat.busy || app.chat.is_running() {
+    // `busy` is false before the first wire event lands as well as after the
+    // last one; waiting on it alone races straight past a turn that has not
+    // started yet. The explicit end-of-turn flag is the only reliable signal.
+    while !app.chat.turn_done {
         agent::poll(app);
         std::thread::sleep(Duration::from_millis(20));
     }
-    agent::poll(app);
 
     let mut failed = false;
     for entry in &app.chat.transcript {
@@ -252,6 +254,18 @@ fn run(app: &mut App) -> io::Result<()> {
     // Asking the terminal what pictures it can draw means writing to stdout and
     // reading the reply from stdin, so it has to happen while the terminal is
     // still in its normal mode — before the alternate screen below.
+    //
+    // Hold raw mode across the probe. ratatui-image's query runs on a detached
+    // thread that snapshots whatever termios it sees, and restores that snapshot
+    // when its handshake ends — which can be long after startup: terminals that
+    // never answer (tmux panes among them) leave the thread parked in a stdin
+    // read past ratatui-image's 2s outer timeout, until the first real keypress
+    // arrives. If the snapshot was cooked, that restore slams the terminal back
+    // to cooked mode mid-session — keys then arrive as literal text and the app
+    // never sees them. Enabling raw here means the probe snapshots raw and its
+    // teardown restores raw; crossterm keeps the cooked original in its slot for
+    // the restore at the bottom of this function.
+    let _ = crossterm::terminal::enable_raw_mode();
     let wanted = images::choice(&app.config.images.protocol);
     app.images = images::Images::probe(
         app.config.images.enabled,
