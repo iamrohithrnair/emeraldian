@@ -208,7 +208,7 @@ fn apply_startup_args(app: &mut App, args: &Args) {
 
 /// Answers a single prompt on stdout, for scripting.
 fn run_prompt(app: &mut App, prompt: &str) -> io::Result<()> {
-    app.chat.input = prompt.to_string();
+    app.chat.set_input(prompt);
     agent::send(app);
 
     // `busy` is false before the first wire event lands as well as after the
@@ -1232,7 +1232,11 @@ mod tests {
         // `/provider` reached by typing enough of it to be unambiguous.
         type_keys(&mut terminal, &mut app, "/prov");
         press(&mut terminal, &mut app, KeyCode::Enter);
-        assert_eq!(app.chat.input, "/provider ", "Enter fills in the command");
+        assert_eq!(
+            app.chat.input_text(),
+            "/provider ",
+            "Enter fills in the command"
+        );
         press(&mut terminal, &mut app, KeyCode::Enter);
 
         // The provider menu, with Anthropic at the top, taken as it stands.

@@ -420,7 +420,7 @@ impl App {
             .cloned()
             .unwrap_or_else(presets::default_theme);
 
-        let chat = Chat::new(&config.agent);
+        let chat = Chat::new(&config);
         let mut explorer = Explorer::default();
         explorer.set_sort(config.ui.sort_order());
         let mut app = Self {

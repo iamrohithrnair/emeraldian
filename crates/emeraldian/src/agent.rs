@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::acp::{Connection, Event};
 use crate::app::App;
-use crate::config::AgentConfig;
+use crate::config::{AgentConfig, Config};
+use crate::editor::Editor;
 
 /// One entry in the visible transcript.
 ///
@@ -45,9 +46,19 @@ pub enum ToolStatus {
 pub struct Chat {
     /// What the user sees.
     pub transcript: Vec<Entry>,
-    pub input: String,
-    /// Cursor position within `input`, in characters.
-    pub cursor: usize,
+    /// The input box is emeraldian's own editor — the same wrapped, styled,
+    /// multi-line one the notes use — not a bespoke single-line field. Text
+    /// past the pane width wraps onto the next row instead of vanishing.
+    pub input: Editor,
+    /// Columns the input's text was last laid out across, recorded while
+    /// drawing so key handling can move within it by visual rows.
+    pub input_cols: usize,
+    /// Rows of the input box that were on screen at the last draw, for paging.
+    pub input_rows: usize,
+    /// The editor settings the input was built with, so it can be replaced
+    /// whole (completion, clearing) without reaching for the config again.
+    tab_width: usize,
+    expand_tabs: bool,
     /// Which slash command the completion list has highlighted.
     ///
     /// Reset whenever the input changes, since the list it indexes into is
@@ -80,11 +91,14 @@ pub struct Chat {
 
 impl Chat {
     #[must_use]
-    pub fn new(settings: &AgentConfig) -> Self {
+    pub fn new(config: &Config) -> Self {
         Self {
             transcript: Vec::new(),
-            input: String::new(),
-            cursor: 0,
+            input: Editor::new("", config.editor.tab_width, config.editor.expand_tabs),
+            input_cols: 0,
+            input_rows: 1,
+            tab_width: config.editor.tab_width,
+            expand_tabs: config.editor.expand_tabs,
             completion: 0,
             scroll: 0,
             busy: false,
@@ -93,7 +107,7 @@ impl Chat {
             available_commands: Vec::new(),
             follow: true,
             connection: None,
-            settings: settings.clone(),
+            settings: config.agent.clone(),
         }
     }
 
@@ -109,28 +123,32 @@ impl Chat {
         self.turn_done = false;
     }
 
-    pub fn insert_char(&mut self, ch: char) {
-        let byte = char_to_byte(&self.input, self.cursor);
-        self.input.insert(byte, ch);
-        self.cursor += 1;
+    /// Replaces the input's text whole, cursor at the end.
+    ///
+    /// Completion and `/resume`-style flows put a whole line in at once; the
+    /// editor is rebuilt rather than edited so the change reads as one step.
+    pub fn set_input(&mut self, text: &str) {
+        let mut editor = Editor::new(text, self.tab_width, self.expand_tabs);
+        editor.move_document_end(false);
+        self.input = editor;
         self.completion = 0;
     }
 
-    pub fn backspace(&mut self) {
-        if self.cursor == 0 {
-            return;
-        }
-        let byte = char_to_byte(&self.input, self.cursor - 1);
-        self.input.remove(byte);
-        self.cursor -= 1;
-        self.completion = 0;
+    /// What is typed, without the editor's trailing newline.
+    #[must_use]
+    pub fn input_text(&self) -> String {
+        self.input.lines().join("\n")
+    }
+
+    /// Whether there is nothing typed yet.
+    #[must_use]
+    pub fn input_is_empty(&self) -> bool {
+        self.input.lines().iter().all(|line| line.is_empty())
     }
 
     /// Puts a slash command in the input, ready for its argument.
     pub fn complete_with(&mut self, name: &str) {
-        self.input = format!("/{name} ");
-        self.cursor = self.input.chars().count();
-        self.completion = 0;
+        self.set_input(&format!("/{name} "));
     }
 
     /// Moves the completion highlight, wrapping at both ends.
@@ -147,14 +165,7 @@ impl Chat {
 
     /// Empties the input, closing the completion list with it.
     pub fn clear_input(&mut self) {
-        self.input.clear();
-        self.cursor = 0;
-        self.completion = 0;
-    }
-
-    pub fn move_cursor(&mut self, delta: isize) {
-        let len = self.input.chars().count();
-        self.cursor = (self.cursor as isize + delta).clamp(0, len as isize) as usize;
+        self.set_input("");
     }
 
     /// Appends streaming text to the last assistant entry, starting one if the
@@ -228,12 +239,6 @@ impl Chat {
     }
 }
 
-fn char_to_byte(text: &str, chars: usize) -> usize {
-    text.char_indices()
-        .nth(chars)
-        .map_or(text.len(), |(byte, _)| byte)
-}
-
 /// Starts a turn with the text currently in the input box.
 ///
 /// A free function rather than a method because sending needs the vault (the
@@ -243,12 +248,12 @@ fn char_to_byte(text: &str, chars: usize) -> usize {
 /// both — crow-cli keeps the conversation server-side, so the client keeps no
 /// history of its own.
 pub fn send(app: &mut App) {
-    let text = app.chat.input.trim().to_string();
+    let text = app.chat.input_text();
+    let text = text.trim().to_string();
     if text.is_empty() || app.chat.busy {
         return;
     }
-    app.chat.input.clear();
-    app.chat.cursor = 0;
+    app.chat.clear_input();
     app.chat.follow = true;
     app.chat.transcript.push(Entry::User(text.clone()));
 
@@ -376,34 +381,65 @@ mod tests {
 
     #[test]
     fn input_editing_is_character_aware() {
-        let mut chat = Chat::new(&AgentConfig::default());
+        let mut chat = Chat::new(&Config::default());
         for ch in "héllo".chars() {
-            chat.insert_char(ch);
+            chat.input.insert_char(ch);
         }
-        assert_eq!(chat.input, "héllo");
-        assert_eq!(chat.cursor, 5);
+        assert_eq!(chat.input_text(), "héllo");
+        assert_eq!(chat.input.cursor().col, 5);
 
-        chat.move_cursor(-3);
-        chat.insert_char('X');
-        assert_eq!(chat.input, "héXllo");
+        for _ in 0..3 {
+            chat.input.move_left(false);
+        }
+        chat.input.insert_char('X');
+        assert_eq!(chat.input_text(), "héXllo");
 
-        chat.backspace();
-        assert_eq!(chat.input, "héllo");
+        chat.input.backspace();
+        assert_eq!(chat.input_text(), "héllo");
     }
 
     #[test]
-    fn cursor_movement_clamps_to_the_input() {
-        let mut chat = Chat::new(&AgentConfig::default());
-        chat.insert_char('a');
-        chat.move_cursor(-10);
-        assert_eq!(chat.cursor, 0);
-        chat.move_cursor(10);
-        assert_eq!(chat.cursor, 1);
+    fn cursor_movement_stays_inside_the_input() {
+        let mut chat = Chat::new(&Config::default());
+        chat.input.insert_char('a');
+        for _ in 0..10 {
+            chat.input.move_left(false);
+        }
+        assert_eq!(chat.input.cursor().col, 0);
+        for _ in 0..10 {
+            chat.input.move_right(false);
+        }
+        assert_eq!(chat.input.cursor().col, 1);
+    }
+
+    #[test]
+    fn set_input_puts_the_cursor_at_its_end() {
+        let mut chat = Chat::new(&Config::default());
+        chat.set_input("/resume ");
+        assert_eq!(chat.input_text(), "/resume ");
+        assert_eq!(
+            chat.input.cursor(),
+            crate::editor::Cursor { line: 0, col: 8 },
+            "the cursor follows the text"
+        );
+    }
+
+    #[test]
+    fn input_text_joins_lines_without_a_trailing_newline() {
+        let mut chat = Chat::new(&Config::default());
+        chat.set_input("first");
+        chat.input.newline();
+        chat.input.insert_char('s');
+        assert_eq!(chat.input_text(), "first\ns");
+        assert!(!chat.input_is_empty());
+
+        chat.clear_input();
+        assert!(chat.input_is_empty());
     }
 
     #[test]
     fn streamed_text_accumulates_into_one_entry() {
-        let mut chat = Chat::new(&AgentConfig::default());
+        let mut chat = Chat::new(&Config::default());
         chat.apply(Event::Text("Hel".into()));
         chat.apply(Event::Text("lo".into()));
 
@@ -412,7 +448,7 @@ mod tests {
 
     #[test]
     fn a_tool_call_updates_in_place_when_it_finishes() {
-        let mut chat = Chat::new(&AgentConfig::default());
+        let mut chat = Chat::new(&Config::default());
         chat.apply(Event::ToolCall {
             id: "t1".into(),
             name: "create_note".into(),
@@ -445,7 +481,7 @@ mod tests {
 
     #[test]
     fn reasoning_and_text_stay_separate_entries() {
-        let mut chat = Chat::new(&AgentConfig::default());
+        let mut chat = Chat::new(&Config::default());
         chat.apply(Event::Reasoning("thinking".into()));
         chat.apply(Event::Text("answer".into()));
         chat.apply(Event::Reasoning("more".into()));
@@ -455,7 +491,7 @@ mod tests {
 
     #[test]
     fn done_clears_the_busy_flag() {
-        let mut chat = Chat::new(&AgentConfig::default());
+        let mut chat = Chat::new(&Config::default());
         chat.apply(Event::Started);
         assert!(chat.busy);
         chat.apply(Event::Done);
@@ -464,7 +500,7 @@ mod tests {
 
     #[test]
     fn the_turn_done_flag_waits_for_the_wire_not_the_busy_race() {
-        let mut chat = Chat::new(&AgentConfig::default());
+        let mut chat = Chat::new(&Config::default());
         // Before the first event, both busy and turn_done are false — which is
         // why waiting on `busy` alone raced past whole turns.
         assert!(!chat.busy);
@@ -483,7 +519,7 @@ mod tests {
 
     #[test]
     fn reset_clears_the_transcript() {
-        let mut chat = Chat::new(&AgentConfig::default());
+        let mut chat = Chat::new(&Config::default());
         chat.transcript.push(Entry::User("hi".into()));
         chat.reset();
 

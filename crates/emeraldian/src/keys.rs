@@ -164,7 +164,7 @@ fn handle_global(app: &mut App, key: KeyEvent) -> bool {
     // Ctrl+Tab still switches document tabs from anywhere. The chat claims Tab
     // only while a slash command is being typed, where completing it is what
     // the key obviously means.
-    let completing = app.focus == Focus::Chat && crate::slash::is_command(&app.chat.input);
+    let completing = app.focus == Focus::Chat && crate::slash::is_command(&app.chat.input_text());
     let owns_tab = matches!(app.focus, Focus::Note | Focus::Graph) || completing;
     if key.code == KeyCode::Tab && !ctrl && !owns_tab {
         cycle_focus(app, 1);
@@ -566,22 +566,28 @@ fn handle_sidebar(app: &mut App, key: KeyEvent) {
 
 fn handle_chat(app: &mut App, key: KeyEvent) {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
     // While a slash command is being typed, the arrow keys belong to the list of
     // commands rather than to the transcript — a menu on screen is what the keys
     // obviously act on, and it is the only way to read the list without knowing
     // the names already.
+    let typed = app.chat.input_text();
     let completions = if app.chat.busy {
         Vec::new()
     } else {
-        crate::slash::completions(&app.chat.input)
+        crate::slash::completions(&typed)
     };
     if !completions.is_empty() && handle_completions(app, key, &completions) {
         return;
     }
 
+    // The input is the same editor the notes use, so it takes the same keys:
+    // insert mode's set, minus Tab (pane cycling owns it here) and with Enter
+    // claimed for sending. Shift+Enter is how a message spans lines.
     match key.code {
-        KeyCode::Enter if !app.chat.busy && crate::slash::is_command(&app.chat.input) => {
+        KeyCode::Enter if shift => app.chat.input.newline(),
+        KeyCode::Enter if !app.chat.busy && crate::slash::is_command(&typed) => {
             run_command(app);
         }
         KeyCode::Enter if !app.chat.busy => agent::send(app),
@@ -593,13 +599,77 @@ fn handle_chat(app: &mut App, key: KeyEvent) {
             app.chat.reset();
             app.info("conversation cleared");
         }
-        KeyCode::Char(ch) if !ctrl => app.chat.insert_char(ch),
-        KeyCode::Backspace => app.chat.backspace(),
-        KeyCode::Left => app.chat.move_cursor(-1),
-        KeyCode::Right => app.chat.move_cursor(1),
+        KeyCode::Char(ch) if !ctrl => {
+            let before = app.chat.input.revision();
+            app.chat.input.insert_char(ch);
+            if app.chat.input.revision() != before {
+                app.chat.completion = 0;
+            }
+        }
+        KeyCode::Backspace => {
+            let before = app.chat.input.revision();
+            app.chat.input.backspace();
+            if app.chat.input.revision() != before {
+                app.chat.completion = 0;
+            }
+        }
+        KeyCode::Delete => {
+            let before = app.chat.input.revision();
+            app.chat.input.delete_forward();
+            if app.chat.input.revision() != before {
+                app.chat.completion = 0;
+            }
+        }
+        KeyCode::Left if ctrl => app.chat.input.move_word_left(shift),
+        KeyCode::Right if ctrl => app.chat.input.move_word_right(shift),
+        KeyCode::Left => app.chat.input.move_left(shift),
+        KeyCode::Right => app.chat.input.move_right(shift),
+        KeyCode::Up
+        | KeyCode::Down
+        | KeyCode::PageUp
+        | KeyCode::PageDown
+        | KeyCode::Home
+        | KeyCode::End => move_in_chat(app, key.code, shift),
+        KeyCode::Esc => app.focus = Focus::Note,
+        _ => {}
+    }
+}
+
+/// Moves within the input or scrolls the transcript, split by whether the
+/// input has more than one row on screen.
+///
+/// A single-row input is a prompt: Up/Down page the conversation. Once the
+/// message wraps or spans lines the arrows belong to the text and paging the
+/// transcript is what PageUp/PageDown are for — the same split the note editor
+/// makes between moving and scrolling.
+fn move_in_chat(app: &mut App, code: KeyCode, extend: bool) {
+    let width = app.chat.input_cols;
+    let wrap = app.config.editor.wrap;
+    let rows = if width == 0 {
+        1
+    } else {
+        app.chat.input.layout(width, wrap).rows().len()
+    };
+
+    if rows > 1 {
+        let layout = app.chat.input.layout(width, wrap);
+        let page = app.chat.input_rows.max(1) as isize;
+        match code {
+            KeyCode::Up => app.chat.input.move_row(&layout, -1, extend),
+            KeyCode::Down => app.chat.input.move_row(&layout, 1, extend),
+            KeyCode::PageUp => app.chat.input.move_row(&layout, -page, extend),
+            KeyCode::PageDown => app.chat.input.move_row(&layout, page, extend),
+            KeyCode::Home => app.chat.input.move_row_start(&layout, extend),
+            KeyCode::End => app.chat.input.move_row_end(&layout, extend),
+            _ => {}
+        }
+        return;
+    }
+
+    match code {
+        // Scrolling up detaches from the bottom so streaming output doesn't
+        // yank the view back.
         KeyCode::Up | KeyCode::PageUp => {
-            // Scrolling up detaches from the bottom so streaming output doesn't
-            // yank the view back.
             app.chat.follow = false;
             app.chat.scroll = app.chat.scroll.saturating_sub(3);
         }
@@ -607,7 +677,8 @@ fn handle_chat(app: &mut App, key: KeyEvent) {
             app.chat.scroll += 3;
             app.chat.follow = true;
         }
-        KeyCode::Esc => app.focus = Focus::Note,
+        KeyCode::Home => app.chat.input.move_line_start(extend),
+        KeyCode::End => app.chat.input.move_line_end(extend),
         _ => {}
     }
 }
@@ -640,10 +711,13 @@ fn handle_completions(
         // the command once it is settled. So `/` then arrows then Enter fills it
         // in, and Enter again runs it — while typing `/help` and pressing Enter
         // runs it outright, without a detour through the menu.
-        KeyCode::Enter => match selected().filter(|name| !settled(&app.chat.input, name)) {
-            Some(name) => app.chat.complete_with(name),
-            None => run_command(app),
-        },
+        KeyCode::Enter => {
+            let typed = app.chat.input_text();
+            match selected().filter(|name| !settled(&typed, name)) {
+                Some(name) => app.chat.complete_with(name),
+                None => run_command(app),
+            }
+        }
         // Abandoning what you were typing is what Escape means here; the list
         // closes with it, and a second Escape leaves the panel.
         KeyCode::Esc => app.chat.clear_input(),
@@ -658,7 +732,8 @@ fn settled(input: &str, name: &str) -> bool {
 }
 
 fn run_command(app: &mut App) {
-    let input = app.chat.input.trim().to_string();
+    let typed = app.chat.input_text();
+    let input = typed.trim().to_string();
     app.chat.clear_input();
     if let crate::slash::Outcome::Unknown(name) = crate::slash::run(app, &input) {
         // The agent advertises its own commands over the wire (/compact, /stop,
@@ -670,7 +745,7 @@ fn run_command(app: &mut App) {
             .iter()
             .any(|(wire_name, _)| *wire_name == name);
         if known {
-            app.chat.input = input;
+            app.chat.set_input(&input);
             crate::agent::send(app);
         } else {
             app.error(format!("unknown command '/{name}'; /help lists them"));
@@ -1024,7 +1099,7 @@ mod tests {
         for ch in "hi".chars() {
             handle(&mut app, key(KeyCode::Char(ch)));
         }
-        assert_eq!(app.chat.input, "hi");
+        assert_eq!(app.chat.input_text(), "hi");
 
         app.chat
             .transcript
@@ -1160,7 +1235,7 @@ mod chat_command_tests {
             app.chat.transcript.len() == 1,
             "a local command says its piece and reaches no one"
         );
-        assert!(app.chat.input.is_empty(), "the input box is cleared");
+        assert!(app.chat.input_is_empty(), "the input box is cleared");
     }
 
     #[test]
@@ -1168,7 +1243,7 @@ mod chat_command_tests {
         let (_v, mut app) = app();
         // Only a leading slash is a command; prose about paths is not.
         type_str(&mut app, "what is in /tmp");
-        assert!(!crate::slash::is_command(&app.chat.input));
+        assert!(!crate::slash::is_command(&app.chat.input_text()));
     }
 
     #[test]
@@ -1177,10 +1252,10 @@ mod chat_command_tests {
         type_str(&mut app, "/resu");
         press(&mut app, KeyCode::Tab);
 
-        assert_eq!(app.chat.input, "/resume ");
+        assert_eq!(app.chat.input_text(), "/resume ");
         assert_eq!(
-            app.chat.cursor,
-            app.chat.input.chars().count(),
+            app.chat.input.cursor(),
+            crate::editor::Cursor { line: 0, col: 8 },
             "the cursor follows the completion"
         );
     }
@@ -1202,14 +1277,14 @@ mod chat_command_tests {
 
         press(&mut app, KeyCode::Enter);
         assert_eq!(
-            app.chat.input,
+            app.chat.input_text(),
             format!("/{} ", names[2]),
             "Enter takes the highlighted command rather than running the first"
         );
 
         press(&mut app, KeyCode::Enter);
         assert!(
-            app.chat.input.is_empty(),
+            app.chat.input_is_empty(),
             "and Enter again runs it, since the name is settled"
         );
     }
@@ -1254,7 +1329,7 @@ mod chat_command_tests {
         type_str(&mut app, "/sess");
 
         press(&mut app, KeyCode::Esc);
-        assert!(app.chat.input.is_empty(), "the command is abandoned");
+        assert!(app.chat.input_is_empty(), "the command is abandoned");
         assert_eq!(app.focus, Focus::Chat, "but the panel keeps focus");
 
         press(&mut app, KeyCode::Esc);
@@ -1266,7 +1341,7 @@ mod chat_command_tests {
         let (_v, mut app) = app();
         type_str(&mut app, "hello");
         press(&mut app, KeyCode::Tab);
-        assert_eq!(app.chat.input, "hello");
+        assert_eq!(app.chat.input_text(), "hello");
     }
 
     #[test]
@@ -1298,10 +1373,49 @@ mod chat_command_tests {
     }
 
     #[test]
+    fn shift_enter_starts_a_new_line_rather_than_sending() {
+        let (_v, mut app) = app();
+        type_str(&mut app, "first");
+        handle(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+        type_str(&mut app, "second");
+
+        assert_eq!(app.chat.input_text(), "first\nsecond");
+        assert!(app.chat.transcript.is_empty(), "nothing was sent");
+    }
+
+    #[test]
+    fn arrows_move_within_a_wrapped_input() {
+        let (_v, mut app) = app();
+        type_str(&mut app, "first");
+        handle(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+        type_str(&mut app, "second");
+
+        // Draw once so the input knows how wide it is; key handling moves by
+        // the rows the last frame laid out.
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 20)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                crate::ui::chat::draw(
+                    frame,
+                    &mut app,
+                    &emeraldian_theme::Palette::from(&emeraldian_theme::presets::default_theme()),
+                    ratatui::layout::Rect::new(0, 0, 60, 20),
+                );
+            })
+            .expect("frame");
+
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.chat.input.cursor().line, 0, "up moves within the text");
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.chat.input.cursor().line, 1, "and back down again");
+    }
+
+    #[test]
     fn q_in_the_chat_box_types_rather_than_quits() {
         let (_v, mut app) = app();
         type_str(&mut app, "q");
-        assert_eq!(app.chat.input, "q");
+        assert_eq!(app.chat.input_text(), "q");
         assert!(app.modal.is_none(), "no quit prompt while typing");
     }
 }

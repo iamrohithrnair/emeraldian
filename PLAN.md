@@ -21,6 +21,30 @@ fixed (`19c94a2`). Proven end-to-end:
   branch in `crates/emeraldian/src/acp.rs` (`d1b5a49`) — chunks drain while it
   runs; proven in tmux with per-frame tail growth.
 
+## Where we are (2026-09-12): the chat box is emeraldian's editor
+
+The Assistant panel's input was a bespoke single-line paragraph with a hand-rolled
+cursor: text past the pane width fell off the edge and vanished, which read as
+"typing without seeing anything". Spec said to reuse what emeraldian already has,
+so that is what it now does:
+
+- `Chat.input` is a real `Editor` (the note editor's own), so input wraps,
+  spans lines (`Shift+Enter`; plain `Enter` still sends) and keeps the caret
+  visible via the editor's scroll-into-view. Arrows move within the text once it
+  has more than one row on screen; PageUp/PageDown page the transcript.
+- The box grows to fit what is typed, capped at 8 rows, then scrolls instead.
+- Input drawing reuses the note editor's painters (`paint_line`, `row_line`,
+  `fenced_lines`), so typing markdown shows the same wysiwyg styling the notes
+  get — headings, emphasis, code, tags.
+- The transcript renders user and assistant text through the reading pane's
+  markdown renderer (`render_document`) instead of plain wrapping; reasoning,
+  tool calls and errors stay plain status lines.
+
+Proven in tmux against a live `crow-cli acp`: a message longer than the pane
+wraps onto three rows all visible, streams thinking/tool calls/answer into the
+panel, ctx footer updates, Ctrl+C stops the turn, `/help` lands in the
+transcript. fmt/clippy/tests green (503).
+
 ## The two forks (user's spec, 2026-09-10)
 
 Primary first:

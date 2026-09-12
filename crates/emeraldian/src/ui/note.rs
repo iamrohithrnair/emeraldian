@@ -1221,12 +1221,12 @@ fn draw_editing(
 }
 
 /// Colours for the row a line is drawn on, behind whatever it says.
-struct RowStyle {
-    background: ratatui::style::Color,
-    selection: ratatui::style::Color,
+pub struct RowStyle {
+    pub background: ratatui::style::Color,
+    pub selection: ratatui::style::Color,
     /// Behind a search hit. Same colour as a selection, since both mean
     /// "this is the text you asked about".
-    search: ratatui::style::Color,
+    pub search: ratatui::style::Color,
 }
 
 /// The gutter cell for one row: a line number, or the wrap marker on a row that
@@ -1259,7 +1259,7 @@ fn gutter_line(row: &Row, on_cursor_line: bool, gutter: u16, palette: &Palette) 
 /// The row is padded to the full width so a code block's background and the
 /// cursor line's highlight reach the edge of the pane rather than stopping at
 /// the end of the text.
-fn row_line(
+pub fn row_line(
     row: &Row,
     chars: &[(char, Style)],
     colors: RowStyle,
@@ -1326,7 +1326,7 @@ fn row_line(
 
 /// Which lines sit inside a fenced code block, so their content is never read
 /// as Markdown while it is being edited.
-fn fenced_lines(lines: &[String]) -> Vec<bool> {
+pub fn fenced_lines(lines: &[String]) -> Vec<bool> {
     let mut inside = false;
     lines
         .iter()
@@ -1349,7 +1349,7 @@ fn fenced_lines(lines: &[String]) -> Vec<bool> {
 /// `•`, an `x` inside `[x]` becomes a `☑`. Nothing is hidden and nothing moves,
 /// so the caret is always where the character is, and `on_cursor_line` can show
 /// the line exactly as typed without the text shifting underneath.
-fn paint_line(
+pub fn paint_line(
     text: &str,
     on_cursor_line: bool,
     fenced: bool,
