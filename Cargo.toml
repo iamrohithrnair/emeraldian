@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/emeraldian-core", "crates/emeraldian-theme", "crates/emeraldian-agent", "crates/emeraldian"]
+members = ["crates/acp", "crates/emeraldian-core", "crates/emeraldian-theme", "crates/emeraldian-agent", "crates/emeraldian"]
 
 [workspace.package]
 version = "0.5.0"
@@ -22,6 +22,12 @@ categories = ["command-line-utilities", "text-editors"]
 emeraldian-core = { path = "crates/emeraldian-core", version = "0.5.0" }
 emeraldian-theme = { path = "crates/emeraldian-theme", version = "0.5.0" }
 emeraldian-agent = { path = "crates/emeraldian-agent", version = "0.5.0" }
+
+# Vendored from crow-term: the ACP v1 wire client (spawns `crow-cli acp`).
+agent-client-protocol = "2.0.0"
+tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread", "sync", "time", "process", "signal"] }
+yaml-rust2 = "0.12"
+crow-term-acp = { path = "crates/acp" }
 
 ratatui = "0.30"
 crossterm = "0.29"
