@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`editor.auto_save_interval_secs`: save a note that stays open on a timer.**
+  `auto_save` writes on the events that end an edit — leaving editing mode,
+  closing the tab, quitting — so a session that stays in one buffer is never
+  written until it leaves, and a machine that loses power in the meantime takes
+  everything typed since the last switch. The new key writes every modified tab
+  every N seconds while it is open. 0, the default, leaves the behaviour exactly
+  as it was; the timer also needs `auto_save` on, since it is the same write on
+  a different trigger.
+
 ## [0.5.0] — 2026-08-10
 
 A minor rather than a patch release: vim mode is a new way to use the editor,

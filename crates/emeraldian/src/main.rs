@@ -349,6 +349,7 @@ fn reset_cursor_style() {
 fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> io::Result<()> {
     let mut needs_redraw = true;
     let mut last_status = Instant::now();
+    let mut last_auto_save = Instant::now();
     // Only written when it changes: re-sending the escape on every frame makes
     // some terminals flicker the caret.
     let mut cursor_shape: Option<crossterm::cursor::SetCursorStyle> = None;
@@ -388,6 +389,20 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> io::Res
                 Event::Resize(_, _) => needs_redraw = true,
                 Event::Mouse(mouse) => needs_redraw |= handle_mouse(app, mouse),
                 _ => {}
+            }
+        }
+
+        // A note that stays open is written on a timer as well as on the events
+        // that already save it. Those events all mark the end of an edit, so a
+        // session that sits in one buffer never reaches them, and until it does
+        // nothing typed has been written at all.
+        if let Some(interval) = app.auto_save_interval()
+            && last_auto_save.elapsed() >= interval
+        {
+            last_auto_save = Instant::now();
+            if app.save_modified_tabs() {
+                needs_redraw = true;
+                last_status = Instant::now();
             }
         }
 

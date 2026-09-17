@@ -245,7 +245,9 @@ With vim mode off, every key in this README behaves exactly as it always has.
 
 One thing worth knowing: `editor.auto_save` is on by default, so a note mangled
 by a mistyped command is written to disk when you switch tabs or close it. `u`
-undoes as far back as you like while the tab is open.
+undoes as far back as you like while the tab is open. Those are the only moments
+it writes, though, so a note you stay inside all afternoon is not being saved as
+you go — `editor.auto_save_interval_secs` adds a timer for that.
 
 ## Mouse
 
@@ -469,6 +471,23 @@ toggled rather than when settings are saved:
 [editor]
 vim = false               # F4, /vim on, or :set vim
 ```
+
+Saving is under `[editor]` too:
+
+```toml
+[editor]
+auto_save = true              # write a modified note when you switch away from it
+auto_save_interval_secs = 0   # and every N seconds while it stays open; 0 is off
+```
+
+`auto_save` writes on the events that end an edit: leaving editing mode, closing
+the tab, quitting. A session that moves around a vault hits one of those every
+few minutes. A session that opens one note in the morning and types into it until
+evening hits none of them, and nothing is on disk until it does — which is fine
+until the machine loses power. The interval covers that case and is off by
+default, because writing on a schedule changes when files change underneath git
+and underneath Obsidian, and that is worth opting into rather than inheriting.
+Sixty seconds is a reasonable value if you want one.
 
 Pictures can be turned off, and capped, under `[images]`:
 

@@ -116,6 +116,20 @@ pub struct EditorConfig {
     pub vim: bool,
     /// Save automatically when switching away from a modified note.
     pub auto_save: bool,
+    /// Also save a modified note every this many seconds, while it stays open.
+    ///
+    /// `auto_save` writes on the events that end an edit — switching mode,
+    /// closing the tab, quitting — which covers a session that moves around a
+    /// vault and covers nothing at all for one that does not. A note left open
+    /// in the editor for an afternoon has never been written since the last
+    /// time something else was opened, and a machine that loses power takes
+    /// everything typed since with it.
+    ///
+    /// 0 turns the timer off, which is the default: saving on a schedule
+    /// changes when a vault's files change under git and under Obsidian, and
+    /// that is a choice rather than a fix. The timer needs `auto_save` on,
+    /// since it is the same writing behaviour on a different trigger.
+    pub auto_save_interval_secs: u64,
     /// Folder new notes are created in, vault-relative.
     pub new_note_folder: String,
     /// Folder daily notes live in.
@@ -132,6 +146,7 @@ impl Default for EditorConfig {
             wrap: true,
             vim: false,
             auto_save: true,
+            auto_save_interval_secs: 0,
             new_note_folder: String::new(),
             daily_folder: "Daily".into(),
             daily_format: "%Y-%m-%d".into(),

@@ -7,6 +7,7 @@
 //! capabilities the user has, not a parallel set.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use ratatui::layout::Rect;
 
@@ -732,6 +733,35 @@ impl App {
         }
     }
 
+    /// How often a modified note is written while it stays open, if at all.
+    ///
+    /// `None` when either half of the setting is off, so the caller has one
+    /// thing to ask rather than two to combine.
+    #[must_use]
+    pub fn auto_save_interval(&self) -> Option<Duration> {
+        if !self.config.editor.auto_save || self.config.editor.auto_save_interval_secs == 0 {
+            return None;
+        }
+        Some(Duration::from_secs(
+            self.config.editor.auto_save_interval_secs,
+        ))
+    }
+
+    /// Writes every modified tab. Returns whether anything was written.
+    ///
+    /// The return value is what tells the event loop whether to redraw: a tick
+    /// that saved nothing must not repaint the screen, or an idle app stops
+    /// being idle.
+    pub fn save_modified_tabs(&mut self) -> bool {
+        let modified: Vec<usize> = (0..self.tabs.len())
+            .filter(|&index| self.tabs[index].is_modified())
+            .collect();
+        for index in &modified {
+            self.save_tab(*index);
+        }
+        !modified.is_empty()
+    }
+
     // ---- graph -----------------------------------------------------------
 
     fn graph_options(&self) -> GraphOptions {
@@ -1203,6 +1233,46 @@ mod tests {
         app.save_tab(app.active_tab.unwrap());
         assert!(vault.read("B.md").contains("appended"));
         assert!(!app.active().unwrap().is_modified());
+    }
+
+    #[test]
+    fn the_auto_save_timer_is_off_unless_both_halves_are_set() {
+        let vault = sample();
+        let mut app = app(&vault);
+        assert_eq!(app.auto_save_interval(), None, "no interval by default");
+
+        app.config.editor.auto_save_interval_secs = 60;
+        assert_eq!(app.auto_save_interval(), Some(Duration::from_secs(60)));
+
+        app.config.editor.auto_save = false;
+        assert_eq!(
+            app.auto_save_interval(),
+            None,
+            "the timer is the same writing behaviour, so auto_save still governs it"
+        );
+    }
+
+    #[test]
+    fn the_auto_save_timer_writes_a_note_that_never_left_the_editor() {
+        // What the event-driven saves miss: one buffer, open, edited, and never
+        // switched away from.
+        let vault = sample();
+        let mut app = app(&vault);
+        let b = app.index.id_of_rel("B.md").unwrap();
+        app.open_note(b);
+        app.editor_mut()
+            .expect("editor")
+            .insert_str("typed but never switched away from\n");
+
+        assert!(!vault.read("B.md").contains("never switched"));
+        assert!(app.save_modified_tabs(), "a modified tab was written");
+
+        assert!(vault.read("B.md").contains("never switched"));
+        assert!(!app.active().unwrap().is_modified());
+        assert!(
+            !app.save_modified_tabs(),
+            "a tick with nothing to save must not report a write, or the app never idles"
+        );
     }
 
     #[test]
