@@ -27,7 +27,7 @@ use emeraldian_core::graph::{Edge, Node, NodeKind, Vec2};
 use emeraldian_theme::Palette;
 
 use crate::app::{App, Focus, GraphView, Regions};
-use crate::ui::truncate;
+use crate::ui::{text, truncate};
 
 /// Never draw more labels than this; past it the view is noise.
 const MAX_LABELS: usize = 60;
@@ -308,8 +308,10 @@ fn draw_labels(
             continue;
         };
 
-        let label = truncate(&node.label, 18);
-        let width = label.chars().count() as u16;
+        let label = text::label(&node.label, 18, app.config.ui.bidi_emit());
+        // Columns, not characters: the label is centred on the node, and a
+        // width that lied would put it off to one side.
+        let width = u16::try_from(text::width(&label)).unwrap_or(u16::MAX);
         // Centring the label on the node can push it past the pane's left edge,
         // where it would be drawn over the neighbouring pane; clamp instead.
         let rect = Rect {

@@ -137,9 +137,13 @@ doesn't. `?` shows the full list in the app.
 | `hjkl`, `g`, `G` | Move within a pane |
 | `Enter` | Open / follow a link |
 | `F3` / `F4` | Close the tab / vim mode on / off |
+| `F5` | Text direction: auto, left-to-right, right-to-left |
 
 In the editor: `↑`/`↓`, `Home` and `End` follow the rows on screen, so a wrapped
 paragraph moves through a line at a time as it looks rather than as it is stored.
+`←`/`→` do too, which is what you want in a right-to-left script: `←` moves the
+caret left however the text runs. (Vim's `h` and `l` stay logical, since they
+compose with operators.)
 `Enter` carries a list marker onto the next line and ends the list when you press
 it on an empty item; `Tab`/`Shift+Tab` nest and unnest a list item, and are still
 a tab in prose. `Ctrl+B`/`Ctrl+I` wrap the selection, `Ctrl+Space` starts one
@@ -278,6 +282,17 @@ it's on. The line you're editing shows its syntax at full contrast. Because both
 modes lay prose out in the same column at the same width, `Ctrl+E` restyles the
 page instead of reflowing it. Set `editor.wrap = false` to pan sideways instead.
 
+**Right-to-left scripts.** Arabic, Hebrew and the rest read the way they were
+written, in notes, in the file tree and in the search box. As in Obsidian, every
+block picks its own direction from its first strong character, so an Arabic
+paragraph reads right-to-left in the middle of an English note and its
+neighbours don't. It is the real bidirectional algorithm rather than a reversed
+string, so `سنة 2024 كانت` keeps its year the right way round and an English
+word quoted inside an Arabic sentence keeps its order; bullets and headings sit
+on the side their text starts from, brackets are mirrored, and code blocks are
+left alone. `←` moves the caret left whichever way the text runs. Set
+`ui.text_direction` to pin it, or `direction: rtl` in one note's frontmatter.
+
 **Pictures.** `![[chart.png]]` and `![alt](assets/chart.png)` are drawn in the
 reading pane — real pixels in Kitty, Ghostty, WezTerm, iTerm2 and anything that
 speaks sixel, and half-block mosaics everywhere else. Obsidian's `|400` width
@@ -375,6 +390,7 @@ model rather than asking the current one to.
 | `/writes`, `/context`, `/reasoning` | Toggle what the agent may do and see |
 | `/tools`, `/vault`, `/obsidian` | What's available: tools, index, Obsidian CLI |
 | `/sort` | Change how the explorer orders notes (`/sort list` shows them) |
+| `/direction` | Text direction for notes: `auto`, `ltr` or `rtl` |
 | `/config` | Write the current settings to the config file |
 | `/keys`, `/quit` | Shortcut reference, and leave |
 
@@ -469,6 +485,27 @@ toggled rather than when settings are saved:
 [editor]
 vim = false               # F4, /vim on, or :set vim
 ```
+
+Right-to-left scripts are handled under `[ui]`:
+
+```toml
+[ui]
+text_direction = "auto"   # auto, ltr or rtl. F5 cycles it, /direction sets it
+bidi_emit = "runs"        # runs, reorder or presentation
+```
+
+`auto` is Obsidian's behaviour and the one to stay on: every block takes its
+direction from its own first strong character, so an Arabic paragraph reads
+right-to-left in the middle of an English note. A single note can override it
+with `direction: rtl` in its frontmatter.
+
+`bidi_emit` is about the terminal rather than the text, and is worth changing
+only if the letters come out wrong. Most terminals shape Arabic themselves,
+joining the letters of a word and laying that word out right-to-left, but stop
+at the space and never move whole words past each other; `runs` is written for
+those, and hands over each word spelled forwards with the words already in
+order. Use `reorder` for a terminal that neither joins nor reorders, and
+`presentation` for one that reorders but does not join.
 
 Pictures can be turned off, and capped, under `[images]`:
 

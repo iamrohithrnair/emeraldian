@@ -263,6 +263,7 @@ pub enum Action {
     ToggleHints,
     /// Steps the explorer through the sort orders and remembers the choice.
     CycleSortOrder,
+    CycleTextDirection,
     /// Switches between emeraldian mode and vim mode, and writes the config.
     ToggleVimMode,
     CycleSidePanel,

@@ -4,6 +4,71 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Right-to-left text, decided per block like Obsidian.** Arabic, Hebrew and
+  any other right-to-left script now read the way they were written, in the
+  reading pane, the editor, the sidebars and the input fields.
+
+  Direction is resolved by the Unicode Bidirectional Algorithm, UAX #9, which
+  matters more than it sounds: the year in `سنة 2024 كانت` stays `2024` and an
+  English word quoted inside an Arabic sentence keeps its own order. Reversing
+  the string would get both wrong, and reversing the string is what a terminal
+  application is tempted to do.
+
+  Each block picks its own direction from its first strong character, so an
+  Arabic paragraph reads right-to-left in the middle of an English note and its
+  neighbours do not. A list item is bulleted on the side its text starts from,
+  a heading is flush to that side, and paired brackets are mirrored. **Code
+  blocks are never reordered**, whatever the note around them says, because
+  reordering source would corrupt it.
+
+- **`ui.text_direction`**, one of `auto`, `ltr` or `rtl`, defaulting to `auto`.
+  A note can override it for itself with `direction:` (or `dir:`) in its
+  frontmatter, `/direction` sets it for the session, and `F5` cycles it — the
+  same reasoning that put the vim toggle on `F4`, since writing in a
+  right-to-left script means reaching for this from inside the editor, where
+  every other key is spoken for.
+
+- **`ui.bidi_emit`**, one of `runs`, `reorder` or `presentation`, defaulting to
+  `runs`.
+
+  Terminals disagree about how much of this is their job and there is no way to
+  ask, so it is a setting rather than a guess. Most of them — kitty, WezTerm,
+  Konsole — shape Arabic with HarfBuzz, which joins the letters of a word *and*
+  lays that word out right-to-left, but stops at the space and never moves whole
+  words past each other. `runs` therefore hands the terminal each word spelled
+  forwards with the words already in visual order: it fixes the spelling, we fix
+  the order. `reorder` is for a terminal that does neither, `presentation` for
+  one that reorders but does not join.
+
+  Emitting explicit bidi control characters is not among the options and cannot
+  be: ratatui drops every zero-width grapheme before it reaches the terminal,
+  and every bidi control is zero-width.
+
+### Fixed
+
+- **Arrow keys move by what is on screen.** `Left` moved the caret *right* in
+  right-to-left text, because it stepped backwards through the buffer rather
+  than leftwards across the pane. Vim's `h` and `l` stay logical on purpose:
+  they compose with operators, and a visual `l` would make `dl` delete a
+  character other than the one the block cursor is on.
+
+- **Text is measured in columns rather than characters** in the twenty-odd
+  places that counted `char`s and called the result a width. A CJK ideograph is
+  two columns and a combining mark is none, so this was already wrong for
+  Japanese and emoji before any of the above. The visible symptom was a
+  misaligned status bar and sidebar, and a subtler one: a tab's click target was
+  sized from a character count, so a single wide glyph in a title shifted the
+  hit-testing for every tab after it.
+
+- **Carets in single-line inputs** — the command palette, the rename prompt,
+  the vim `:` and `/` lines and the agent chat box — are placed by display
+  column instead of `x + cursor`, which assumed one character is one column and
+  one column is one character. Neither holds outside ASCII.
+
 ## [0.5.0] — 2026-08-10
 
 A minor rather than a patch release: vim mode is a new way to use the editor,

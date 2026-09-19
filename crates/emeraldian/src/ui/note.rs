@@ -8,12 +8,13 @@
 use std::path::{Path, PathBuf};
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
+use ratatui::layout::{Constraint, Direction as LayoutDirection, Layout, Rect, Size};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 use ratatui_image::sliced::{SignedPosition, SlicedImage};
 
+use emeraldian_core::bidi::{self, Direction, DirectionMode, Emit, Resolved, Shaped};
 use emeraldian_core::excalidraw;
 use emeraldian_core::index::VaultIndex;
 use emeraldian_core::markdown::{self, Align, Block, BlockKind, Marker, SpanKind, Table};
@@ -23,6 +24,7 @@ use crate::app::{App, Mode, Regions};
 use crate::editor::{Cursor, Row};
 use crate::images::{self, Images};
 use crate::ui::{drawing, icons, scrollbar, truncate};
+use unicode_width::UnicodeWidthChar;
 
 /// Left padding inside the note pane, matching Obsidian's generous margins.
 const PADDING: u16 = 2;
@@ -60,6 +62,11 @@ pub struct Ctx<'a> {
     pub images: Option<&'a mut Images>,
     /// Where each picture ended up, filled in as blocks are laid out.
     pub pictures: Vec<Picture>,
+    /// The note's declared direction: `Auto` lets every block decide for
+    /// itself from its own first strong character, which is what Obsidian does.
+    pub direction: DirectionMode,
+    /// How reordered right-to-left text is handed to the terminal.
+    pub emit: Emit,
     /// Which rendered row each block's source line ended up on, filled in as
     /// blocks are laid out.
     ///
@@ -79,9 +86,25 @@ impl<'a> Ctx<'a> {
             index,
             note_dir: None,
             images: None,
+            direction: DirectionMode::default(),
+            emit: Emit::default(),
             pictures: Vec::new(),
             anchors: Vec::new(),
         }
+    }
+
+    /// The direction a run of text should be laid out in.
+    ///
+    /// Under `Auto` this is per *block*, not per note: an Arabic paragraph in
+    /// an English note reads right-to-left and its neighbours do not, which is
+    /// the behaviour Obsidian has and the reason `Auto` is the default.
+    #[must_use]
+    fn base(&self, text: &str) -> Direction {
+        let fallback = match self.direction {
+            DirectionMode::Rtl => Direction::Rtl,
+            _ => Direction::Ltr,
+        };
+        bidi::resolve(text, self.direction, fallback)
     }
 }
 
@@ -103,7 +126,7 @@ pub fn draw(
     regions: &mut Regions,
 ) {
     let rows = Layout::default()
-        .direction(Direction::Vertical)
+        .direction(LayoutDirection::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(1)])
         .split(area);
 
@@ -177,15 +200,19 @@ fn draw_tab_bar(
         return;
     }
 
+    let emit = app.config.ui.bidi_emit();
     let mut spans = Vec::new();
     let mut x = area.x;
     for (index, tab) in app.tabs.iter().enumerate() {
         let active = app.active_tab == Some(index);
         let title = app.note_title(tab.note);
-        let title = truncate(&title, 22);
+        let title = crate::ui::text::label(&title, 22, emit);
 
-        // `" {title}"` plus the two-column modified marker.
-        let width = title.chars().count() as u16 + 3;
+        // `" {title}"` plus the two-column modified marker. Measured in columns
+        // rather than characters, because this rect is what a mouse click on
+        // the tab is tested against and a wide glyph would shift every tab
+        // after it.
+        let width = u16::try_from(crate::ui::text::width(&title)).unwrap_or(u16::MAX) + 3;
         regions.tabs.push((
             Rect {
                 x,
@@ -312,11 +339,23 @@ fn draw_reading(
     // Pictures are capped at a share of the pane, so the layout pass has to
     // know how tall it is before it measures the first one.
     app.images.set_pane_height(area.height);
+    // A note's own `direction:` overrides the configured default, so a vault
+    // that is mostly English can hold a note that always opens the right way
+    // round whatever its first paragraph happens to begin with.
+    let direction = emeraldian_core::note::parse_frontmatter(
+        emeraldian_core::note::split_frontmatter(&content)
+            .0
+            .unwrap_or(""),
+    )
+    .direction()
+    .unwrap_or_else(|| app.config.ui.text_direction());
     let mut ctx = Ctx {
         palette,
         index: &app.index,
         note_dir,
         images: Some(&mut app.images),
+        direction,
+        emit: app.config.ui.bidi_emit(),
         pictures: Vec::new(),
         anchors: Vec::new(),
     };
@@ -486,22 +525,21 @@ fn render_block(
                 .fg(palette.heading(*level))
                 .add_modifier(Modifier::BOLD);
             let text: String = spans.iter().map(|s| s.text.as_str()).collect();
-            out.push(Line::from(Span::styled(format!("{pad}{text}"), style)));
+            let base = ctx.base(&text);
+            out.push(shaped_row(&text, style, base, ctx.emit, width, &pad));
             // Obsidian underlines H1 and H2; a rule is the terminal equivalent
             // of the larger type it uses to separate sections.
             if *level <= 2 {
-                out.push(Line::from(Span::styled(
-                    format!(
-                        "{pad}{}",
-                        "─".repeat(inner_width.min(text.chars().count() + 8))
-                    ),
-                    Style::default().fg(palette.border),
-                )));
+                let rule = "─".repeat(inner_width.min(bidi::display_width(&text) + 8));
+                let style = Style::default().fg(palette.border);
+                // The rule grows from whichever edge the heading starts at.
+                out.push(shaped_row(&rule, style, base, ctx.emit, width, &pad));
             }
         }
 
         BlockKind::Paragraph(spans) => {
-            render_spans(spans, ctx, inner_width, indent, &pad, &pad, out);
+            let base = ctx.base(&markdown::spans_to_text(spans));
+            render_spans(spans, ctx, inner_width, indent, &pad, &pad, base, out);
         }
 
         BlockKind::ListItem {
@@ -526,9 +564,10 @@ fn render_block(
                 ),
             };
 
-            let prefix_width = glyph.chars().count() + 1;
+            let prefix_width = bidi::display_width(&glyph) + 1;
             let continuation = format!("{list_indent}{}", " ".repeat(prefix_width));
             let text_indent = indent + depth * 2 + prefix_width;
+            let base = ctx.base(&markdown::spans_to_text(spans));
 
             let mark = ctx.pictures.len();
             let mut wrapped = Vec::new();
@@ -539,6 +578,7 @@ fn render_block(
                 text_indent,
                 "",
                 "",
+                base,
                 &mut wrapped,
             );
             // Completed tasks are struck through, as in Obsidian.
@@ -559,13 +599,25 @@ fn render_block(
             }
             for (i, line) in wrapped.into_iter().enumerate() {
                 let mut spans = Vec::new();
-                if i == 0 {
+                // The marker sits on the side the text starts from, so a
+                // right-to-left item is bulleted on its right.
+                if base.is_rtl() {
+                    spans.extend(line.spans);
+                    if i == 0 {
+                        spans.push(Span::styled(format!(" {glyph}"), glyph_style));
+                    } else {
+                        spans.push(Span::raw(" ".repeat(prefix_width)));
+                    }
                     spans.push(Span::raw(list_indent.clone()));
-                    spans.push(Span::styled(format!("{glyph} "), glyph_style));
                 } else {
-                    spans.push(Span::raw(continuation.clone()));
+                    if i == 0 {
+                        spans.push(Span::raw(list_indent.clone()));
+                        spans.push(Span::styled(format!("{glyph} "), glyph_style));
+                    } else {
+                        spans.push(Span::raw(continuation.clone()));
+                    }
+                    spans.extend(line.spans);
                 }
-                spans.extend(line.spans);
                 out.push(Line::from(spans));
             }
         }
@@ -640,7 +692,7 @@ fn render_block(
                 let mut spans = vec![Span::styled(format!("{pad} "), background)];
                 spans.extend(highlight(line, lang, palette, background));
                 // Pad to the pane width so the block reads as a filled panel.
-                let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+                let used: usize = spans.iter().map(Span::width).sum();
                 if used < width {
                     spans.push(Span::styled(" ".repeat(width - used), background));
                 }
@@ -671,6 +723,7 @@ fn render_spans(
     indent: usize,
     first_pad: &str,
     rest_pad: &str,
+    base: Direction,
     out: &mut Vec<Line<'static>>,
 ) {
     let mut run: Vec<markdown::Span> = Vec::new();
@@ -683,7 +736,9 @@ fn render_spans(
         if !run.is_empty() {
             let pad = if out.is_empty() { first_pad } else { rest_pad };
             let styled = style_spans(&run, ctx.palette, ctx.index);
-            out.extend(wrap_spans(&styled, width, pad, rest_pad));
+            out.extend(wrap_spans_dir(
+                &styled, width, pad, rest_pad, base, ctx.emit,
+            ));
             run.clear();
         }
 
@@ -702,7 +757,9 @@ fn render_spans(
     if !run.is_empty() || out.is_empty() {
         let pad = if out.is_empty() { first_pad } else { rest_pad };
         let styled = style_spans(&run, ctx.palette, ctx.index);
-        out.extend(wrap_spans(&styled, width, pad, rest_pad));
+        out.extend(wrap_spans_dir(
+            &styled, width, pad, rest_pad, base, ctx.emit,
+        ));
     }
 }
 
@@ -792,50 +849,202 @@ fn style_spans(
         .collect()
 }
 
-/// Wraps styled spans to `width`, breaking on spaces and keeping styles intact.
+/// Wraps styled spans to `width` and lays each row out in `base`'s direction.
+///
+/// Wrapping happens in *logical* order and reordering afterwards, per row. That
+/// is the order UAX #9 requires — rules L1 and L2 apply to a line, so there has
+/// to be a line first — and it is also why nothing upstream of here has to know
+/// that bidirectional text exists.
 #[must_use]
-pub fn wrap_spans(
+pub fn wrap_spans_dir(
     spans: &[(String, Style)],
     width: usize,
     first_indent: &str,
     indent: &str,
+    base: Direction,
+    emit: Emit,
 ) -> Vec<Line<'static>> {
     if width == 0 {
         return Vec::new();
     }
 
-    let mut lines: Vec<Line> = Vec::new();
-    let mut current: Vec<Span> = vec![Span::raw(first_indent.to_string())];
-    let mut used = first_indent.chars().count();
+    // One entry per character, so a reorder is a permutation and each style
+    // travels with the character it belongs to.
+    let chars: Vec<(char, Style)> = spans
+        .iter()
+        .flat_map(|(text, style)| text.chars().map(move |ch| (ch, *style)))
+        .collect();
+    let text: String = chars.iter().map(|(ch, _)| *ch).collect();
 
-    for (text, style) in spans {
-        // Splitting inclusively keeps the space attached to the preceding word,
-        // so styles don't fragment on every gap.
-        for word in text.split_inclusive(' ') {
-            let word_width = word.chars().count();
+    // Resolved once for the whole paragraph: the rules that decide which
+    // direction each character *is* need the surrounding context, so a neutral
+    // run that straddles a wrap point must not be judged on its own.
+    let resolved = Resolved::new(&text, base);
 
-            if used + word_width > width && used > indent.chars().count() {
-                lines.push(Line::from(std::mem::take(&mut current)));
-                current.push(Span::raw(indent.to_string()));
-                used = indent.chars().count();
-                // A wrapped line shouldn't start with the space that ended the
-                // previous one.
-                let trimmed = word.trim_start();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                current.push(Span::styled(trimmed.to_string(), *style));
-                used += trimmed.chars().count();
-                continue;
-            }
+    let first_width = bidi::display_width(first_indent);
+    let rest_width = bidi::display_width(indent);
 
-            current.push(Span::styled(word.to_string(), *style));
-            used += word_width;
+    wrap_ranges(&chars, width, first_width, rest_width)
+        .into_iter()
+        .enumerate()
+        .map(|(row, range)| {
+            let pad = if row == 0 { first_indent } else { indent };
+            emit_row(&chars, &resolved, range, pad, width, base, emit)
+        })
+        .collect()
+}
+
+/// One row that is never wrapped, reordered and aligned to `base`.
+///
+/// For text laid out as a single line whatever its length: a heading, the rule
+/// under it, a table cell.
+#[must_use]
+fn shaped_row(
+    text: &str,
+    style: Style,
+    base: Direction,
+    emit: Emit,
+    width: usize,
+    pad: &str,
+) -> Line<'static> {
+    let count = text.chars().count();
+    let shaped = Resolved::new(text, base).row(0..count, emit);
+    let indent = bidi::display_width(pad);
+    let fill = width.saturating_sub(indent + shaped.columns());
+
+    if base.is_rtl() {
+        Line::from(vec![
+            Span::raw(" ".repeat(fill)),
+            Span::styled(shaped.text(), style),
+            Span::raw(pad.to_string()),
+        ])
+    } else {
+        Line::from(vec![
+            Span::raw(pad.to_string()),
+            Span::styled(shaped.text(), style),
+        ])
+    }
+}
+
+/// Breaks a line into rows at word boundaries, in logical order.
+///
+/// Returns character ranges rather than strings so the reordering pass can ask
+/// the resolved paragraph about each row without re-deriving where it came
+/// from.
+fn wrap_ranges(
+    chars: &[(char, Style)],
+    width: usize,
+    first: usize,
+    rest: usize,
+) -> Vec<std::ops::Range<usize>> {
+    let column = |slice: &[(char, Style)]| -> usize {
+        slice
+            .iter()
+            .map(|(ch, _)| UnicodeWidthChar::width(*ch).unwrap_or(0))
+            .sum()
+    };
+
+    let mut rows = Vec::new();
+    let mut start = 0;
+    let mut used = first;
+    let mut at = 0;
+
+    while at < chars.len() {
+        // The next word, carrying the space that ends it so styles don't
+        // fragment on every gap.
+        let mut end = at;
+        while end < chars.len() && chars[end].0 != ' ' {
+            end += 1;
         }
+        if end < chars.len() {
+            end += 1;
+        }
+        let word = column(&chars[at..end]);
+
+        if used + word > width && at > start {
+            rows.push(start..at);
+            // A wrapped row shouldn't open with the space that closed the one
+            // before it.
+            let mut next = at;
+            while next < chars.len() && chars[next].0 == ' ' {
+                next += 1;
+            }
+            start = next;
+            at = next;
+            used = rest;
+            continue;
+        }
+
+        // A single word longer than the line has to be broken somewhere.
+        if used + word > width && at == start {
+            let mut column_at = used;
+            let mut index = at;
+            while index < end {
+                let ch = UnicodeWidthChar::width(chars[index].0).unwrap_or(0);
+                if column_at + ch > width && index > start {
+                    rows.push(start..index);
+                    start = index;
+                    column_at = rest;
+                }
+                column_at += ch;
+                index += 1;
+            }
+            used = column_at;
+            at = end;
+            continue;
+        }
+
+        used += word;
+        at = end;
     }
 
-    lines.push(Line::from(current));
-    lines
+    rows.push(start..chars.len());
+    rows
+}
+
+/// Draws one wrapped row, reordered and aligned to the base direction.
+fn emit_row(
+    chars: &[(char, Style)],
+    resolved: &Resolved,
+    range: std::ops::Range<usize>,
+    pad: &str,
+    width: usize,
+    base: Direction,
+    emit: Emit,
+) -> Line<'static> {
+    let shaped = resolved.row(range.clone(), emit);
+    let indent = bidi::display_width(pad);
+    // Right-to-left text is flush right, which in a fixed grid means the blank
+    // columns go on the left.
+    let fill = width.saturating_sub(indent + shaped.columns());
+
+    let mut spans: Vec<Span> = Vec::new();
+    if base.is_rtl() {
+        if fill > 0 {
+            spans.push(Span::raw(" ".repeat(fill)));
+        }
+    } else {
+        spans.push(Span::raw(pad.to_string()));
+    }
+
+    let mut run = String::new();
+    let mut current: Option<Style> = None;
+    for cell in shaped.cells() {
+        let style = chars[range.start + cell.draw].1;
+        if current.is_some_and(|open| open != style) {
+            spans.push(Span::styled(std::mem::take(&mut run), current.unwrap()));
+        }
+        current = Some(style);
+        run.push(cell.ch);
+    }
+    if let Some(style) = current {
+        spans.push(Span::styled(run, style));
+    }
+
+    if base.is_rtl() {
+        spans.push(Span::raw(pad.to_string()));
+    }
+    Line::from(spans)
 }
 
 fn render_table(table: &Table, palette: &Palette, pad: &str, out: &mut Vec<Line<'static>>) {
@@ -863,9 +1072,9 @@ fn render_table(table: &Table, palette: &Palette, pad: &str, out: &mut Vec<Line<
     };
 
     for (i, width) in widths.iter_mut().enumerate() {
-        *width = (*width).max(cell_text(&table.header, i).chars().count());
+        *width = (*width).max(bidi::display_width(&cell_text(&table.header, i)));
         for row in &table.rows {
-            *width = (*width).max(cell_text(row, i).chars().count());
+            *width = (*width).max(bidi::display_width(&cell_text(row, i)));
         }
         *width = (*width).clamp(1, MAX_COLUMN);
     }
@@ -884,7 +1093,7 @@ fn render_table(table: &Table, palette: &Palette, pad: &str, out: &mut Vec<Line<
         let mut spans = vec![Span::raw(pad.to_string()), Span::styled("│", border)];
         for (i, w) in widths.iter().enumerate() {
             let text = truncate(&cell_text(cells, i), *w);
-            let padding = w.saturating_sub(text.chars().count());
+            let padding = w.saturating_sub(bidi::display_width(&text));
             let (before, after) = match table.aligns.get(i).copied().unwrap_or(Align::Left) {
                 Align::Left => (0, padding),
                 Align::Right => (padding, 0),
@@ -1135,9 +1344,12 @@ fn draw_editing(
     };
     let height = text.height as usize;
 
+    let direction = app.config.ui.text_direction();
+    let emit = app.config.ui.bidi_emit();
     let Some(editor) = app.editor_mut() else {
         return;
     };
+    editor.set_direction(direction, emit);
     if on_character {
         editor.clamp_normal();
     }
@@ -1157,7 +1369,7 @@ fn draw_editing(
     let mut numbers: Vec<Line> = Vec::new();
     let mut body: Vec<Line> = Vec::new();
 
-    for row in layout.rows().iter().skip(scroll).take(height) {
+    for (index, row) in layout.rows().iter().enumerate().skip(scroll).take(height) {
         let on_cursor_line = row.line == cursor_line;
         numbers.push(gutter_line(row, on_cursor_line, gutter, palette));
 
@@ -1176,6 +1388,7 @@ fn draw_editing(
         };
         body.push(row_line(
             row,
+            layout.shaped(index),
             &chars[row.start.min(chars.len())..row.end.min(chars.len())],
             RowStyle {
                 background: if fenced[row.line] {
@@ -1261,6 +1474,7 @@ fn gutter_line(row: &Row, on_cursor_line: bool, gutter: u16, palette: &Palette) 
 /// the end of the text.
 fn row_line(
     row: &Row,
+    shaped: Option<&Shaped>,
     chars: &[(char, Style)],
     colors: RowStyle,
     selection: Option<(Cursor, Cursor)>,
@@ -1290,23 +1504,55 @@ fn row_line(
         }
     };
 
+    // On a right-to-left row the blanks go on the left, so the text ends up
+    // flush right; `lead` is how many, and the hanging indent went with it.
+    let lead = usize::from(row.lead) + if row.rtl { 0 } else { usize::from(row.indent) };
     let mut spans = vec![Span::styled(
-        " ".repeat(usize::from(row.indent)),
+        " ".repeat(lead),
         Style::default().bg(colors.background),
     )];
     let mut run = String::new();
     let mut current: Option<Style> = None;
 
-    for (offset, (ch, style)) in chars.iter().enumerate() {
-        let style = resolve(*style, row.start + offset);
+    // Visual order when the row was reordered, logical order when it was not.
+    // Either way each character keeps the style it was painted with, because
+    // the cell names the character it came from rather than carrying a copy.
+    let drawn: Vec<(char, usize)> = match shaped {
+        Some(shaped) => shaped
+            .cells()
+            .iter()
+            .map(|cell| (cell.ch, cell.draw))
+            .collect(),
+        None => chars
+            .iter()
+            .enumerate()
+            .map(|(i, (ch, _))| (*ch, i))
+            .collect(),
+    };
+
+    for (ch, offset) in drawn {
+        let Some((_, painted)) = chars.get(offset) else {
+            continue;
+        };
+        // Selection and search hits are logical ranges, so they are looked up
+        // by the character's own position, not by where it ended up on screen.
+        // A selection across a direction boundary therefore shows as two runs,
+        // which is correct and is what a browser does.
+        let style = resolve(*painted, row.start + offset);
         if current.is_some_and(|open| open != style) {
             spans.push(Span::styled(std::mem::take(&mut run), current.unwrap()));
         }
         current = Some(style);
-        run.push(*ch);
+        run.push(ch);
     }
     if let Some(style) = current {
         spans.push(Span::styled(run, style));
+    }
+    if row.rtl {
+        spans.push(Span::styled(
+            " ".repeat(usize::from(row.indent)),
+            Style::default().bg(colors.background),
+        ));
     }
 
     // Trailing fill, including the selected newline at the end of a line the
@@ -1583,7 +1829,7 @@ mod tests {
             ("hello ".to_string(), bold),
             ("world again".to_string(), bold),
         ];
-        let lines = wrap_spans(&spans, 11, "", "");
+        let lines = wrap_spans_dir(&spans, 11, "", "", Direction::Ltr, Emit::default());
 
         assert!(lines.len() > 1, "should wrap");
         for line in &lines {
@@ -1598,13 +1844,96 @@ mod tests {
     #[test]
     fn wrap_spans_applies_a_hanging_indent() {
         let spans = vec![("one two three four".to_string(), Style::default())];
-        let lines = wrap_spans(&spans, 10, "", "    ");
+        let lines = wrap_spans_dir(&spans, 10, "", "    ", Direction::Ltr, Emit::default());
         let rendered = text_of(&lines);
 
         assert!(rendered.len() > 1);
         assert!(
             rendered[1].starts_with("    "),
             "continuation lines are indented: {rendered:?}"
+        );
+    }
+
+    /// Renders a note's markdown at `width`, the way the reading pane does.
+    fn read(markdown_text: &str, width: usize) -> Vec<String> {
+        let vault = TempVault::new("rtl-render");
+        let index = vault.index();
+        let palette = palette();
+        let document = markdown::parse(markdown_text);
+        let mut ctx = Ctx::text(&palette, &index);
+        text_of(&render_document(&document, &mut ctx, width))
+    }
+
+    #[test]
+    fn an_rtl_paragraph_is_reordered_and_flushed_right() {
+        let rows = read("مرحبا بالعالم\n", 20);
+        let body = &rows[0];
+        // The words arrive swapped, each still spelled forwards: the terminal
+        // reverses the letters of each one and never moves words past each
+        // other, so between us the reading order comes out right.
+        assert_eq!(
+            body.trim_start(),
+            "بالعالم مرحبا",
+            "words in visual order, letters left alone: {body:?}"
+        );
+        assert!(
+            body.starts_with(' '),
+            "a right-to-left paragraph is flush right: {body:?}"
+        );
+        assert_eq!(body.chars().count(), 20, "and padded to the full width");
+    }
+
+    #[test]
+    fn an_ltr_paragraph_is_untouched_by_the_bidi_pass() {
+        let rows = read("hello world\n", 20);
+        assert_eq!(rows[0], "hello world");
+    }
+
+    #[test]
+    fn a_number_inside_an_rtl_paragraph_keeps_its_own_order() {
+        // The proof that the algorithm is running rather than a reversal.
+        let rows = read("سنة 2024 كانت\n", 30);
+        assert!(
+            rows[0].contains("2024"),
+            "the year must not come out backwards: {:?}",
+            rows[0]
+        );
+    }
+
+    #[test]
+    fn an_rtl_list_item_is_bulleted_on_its_right() {
+        let rows = read("- مهمة\n", 20);
+        let body = &rows[0];
+        assert!(
+            body.trim_end().ends_with(icons::BULLET),
+            "the bullet belongs on the right: {body:?}"
+        );
+    }
+
+    #[test]
+    fn an_ltr_list_item_is_still_bulleted_on_its_left() {
+        let rows = read("- task\n", 20);
+        assert!(rows[0].starts_with(&format!("{} ", icons::BULLET)));
+    }
+
+    #[test]
+    fn a_code_block_is_never_reordered() {
+        // Reordering source would corrupt it, so code is always left to right
+        // however the note around it reads.
+        let rows = read("مرحبا\n\n```rust\nlet مرحبا = 1;\n```\n", 40);
+        assert!(
+            rows.iter().any(|r| r.contains("let ")),
+            "code must stay in logical order: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn an_rtl_heading_is_flushed_right() {
+        let rows = read("# عنوان\n", 20);
+        assert!(
+            rows[0].starts_with(' ') && rows[0].trim_end().ends_with("عنوان"),
+            "heading should sit on the right: {:?}",
+            rows[0]
         );
     }
 
@@ -1637,6 +1966,8 @@ mod tests {
             index,
             note_dir: None,
             images: Some(images),
+            direction: DirectionMode::default(),
+            emit: Emit::default(),
             pictures: Vec::new(),
             anchors: Vec::new(),
         }

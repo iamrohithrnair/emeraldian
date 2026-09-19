@@ -8,6 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use emeraldian_agent::{Effort, ProviderKind};
+use emeraldian_core::bidi::{DirectionMode, Emit};
 use emeraldian_core::sort::SortOrder;
 use serde::{Deserialize, Serialize};
 
@@ -70,6 +71,28 @@ pub struct UiConfig {
     /// setting over a typo in this one would be a poor trade. Read it through
     /// [`UiConfig::sort_order`], which falls back to the default.
     pub sort_order: String,
+    /// Base text direction for notes: `auto`, `ltr` or `rtl`.
+    ///
+    /// `auto` is Obsidian's behaviour: every block decides for itself from its
+    /// own first strong character, so an Arabic paragraph reads right-to-left
+    /// in the middle of an English note. Read through
+    /// [`UiConfig::text_direction`], for the reason given on `sort_order`.
+    pub text_direction: String,
+    /// How right-to-left text is handed to the terminal: `runs`, `reorder` or
+    /// `presentation`.
+    ///
+    /// Terminals disagree about how much of this is their job, and there is no
+    /// way to ask, so it is a setting rather than a guess.
+    ///
+    /// * `runs` — the default. Puts the words in the right order but leaves
+    ///   each one spelled forwards, because most terminals shape Arabic with
+    ///   HarfBuzz, which both joins a run and lays it out right-to-left.
+    ///   Reversing it here first would make them do it twice.
+    /// * `reorder` — fully visual order, for a terminal that neither joins nor
+    ///   reorders.
+    /// * `presentation` — fully visual order with the joining forms baked in,
+    ///   for a terminal that reorders but does not join.
+    pub bidi_emit: String,
 }
 
 impl UiConfig {
@@ -77,6 +100,18 @@ impl UiConfig {
     #[must_use]
     pub fn sort_order(&self) -> SortOrder {
         self.sort_order.parse().unwrap_or_default()
+    }
+
+    /// The configured base text direction, or the default if unrecognised.
+    #[must_use]
+    pub fn text_direction(&self) -> DirectionMode {
+        self.text_direction.parse().unwrap_or_default()
+    }
+
+    /// The configured emit strategy, or the default if unrecognised.
+    #[must_use]
+    pub fn bidi_emit(&self) -> Emit {
+        self.bidi_emit.parse().unwrap_or_default()
     }
 }
 
@@ -95,6 +130,8 @@ impl Default for UiConfig {
             line_numbers: true,
             reading_mode: true,
             sort_order: SortOrder::default().key().to_string(),
+            text_direction: DirectionMode::default().key().to_string(),
+            bidi_emit: Emit::default().key().to_string(),
         }
     }
 }

@@ -10,7 +10,7 @@ use emeraldian_theme::Palette;
 
 use crate::agent::{Entry, ToolStatus};
 use crate::app::{App, Focus};
-use crate::ui::{pane_block, scrollbar, wrap};
+use crate::ui::{pane_block, scrollbar, text, wrap};
 
 /// Rows reserved for the input box.
 const INPUT_HEIGHT: u16 = 3;
@@ -124,7 +124,10 @@ fn draw_completions(frame: &mut Frame, app: &App, palette: &Palette, area: Rect)
 
     if matches.len() > visible {
         let more = format!(" {}/{} ", selected + 1, matches.len());
-        let x = popup.x + popup.width.saturating_sub(more.chars().count() as u16 + 1);
+        let x = popup.x
+            + popup
+                .width
+                .saturating_sub(u16::try_from(text::width(&more)).unwrap_or(0) + 1);
         frame.buffer_mut().set_string(
             x,
             popup.y,
@@ -289,7 +292,7 @@ fn draw_input(frame: &mut Frame, app: &App, palette: &Palette, area: Rect, focus
         Span::styled("Ctrl+L to focus", Style::default().fg(palette.text_faint))
     } else {
         Span::styled(
-            app.chat.input.clone(),
+            text::shape(&app.chat.input, app.config.ui.bidi_emit()),
             Style::default().fg(palette.text_normal),
         )
     };
@@ -304,7 +307,8 @@ fn draw_input(frame: &mut Frame, app: &App, palette: &Palette, area: Rect, focus
     .render(inner, frame.buffer_mut());
 
     if focused && !app.chat.busy {
-        let x = inner.x + 2 + app.chat.cursor.min(width.saturating_sub(3)) as u16;
+        let caret = text::caret_x(&app.chat.input, app.chat.cursor, app.config.ui.bidi_emit());
+        let x = inner.x + 2 + caret.min(u16::try_from(width.saturating_sub(3)).unwrap_or(u16::MAX));
         frame.set_cursor_position((x, inner.y));
     }
 

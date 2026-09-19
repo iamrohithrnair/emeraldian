@@ -12,6 +12,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::bidi::DirectionMode;
+
 /// A frontmatter value: either a single scalar or a list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FmValue {
@@ -91,6 +93,20 @@ impl Frontmatter {
             .or_else(|| self.get("alias"))
             .map(|v| v.as_list().into_iter().filter(|a| !a.is_empty()).collect())
             .unwrap_or_default()
+    }
+
+    /// An explicit `direction:`, if the note sets one.
+    ///
+    /// Overrides the configured default for this note alone, so a vault that is
+    /// mostly English can hold an Arabic note that always opens the right way
+    /// round, whatever the first paragraph happens to start with. `dir:` is
+    /// accepted as well, since that is what the HTML attribute is called and
+    /// people reach for it.
+    #[must_use]
+    pub fn direction(&self) -> Option<DirectionMode> {
+        self.get("direction")
+            .or_else(|| self.get("dir"))
+            .and_then(|value| value.as_scalar().parse().ok())
     }
 
     /// An explicit `title:`, if the note sets one.

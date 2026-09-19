@@ -6,31 +6,33 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph, Widget};
 
+use emeraldian_core::bidi::Emit;
 use emeraldian_theme::Palette;
 
 use crate::app::App;
 use crate::modal::{Confirm, Modal, Picker, Prompt};
-use crate::ui::{centered, pane_block, scrollbar, truncate};
+use crate::ui::{centered, pane_block, scrollbar, text, truncate};
 
 pub fn draw(frame: &mut Frame, app: &mut App, palette: &Palette, area: Rect) {
     // Read before the modal is borrowed mutably below.
     let vim = app.config.editor.vim;
+    let emit = app.config.ui.bidi_emit();
     let Some(modal) = app.modal.as_mut() else {
         return;
     };
     match modal {
-        Modal::Picker(picker) => draw_picker(frame, picker, palette, area),
+        Modal::Picker(picker) => draw_picker(frame, picker, palette, area, emit),
         // The vim command and search lines are drawn on the status row by
         // `ui::draw`, where every editor puts them; a dialog in the middle of
         // the screen for `:w` would be jarring.
         Modal::Prompt(prompt) if is_command_line(prompt) => {}
-        Modal::Prompt(prompt) => draw_prompt(frame, prompt, palette, area),
+        Modal::Prompt(prompt) => draw_prompt(frame, prompt, palette, area, emit),
         Modal::Confirm(confirm) => draw_confirm(frame, confirm, palette, area),
         Modal::Help(scroll) => draw_help(frame, scroll, palette, area, vim),
     }
 }
 
-fn draw_picker(frame: &mut Frame, picker: &mut Picker, palette: &Palette, area: Rect) {
+fn draw_picker(frame: &mut Frame, picker: &mut Picker, palette: &Palette, area: Rect, emit: Emit) {
     let width = (area.width * 3 / 4).clamp(40, 96);
     let height = (area.height * 2 / 3).clamp(8, 24);
     let rect = centered(area, width, height);
@@ -53,7 +55,7 @@ fn draw_picker(frame: &mut Frame, picker: &mut Picker, palette: &Palette, area: 
         )
     } else {
         Span::styled(
-            picker.query.clone(),
+            text::shape(&picker.query, emit),
             Style::default().fg(palette.text_normal),
         )
     };
@@ -69,7 +71,10 @@ fn draw_picker(frame: &mut Frame, picker: &mut Picker, palette: &Palette, area: 
     ])
     .render(rows[0], frame.buffer_mut());
 
-    frame.set_cursor_position((rows[0].x + 2 + picker.cursor as u16, rows[0].y));
+    frame.set_cursor_position((
+        rows[0].x + 2 + text::caret_x(&picker.query, picker.cursor, emit),
+        rows[0].y,
+    ));
 
     let list = rows[1];
     let visible_height = list.height as usize;
@@ -160,7 +165,7 @@ fn byte_of(text: &str, index: usize) -> usize {
         .map_or(text.len(), |(byte, _)| byte)
 }
 
-fn draw_prompt(frame: &mut Frame, prompt: &Prompt, palette: &Palette, area: Rect) {
+fn draw_prompt(frame: &mut Frame, prompt: &Prompt, palette: &Palette, area: Rect, emit: Emit) {
     let rect = centered(area, 60.min(area.width), 3);
     frame.render_widget(Clear, rect);
 
@@ -173,7 +178,7 @@ fn draw_prompt(frame: &mut Frame, prompt: &Prompt, palette: &Palette, area: Rect
     let shown = if prompt.intent.secret() {
         "•".repeat(prompt.value.chars().count())
     } else {
-        prompt.value.clone()
+        text::shape(&prompt.value, emit)
     };
 
     Paragraph::new(Line::from(vec![
@@ -182,7 +187,14 @@ fn draw_prompt(frame: &mut Frame, prompt: &Prompt, palette: &Palette, area: Rect
     ]))
     .render(inner, frame.buffer_mut());
 
-    frame.set_cursor_position((inner.x + 2 + prompt.cursor as u16, inner.y));
+    // A masked secret is one bullet per character, so the caret counts
+    // characters there and columns everywhere else.
+    let caret = if prompt.intent.secret() {
+        u16::try_from(prompt.cursor).unwrap_or(u16::MAX)
+    } else {
+        text::caret_x(&prompt.value, prompt.cursor, emit)
+    };
+    frame.set_cursor_position((inner.x + 2 + caret, inner.y));
 }
 
 fn draw_confirm(frame: &mut Frame, confirm: &Confirm, palette: &Palette, area: Rect) {
@@ -399,16 +411,25 @@ pub fn is_command_line(prompt: &Prompt) -> bool {
 }
 
 /// Draws `:` or `/` along the status row, with the caret in it.
-pub fn draw_command_line(frame: &mut Frame, prompt: &Prompt, palette: &Palette, area: Rect) {
-    let text = format!("{}{}", prompt.title, prompt.value);
+pub fn draw_command_line(
+    frame: &mut Frame,
+    prompt: &Prompt,
+    palette: &Palette,
+    area: Rect,
+    emit: Emit,
+) {
+    // The `:` or `/` leader stays put; only what was typed after it is laid
+    // out, so the line still reads as a command however the argument runs.
+    let line = format!("{}{}", prompt.title, text::shape(&prompt.value, emit));
     Paragraph::new(Line::from(Span::styled(
-        text,
+        line,
         Style::default().fg(palette.text_normal),
     )))
     .style(Style::default().bg(palette.bg_primary))
     .render(area, frame.buffer_mut());
 
-    let column = prompt.title.chars().count() + prompt.cursor;
+    let column =
+        text::width(&prompt.title) + usize::from(text::caret_x(&prompt.value, prompt.cursor, emit));
     frame.set_cursor_position((area.x + u16::try_from(column).unwrap_or(u16::MAX), area.y));
 }
 

@@ -1,5 +1,6 @@
 //! Core engine for emeraldian.
 #![forbid(unsafe_code)]
+pub mod bidi;
 pub mod error;
 pub mod excalidraw;
 pub mod graph;

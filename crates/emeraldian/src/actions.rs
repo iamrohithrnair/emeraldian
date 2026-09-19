@@ -52,6 +52,11 @@ pub fn commands() -> Vec<Entry> {
         Entry::new("Toggle ribbon", "", Action::ToggleRibbon),
         Entry::new("Toggle shortcut hints", "", Action::ToggleHints),
         Entry::new("Change sort order", "s", Action::CycleSortOrder),
+        Entry::new(
+            "Change text direction",
+            "rtl ltr bidi",
+            Action::CycleTextDirection,
+        ),
         Entry::new("Toggle line numbers", "", Action::ToggleLineNumbers),
         Entry::new("Toggle vim mode", "F4", Action::ToggleVimMode),
         Entry::new("Change theme", "Ctrl+T", Action::OpenThemePicker),
@@ -137,6 +142,17 @@ fn cycle_sort_order(app: &mut App) {
         app.explorer.scroll_into_view(area.height as usize);
     }
     app.info(format!("sorted by {}; /config keeps it", next.label()));
+}
+
+/// Cycles the base text direction: auto, then left-to-right, then right-to-left.
+///
+/// `auto` is the one worth staying on — it lets every block decide for itself —
+/// but forcing a direction is how you read a note whose first paragraph happens
+/// to start in the other script.
+fn cycle_text_direction(app: &mut App) {
+    let next = app.config.ui.text_direction().cycle();
+    app.config.ui.text_direction = next.key().to_string();
+    app.info(format!("text direction {next}; /config keeps it"));
 }
 
 /// Switches backend, bringing the endpoint and model with it.
@@ -437,6 +453,7 @@ pub fn dispatch(app: &mut App, action: Action) {
         Action::ToggleRibbon => app.config.ui.show_ribbon = !app.config.ui.show_ribbon,
         Action::ToggleHints => app.config.ui.show_hints = !app.config.ui.show_hints,
         Action::CycleSortOrder => cycle_sort_order(app),
+        Action::CycleTextDirection => cycle_text_direction(app),
         Action::CycleSidePanel => {
             app.side_panel = app.side_panel.next();
             app.side_selected = 0;

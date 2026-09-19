@@ -13,6 +13,7 @@
 //! stays the plain line-oriented model everything else parses and indexes, and
 //! only the parts that draw or move the cursor need to know how it was wrapped.
 
+use emeraldian_core::bidi::{self, Affinity, Direction, DirectionMode, Emit, Resolved, Shaped};
 use unicode_width::UnicodeWidthChar;
 
 /// Display columns a character occupies.
@@ -66,6 +67,11 @@ pub struct Row {
     pub indent: u16,
     /// False on a soft-wrap continuation of the row above.
     pub first: bool,
+    /// Whether the row reads right-to-left.
+    pub rtl: bool,
+    /// Blank columns before the text, from right-to-left alignment. Zero on a
+    /// left-to-right row, where the text already starts at the left edge.
+    pub lead: u16,
 }
 
 /// How the buffer's lines were laid out across the rows of a viewport.
@@ -78,6 +84,10 @@ pub struct Layout {
     rows: Vec<Row>,
     /// Index into `rows` of the first row of each source line.
     first: Vec<usize>,
+    /// Reordered cells, parallel to `rows`. `None` on a row with nothing
+    /// right-to-left in it — which is every row of an English note, and the
+    /// reason this costs an all-English vault one scan and nothing more.
+    shaped: Vec<Option<Shaped>>,
     /// Columns the text was wrapped to.
     width: usize,
     wrapped: bool,
@@ -96,13 +106,22 @@ impl Layout {
     /// the viewport pans sideways instead — which is what someone who turned
     /// wrapping off asked for.
     #[must_use]
-    pub fn build(lines: &[String], width: usize, wrap: bool, tab_width: usize) -> Self {
+    pub fn build(
+        lines: &[String],
+        width: usize,
+        wrap: bool,
+        tab_width: usize,
+        direction: DirectionMode,
+        emit: Emit,
+    ) -> Self {
         let mut rows = Vec::with_capacity(lines.len());
         let mut first = Vec::with_capacity(lines.len());
+        let mut shaped: Vec<Option<Shaped>> = Vec::with_capacity(lines.len());
 
         for (index, text) in lines.iter().enumerate() {
             first.push(rows.len());
             let chars: Vec<char> = text.chars().collect();
+            let from = rows.len();
             if !wrap || width == 0 {
                 rows.push(Row {
                     line: index,
@@ -110,10 +129,43 @@ impl Layout {
                     end: chars.len(),
                     indent: 0,
                     first: true,
+                    rtl: false,
+                    lead: 0,
                 });
-                continue;
+            } else {
+                wrap_line(&chars, index, width, tab_width, &mut rows);
             }
-            wrap_line(&chars, index, width, tab_width, &mut rows);
+
+            // Wrapping happens in logical order and reordering after it, per
+            // row: rules L1 and L2 of the algorithm apply to a line, so there
+            // has to be a line before they can. Resolving, though, is done once
+            // for the whole source line, because deciding which direction a
+            // neutral run belongs to needs the context on both sides of it and
+            // a wrap point is not a sentence boundary.
+            let fallback = match direction {
+                DirectionMode::Rtl => Direction::Rtl,
+                _ => Direction::Ltr,
+            };
+            let base = bidi::resolve(text, direction, fallback);
+            let resolved = Resolved::new(text, base);
+
+            for row in &mut rows[from..] {
+                if !resolved.has_rtl() {
+                    shaped.push(None);
+                    continue;
+                }
+                let cells = resolved.row(row.start..row.end, emit);
+                row.rtl = base.is_rtl();
+                if row.rtl {
+                    // Flush right: the blank columns go on the left, and the
+                    // hanging indent moves to the right edge with the text.
+                    row.lead = u16::try_from(
+                        width.saturating_sub(usize::from(row.indent) + cells.columns()),
+                    )
+                    .unwrap_or(0);
+                }
+                shaped.push(Some(cells));
+            }
         }
 
         // An empty buffer still has one line, so there is always a row to put
@@ -126,12 +178,16 @@ impl Layout {
                 end: 0,
                 indent: 0,
                 first: true,
+                rtl: false,
+                lead: 0,
             });
+            shaped.push(None);
         }
 
         Self {
             rows,
             first,
+            shaped,
             width,
             wrapped: wrap,
         }
@@ -140,6 +196,12 @@ impl Layout {
     #[must_use]
     pub fn rows(&self) -> &[Row] {
         &self.rows
+    }
+
+    /// The reordered cells of a row, or `None` when it needs no reordering.
+    #[must_use]
+    pub fn shaped(&self, row: usize) -> Option<&Shaped> {
+        self.shaped.get(row).and_then(Option::as_ref)
     }
 
     #[must_use]
@@ -175,8 +237,34 @@ impl Layout {
     /// The row and display column a cursor is drawn at.
     #[must_use]
     pub fn position_of(&self, cursor: Cursor, lines: &[String], tab_width: usize) -> (usize, u16) {
+        self.position_of_with(cursor, Affinity::default(), lines, tab_width)
+    }
+
+    /// The row and display column a cursor is drawn at, on a chosen side of a
+    /// direction boundary.
+    ///
+    /// A cursor between an English and an Arabic word has two honest columns —
+    /// the two words meet there but run away from each other — and `affinity`
+    /// is which of them the user meant, decided by how they arrived.
+    #[must_use]
+    pub fn position_of_with(
+        &self,
+        cursor: Cursor,
+        affinity: Affinity,
+        lines: &[String],
+        tab_width: usize,
+    ) -> (usize, u16) {
         let index = self.row_of(cursor);
         let row = self.rows[index];
+
+        if let Some(shaped) = self.shaped[index].as_ref() {
+            let logical = cursor.col.saturating_sub(row.start);
+            let column = usize::from(row.lead)
+                + if row.rtl { 0 } else { usize::from(row.indent) }
+                + shaped.caret_column(logical, affinity);
+            return (index, u16::try_from(column).unwrap_or(u16::MAX));
+        }
+
         let mut column = usize::from(row.indent);
         if let Some(text) = lines.get(row.line) {
             for ch in text.chars().take(cursor.col).skip(row.start) {
@@ -190,7 +278,42 @@ impl Layout {
     /// both land somewhere sensible.
     #[must_use]
     pub fn cursor_at(&self, row: usize, column: u16, lines: &[String], tab_width: usize) -> Cursor {
-        let row = self.rows[row.min(self.rows.len() - 1)];
+        self.hit(row, column, lines, tab_width).0
+    }
+
+    /// The cursor at a row and display column, with the side of any direction
+    /// boundary it landed on.
+    #[must_use]
+    pub fn hit(
+        &self,
+        row: usize,
+        column: u16,
+        lines: &[String],
+        tab_width: usize,
+    ) -> (Cursor, Affinity) {
+        let index = row.min(self.rows.len() - 1);
+        let row = self.rows[index];
+
+        if let Some(shaped) = self.shaped[index].as_ref() {
+            let offset = usize::from(row.lead) + if row.rtl { 0 } else { usize::from(row.indent) };
+            let (logical, affinity) = shaped.hit(usize::from(column).saturating_sub(offset));
+            return (
+                Cursor {
+                    line: row.line,
+                    col: row.start + logical,
+                },
+                affinity,
+            );
+        }
+
+        (
+            self.scan(row, column, lines, tab_width),
+            Affinity::default(),
+        )
+    }
+
+    /// The left-to-right walk, for a row with nothing right-to-left in it.
+    fn scan(&self, row: Row, column: u16, lines: &[String], tab_width: usize) -> Cursor {
         let target = usize::from(column).saturating_sub(usize::from(row.indent));
         let mut col = row.start;
         let mut at = usize::from(row.indent);
@@ -223,6 +346,8 @@ fn wrap_line(chars: &[char], line: usize, width: usize, tab_width: usize, out: &
             end: 0,
             indent: 0,
             first: true,
+            rtl: false,
+            lead: 0,
         });
         return;
     }
@@ -265,6 +390,8 @@ fn wrap_line(chars: &[char], line: usize, width: usize, tab_width: usize, out: &
             end,
             indent,
             first,
+            rtl: false,
+            lead: 0,
         });
         start = end;
         first = false;
@@ -331,6 +458,12 @@ pub struct Editor {
     last_edit: Option<EditKind>,
     tab_width: usize,
     expand_tabs: bool,
+    direction: DirectionMode,
+    emit: Emit,
+    /// Which side of a direction boundary the caret is on. Beside
+    /// `desired_col` rather than inside `Cursor`, because `Cursor` is compared
+    /// as a tuple throughout selection and vim and must stay a plain position.
+    affinity: Affinity,
 }
 
 /// Undo history depth. Deep enough to recover from a bad paste, bounded so a
@@ -354,6 +487,9 @@ impl Editor {
             last_edit: None,
             tab_width,
             expand_tabs,
+            direction: DirectionMode::default(),
+            emit: Emit::default(),
+            affinity: Affinity::default(),
         }
     }
 
@@ -362,16 +498,33 @@ impl Editor {
         &self.lines
     }
 
+    /// Sets the base text direction and how reordered text is emitted.
+    ///
+    /// Read off the config rather than passed to [`Editor::new`], because both
+    /// can change while a note is open — `F5` cycles the direction — and a
+    /// buffer that kept the value it was built with would go stale.
+    pub fn set_direction(&mut self, direction: DirectionMode, emit: Emit) {
+        self.direction = direction;
+        self.emit = emit;
+    }
+
     /// How this buffer falls across the rows of a viewport `width` columns wide.
     #[must_use]
     pub fn layout(&self, width: usize, wrap: bool) -> Layout {
-        Layout::build(&self.lines, width, wrap, self.tab_width)
+        Layout::build(
+            &self.lines,
+            width,
+            wrap,
+            self.tab_width,
+            self.direction,
+            self.emit,
+        )
     }
 
     /// The row and display column the caret should be drawn at.
     #[must_use]
     pub fn caret(&self, layout: &Layout) -> (usize, u16) {
-        layout.position_of(self.cursor, &self.lines, self.tab_width)
+        layout.position_of_with(self.cursor, self.affinity, &self.lines, self.tab_width)
     }
 
     #[must_use]
@@ -517,10 +670,68 @@ impl Editor {
         self.cursor.col = row.end;
     }
 
+    /// Moves one column left (`delta` -1) or right (+1) *on screen*.
+    ///
+    /// Arrow keys are visual everywhere else — browsers, Obsidian, every OS
+    /// text field — and a key labelled Left that moves the caret right is
+    /// indefensible. Vim's `h` and `l` stay logical, because they compose with
+    /// operators: a visual `l` would make `dl` delete a character other than
+    /// the one the block cursor is sitting on.
+    pub fn move_visual(&mut self, layout: &Layout, delta: isize, extend: bool) {
+        let (index, column) =
+            layout.position_of_with(self.cursor, self.affinity, &self.lines, self.tab_width);
+
+        // A row with nothing right-to-left in it moves exactly as it always
+        // did, so an English note cannot tell this function exists.
+        let Some(shaped) = layout.shaped(index) else {
+            if delta < 0 {
+                self.move_left(extend);
+            } else {
+                self.move_right(extend);
+            }
+            return;
+        };
+
+        let row = layout.rows()[index];
+        let lead = usize::from(row.lead) + if row.rtl { 0 } else { usize::from(row.indent) };
+        let (first, last) = (lead, lead + shaped.columns());
+
+        // Step until the column names a different character: one press should
+        // always move, and a wide glyph spans more than one column.
+        let mut at = isize::try_from(column).unwrap_or(isize::MAX);
+        loop {
+            at += delta;
+            if at < first as isize || at > last as isize {
+                // Off the end of the row: the logical move knows how to cross
+                // into the next row or line.
+                if row.rtl == (delta < 0) {
+                    self.move_right(extend);
+                } else {
+                    self.move_left(extend);
+                }
+                return;
+            }
+            let (cursor, affinity) = layout.hit(
+                index,
+                u16::try_from(at).unwrap_or(0),
+                &self.lines,
+                self.tab_width,
+            );
+            if cursor != self.cursor {
+                self.prepare_move(extend);
+                self.cursor = cursor;
+                self.affinity = affinity;
+                return;
+            }
+        }
+    }
+
     /// Places the cursor at a row and display column, for a click or a drag.
     pub fn goto_visual(&mut self, layout: &Layout, row: usize, column: u16, extend: bool) {
         self.prepare_move(extend);
-        self.cursor = layout.cursor_at(row, column, &self.lines, self.tab_width);
+        let (cursor, affinity) = layout.hit(row, column, &self.lines, self.tab_width);
+        self.cursor = cursor;
+        self.affinity = affinity;
     }
 
     pub fn move_line_start(&mut self, extend: bool) {
@@ -718,6 +929,9 @@ impl Editor {
         // Any move that isn't between rows abandons the column the cursor was
         // aiming for; only `move_row` puts one back.
         self.desired_col = None;
+        // Likewise the side of a boundary the caret was on; only a visual move
+        // and a click know which side they meant.
+        self.affinity = Affinity::default();
         if extend {
             if self.selection_anchor.is_none() {
                 self.selection_anchor = Some(self.cursor);
@@ -2352,6 +2566,140 @@ mod tests {
                 "column {column} on row {row} should map back to character {col}"
             );
         }
+    }
+
+    #[test]
+    fn the_left_arrow_moves_left_on_screen_in_rtl_text() {
+        // The bug this exists to prevent: on a right-to-left line the logical
+        // cursor runs the other way, so a naive Left key walks the caret right.
+        let mut ed = editor("مرحبا");
+        let layout = ed.layout(20, true);
+        ed.goto(0, 0);
+
+        let mut column = ed.caret(&layout).1;
+        for _ in 0..4 {
+            ed.move_visual(&layout, -1, false);
+            let next = ed.caret(&layout).1;
+            assert!(
+                next < column,
+                "Left must move the caret left: {column} -> {next}"
+            );
+            column = next;
+        }
+    }
+
+    #[test]
+    fn the_left_arrow_still_walks_backwards_through_english() {
+        let mut ed = editor("hello");
+        let layout = ed.layout(20, true);
+        ed.goto(0, 3);
+        ed.move_visual(&layout, -1, false);
+        assert_eq!(ed.cursor(), Cursor { line: 0, col: 2 });
+        ed.move_visual(&layout, 1, false);
+        assert_eq!(ed.cursor(), Cursor { line: 0, col: 3 });
+    }
+
+    #[test]
+    fn a_visual_move_always_moves() {
+        // One press, one step — never a no-op, whichever script it lands in.
+        let mut ed = editor("مرحبا world بالعالم");
+        let layout = ed.layout(30, true);
+        ed.goto(0, 0);
+        let mut seen = vec![ed.caret(&layout).1];
+        for _ in 0..10 {
+            ed.move_visual(&layout, -1, false);
+            let column = ed.caret(&layout).1;
+            assert!(
+                !seen.contains(&column),
+                "the caret stalled or doubled back at column {column}"
+            );
+            seen.push(column);
+        }
+    }
+
+    #[test]
+    fn an_ltr_line_is_never_reordered() {
+        // The guarantee that makes this safe to land: an English note takes
+        // exactly the code path it took before any of this existed.
+        let ed = editor("plain english text");
+        let layout = ed.layout(40, true);
+        assert!(layout.shaped(0).is_none());
+        assert!(!layout.rows()[0].rtl);
+        assert_eq!(layout.rows()[0].lead, 0);
+    }
+
+    #[test]
+    fn an_rtl_line_is_reordered_and_flushed_right() {
+        let ed = editor("مرحبا");
+        let layout = ed.layout(20, true);
+        let row = layout.rows()[0];
+        assert!(row.rtl, "auto should read this line as right-to-left");
+        assert!(layout.shaped(0).is_some());
+        // Five characters in a twenty-column pane leaves fifteen on the left.
+        assert_eq!(row.lead, 15);
+    }
+
+    #[test]
+    fn the_caret_starts_at_the_right_edge_of_a_right_to_left_line() {
+        let mut ed = editor("مرحبا");
+        let layout = ed.layout(20, true);
+        ed.goto(0, 0);
+        let (_, column) = ed.caret(&layout);
+        assert_eq!(
+            column, 20,
+            "typing into right-to-left text begins at the right"
+        );
+        // And the end of the line is its left edge.
+        ed.goto(0, 5);
+        assert_eq!(ed.caret(&layout).1, 15);
+    }
+
+    #[test]
+    fn a_click_on_an_rtl_line_lands_where_it_was_clicked() {
+        // Asking the other way round — index to column and back — is not a
+        // round trip at a direction boundary, where one column honestly names
+        // two positions. Clicking is the property a user can see.
+        let ed = editor("مرحبا world بالعالم");
+        let layout = ed.layout(30, true);
+        let row = layout.rows()[0];
+        let text = layout.shaped(0).expect("right-to-left row").columns();
+
+        for column in row.lead..row.lead + u16::try_from(text).unwrap() {
+            let (cursor, affinity) = layout.hit(0, column, ed.lines(), 4);
+            let (_, back) = layout.position_of_with(cursor, affinity, ed.lines(), 4);
+            assert_eq!(
+                back, column,
+                "clicking column {column} must leave the caret there"
+            );
+        }
+    }
+
+    #[test]
+    fn clicking_the_blank_left_of_an_rtl_line_lands_on_its_first_character() {
+        // The pane is wider than the text, so there is dead space to the left
+        // of a right-to-left line. A click there belongs to the nearest text.
+        let ed = editor("مرحبا");
+        let layout = ed.layout(20, true);
+        let (cursor, _) = layout.hit(0, 0, ed.lines(), 4);
+        assert_eq!(
+            cursor,
+            Cursor { line: 0, col: 5 },
+            "the left edge of a right-to-left line is the end of its text"
+        );
+    }
+
+    #[test]
+    fn a_number_in_an_rtl_line_is_not_reversed_on_screen() {
+        let ed = editor("سنة 2024 كانت");
+        let layout = ed.layout(30, true);
+        let drawn = layout.shaped(0).expect("right-to-left row").text();
+        assert!(drawn.contains("2024"), "got {drawn:?}");
+        // And each Arabic word is still spelled forwards for the terminal to
+        // join and lay out.
+        assert!(
+            drawn.contains("سنة") && drawn.contains("كانت"),
+            "got {drawn:?}"
+        );
     }
 
     #[test]

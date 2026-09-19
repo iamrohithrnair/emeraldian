@@ -10,7 +10,7 @@ use emeraldian_theme::Palette;
 
 use crate::app::{App, Focus, Regions, SidePanel};
 use crate::explorer::Row;
-use crate::ui::{icons, pane_block, scrollbar, truncate};
+use crate::ui::{icons, pane_block, scrollbar, text};
 
 pub fn draw_explorer(
     frame: &mut Frame,
@@ -20,6 +20,7 @@ pub fn draw_explorer(
     regions: &mut Regions,
 ) {
     let focused = app.focus == Focus::Explorer;
+    let emit = app.config.ui.bidi_emit();
     let title = if app.explorer.filter.is_empty() {
         "Files".to_string()
     } else {
@@ -113,20 +114,29 @@ pub fn draw_explorer(
         let width = inner.width as usize;
         let prefix = format!("{indent}{icon} ");
         // Leave room for the count so a long folder name can't push it off.
-        let reserved = prefix.chars().count() + badge.chars().count() + 2;
-        let text = truncate(&name, width.saturating_sub(reserved));
-        let used = prefix.chars().count() + text.chars().count() + badge.chars().count();
+        let reserved = text::width(&prefix) + text::width(&badge) + 2;
+        // The icon and the indent stay on the left — they are the tree, not the
+        // name — and only the name itself is laid out.
+        let rtl = text::is_rtl(&name);
+        let label = text::label(&name, width.saturating_sub(reserved), emit);
+        let used = text::width(&prefix) + text::width(&label) + text::width(&badge);
+
+        // A right-to-left name is flush against the side it reads from, which
+        // puts it beside the count rather than beside the icon.
+        let gap = Span::styled(
+            " ".repeat(width.saturating_sub(used)),
+            Style::default().bg(background),
+        );
+        let name = Span::styled(label, style.bg(background));
+        let (first, second) = if rtl { (gap, name) } else { (name, gap) };
 
         lines.push(Line::from(vec![
             Span::styled(
                 prefix,
                 Style::default().fg(palette.text_faint).bg(background),
             ),
-            Span::styled(text, style.bg(background)),
-            Span::styled(
-                " ".repeat(width.saturating_sub(used)),
-                Style::default().bg(background),
-            ),
+            first,
+            second,
             Span::styled(
                 badge,
                 Style::default().fg(palette.text_faint).bg(background),
@@ -205,7 +215,7 @@ fn draw_panel_tabs(
     let mut x = area.x;
     for panel in [SidePanel::Outline, SidePanel::Backlinks, SidePanel::Tags] {
         let active = app.side_panel == panel;
-        let width = panel.title().chars().count() as u16 + 2;
+        let width = u16::try_from(text::width(panel.title())).unwrap_or(u16::MAX) + 2;
         regions.side_tabs.push((
             Rect {
                 x,
@@ -245,12 +255,17 @@ fn outline_lines(app: &App, palette: &Palette, width: usize) -> Vec<Line<'static
         return vec![empty_hint("No headings", palette)];
     }
 
+    let emit = app.config.ui.bidi_emit();
     note.headings
         .iter()
         .map(|heading| {
             let indent = "  ".repeat(heading.level.saturating_sub(1) as usize);
+            // The nesting indent stays on the left even for a right-to-left
+            // heading: it shows the outline's shape, not the heading's, and a
+            // tree that changed sides row by row would be unreadable.
+            let label = text::label(&heading.text, width.saturating_sub(indent.len()), emit);
             Line::from(Span::styled(
-                truncate(&format!("{indent}{}", heading.text), width),
+                format!("{indent}{label}"),
                 Style::default().fg(palette.heading(heading.level)),
             ))
         })
@@ -266,20 +281,24 @@ fn backlink_lines(app: &App, palette: &Palette, width: usize) -> Vec<Line<'stati
         return vec![empty_hint("Nothing links here yet", palette)];
     }
 
+    let emit = app.config.ui.bidi_emit();
     let mut lines = Vec::new();
     for backlink in backlinks {
         let Some(source) = app.index.note(backlink.source) else {
             continue;
         };
         lines.push(Line::from(Span::styled(
-            truncate(&source.meta.title, width),
+            text::label(&source.meta.title, width, emit),
             Style::default()
                 .fg(palette.link)
                 .add_modifier(Modifier::BOLD),
         )));
         // The line the link sits on is the context that makes a backlink useful.
         lines.push(Line::from(Span::styled(
-            truncate(&format!("  {}", backlink.context), width),
+            format!(
+                "  {}",
+                text::label(&backlink.context, width.saturating_sub(2), emit)
+            ),
             Style::default().fg(palette.text_faint),
         )));
     }
@@ -292,13 +311,20 @@ fn tag_lines(app: &App, palette: &Palette, width: usize) -> Vec<Line<'static>> {
         return vec![empty_hint("No tags in this vault", palette)];
     }
 
+    let emit = app.config.ui.bidi_emit();
     tags.iter()
         .map(|(tag, notes)| {
             let depth = tag.matches('/').count();
             let leaf = tag.rsplit('/').next().unwrap_or(tag);
-            let label = format!("{}#{leaf}", "  ".repeat(depth));
+            // Laid out with its `#`, so an Arabic tag gets the hash on the
+            // right where it belongs rather than stranded on the left.
+            let label = format!(
+                "{}{}",
+                "  ".repeat(depth),
+                text::shape(&format!("#{leaf}"), emit)
+            );
             let count = notes.len().to_string();
-            let pad = width.saturating_sub(label.chars().count() + count.chars().count() + 1);
+            let pad = width.saturating_sub(text::width(&label) + text::width(&count) + 1);
             Line::from(vec![
                 Span::styled(label, Style::default().fg(palette.tag_fg)),
                 Span::raw(" ".repeat(pad)),
@@ -362,6 +388,7 @@ pub enum SidebarTarget {
 mod tests {
     use super::*;
     use crate::config::Config;
+    use crate::ui::text;
     use emeraldian_core::test_support::TempVault;
     use emeraldian_theme::presets;
 
@@ -460,5 +487,22 @@ mod tests {
             targets.len(),
             "every rendered row needs a target or Enter picks the wrong one"
         );
+    }
+
+    #[test]
+    fn an_arabic_file_name_is_reported_right_to_left() {
+        // What decides which side of the explorer row the name sits against.
+        assert!(text::is_rtl("ملاحظة"));
+        assert!(!text::is_rtl("English note"));
+        // A name that opens in English keeps its side even with Arabic in it.
+        assert!(!text::is_rtl("note مرحبا"));
+    }
+
+    #[test]
+    fn a_name_is_measured_in_columns_so_the_count_cannot_be_pushed_off() {
+        // The reservation that keeps a folder's note count on screen used to
+        // be a character count, which is not a width.
+        assert_eq!(text::width("日本語"), 6);
+        assert_eq!(text::width("ملاحظة"), 6);
     }
 }

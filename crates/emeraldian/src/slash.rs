@@ -8,6 +8,7 @@
 //! Commands run locally and never reach the model. That is the point: `/model`
 //! should change the model, not ask the current one to change it.
 
+use emeraldian_core::bidi::DirectionMode;
 use emeraldian_core::sort::SortOrder;
 
 use crate::agent::Entry;
@@ -91,6 +92,11 @@ pub const COMMANDS: &[SlashCommand] = &[
         name: "status",
         description: "Show provider, model and token usage",
         argument_hint: None,
+    },
+    SlashCommand {
+        name: "direction",
+        description: "Text direction for notes (also F5)",
+        argument_hint: Some("[auto|ltr|rtl]"),
     },
     SlashCommand {
         name: "vim",
@@ -252,6 +258,7 @@ pub fn run(app: &mut App, input: &str) -> Outcome {
         }
         "obsidian" => obsidian(app, args),
         "sort" => sort(app, args),
+        "direction" => direction(app, args),
         "vault" => {
             let text = vault_text(app);
             say(app, &text);
@@ -692,6 +699,29 @@ fn vault_text(app: &App) -> String {
 
 /// `/sort` with no argument cycles; with one, sets that order by name.
 ///
+/// Sets the base text direction, or cycles it when given no argument.
+fn direction(app: &mut App, args: &str) {
+    let arg = args.trim();
+    if arg.is_empty() {
+        crate::actions::dispatch(app, Action::CycleTextDirection);
+        return;
+    }
+    match arg.parse::<DirectionMode>() {
+        Ok(mode) => {
+            app.config.ui.text_direction = mode.key().to_string();
+            let note = match mode {
+                DirectionMode::Auto => " — every block decides for itself",
+                _ => "",
+            };
+            say(
+                app,
+                &format!("text direction {mode}{note}; /config keeps it"),
+            );
+        }
+        Err(()) => say(app, &format!("/direction auto | ltr | rtl, not '{arg}'")),
+    }
+}
+
 /// Listing the valid keys on a bad argument matters more here than elsewhere:
 /// there are six of them and no menu to read them off.
 fn sort(app: &mut App, args: &str) {

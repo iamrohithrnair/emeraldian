@@ -45,6 +45,10 @@ toml = "1"
 dirs = "6"
 anyhow = "1"
 unicode-width = "0.2"
+# The Unicode Bidirectional Algorithm (UAX #9). Pure Rust, no unsafe, and the
+# same implementation the URL/IDNA stack uses; reordering bidi text correctly
+# is a 1500-line job with a Unicode data table attached, not one worth redoing.
+unicode-bidi = "0.3"
 ureq = { version = "3", features = ["json"] }
 lz-str = "0.2"
 

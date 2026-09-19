@@ -146,6 +146,10 @@ fn handle_global(app: &mut App, key: KeyEvent) -> bool {
         // from inside Normal mode too — a toggle that can be switched on but
         // not off is a trap. F-keys are the only ones vim leaves alone.
         (_, _, KeyCode::F(4)) => Some(Action::ToggleVimMode),
+        // Same reasoning as the vim toggle: writing in a right-to-left script
+        // means reaching for this from inside the editor, where every other
+        // key is spoken for.
+        (_, _, KeyCode::F(5)) => Some(Action::CycleTextDirection),
         _ => None,
     };
 
@@ -457,11 +461,17 @@ fn handle_editing(app: &mut App, key: KeyEvent) {
 
     // Moving between rows has to follow the text as it was wrapped, so it needs
     // the geometry the last frame recorded — the same source of truth clicks
-    // are resolved against.
+    // are resolved against. Left and Right need it too, because an arrow key
+    // moves by what is on screen, and on a right-to-left row that is not the
+    // same direction as the buffer runs.
     if matches!(
         key.code,
         KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown
-    ) || (!ctrl && matches!(key.code, KeyCode::Home | KeyCode::End))
+    ) || (!ctrl
+        && matches!(
+            key.code,
+            KeyCode::Home | KeyCode::End | KeyCode::Left | KeyCode::Right
+        ))
     {
         move_in_editor(app, key.code, shift);
         return;
@@ -480,8 +490,6 @@ fn handle_editing(app: &mut App, key: KeyEvent) {
         KeyCode::Delete => editor.delete_forward(),
         KeyCode::Left if ctrl => editor.move_word_left(shift),
         KeyCode::Right if ctrl => editor.move_word_right(shift),
-        KeyCode::Left => editor.move_left(shift),
-        KeyCode::Right => editor.move_right(shift),
         KeyCode::Home if ctrl => editor.move_document_start(shift),
         KeyCode::End if ctrl => editor.move_document_end(shift),
         KeyCode::Esc => {
@@ -510,6 +518,8 @@ fn move_in_editor(app: &mut App, code: KeyCode, extend: bool) {
         KeyCode::PageDown => editor.move_row(&layout, page, extend),
         KeyCode::Home => editor.move_row_start(&layout, extend),
         KeyCode::End => editor.move_row_end(&layout, extend),
+        KeyCode::Left => editor.move_visual(&layout, -1, extend),
+        KeyCode::Right => editor.move_visual(&layout, 1, extend),
         _ => {}
     }
 }

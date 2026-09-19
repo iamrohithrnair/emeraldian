@@ -11,6 +11,7 @@ pub mod graph;
 pub mod modal;
 pub mod note;
 pub mod panes;
+pub mod text;
 
 use emeraldian_theme::Palette;
 use ratatui::Frame;
@@ -189,7 +190,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // it is imitating puts them.
     match app.modal.as_ref() {
         Some(Modal::Prompt(prompt)) if modal::is_command_line(prompt) => {
-            modal::draw_command_line(frame, prompt, &palette, status_row);
+            modal::draw_command_line(
+                frame,
+                prompt,
+                &palette,
+                status_row,
+                app.config.ui.bidi_emit(),
+            );
         }
         _ => draw_status_bar(frame, app, &palette, status_row),
     }
@@ -356,12 +363,8 @@ fn hint_lines(
     let mut used = 1usize;
 
     for (key, label) in hints {
-        let hint = key.chars().count() + 1 + label.chars().count();
-        let gap = if used > 1 {
-            HINT_GAP.chars().count()
-        } else {
-            0
-        };
+        let hint = text::width(key) + 1 + text::width(label);
+        let gap = if used > 1 { text::width(HINT_GAP) } else { 0 };
 
         if used + gap + hint > width {
             if rows.len() + 1 >= max_rows {
@@ -429,8 +432,10 @@ fn draw_title_bar(frame: &mut Frame, app: &App, palette: &Palette, area: Rect) {
     }
 
     let right = format!("{} ", app.theme.name());
-    let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
-    let pad = (area.width as usize).saturating_sub(used + right.chars().count());
+    // ratatui already measures a span in columns; counting its characters was
+    // wrong for anything wider than ASCII.
+    let used: usize = spans.iter().map(Span::width).sum();
+    let pad = (area.width as usize).saturating_sub(used + text::width(&right));
     spans.push(Span::raw(" ".repeat(pad)));
     spans.push(Span::styled(right, Style::default().fg(palette.text_faint)));
 
@@ -531,8 +536,8 @@ fn draw_status_bar(frame: &mut Frame, app: &App, palette: &Palette, area: Rect) 
         }
     };
 
-    let used: usize = left.iter().map(|s| s.content.chars().count()).sum();
-    let pad = (area.width as usize).saturating_sub(used + right.chars().count());
+    let used: usize = left.iter().map(Span::width).sum();
+    let pad = (area.width as usize).saturating_sub(used + text::width(&right));
     left.push(Span::raw(" ".repeat(pad)));
     left.push(Span::styled(
         right,
@@ -1072,7 +1077,7 @@ mod tests {
             .collect();
         assert!(text.contains("outline"), "the last hint survived: {text:?}");
         for line in &two {
-            let used: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+            let used: usize = line.spans.iter().map(Span::width).sum();
             assert!(used <= 30, "a row overflowed its width: {used}");
         }
 
