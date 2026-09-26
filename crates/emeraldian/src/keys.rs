@@ -1765,6 +1765,7 @@ mod keymap_tests {
             .map(|(name, key)| ((*name).to_string(), (*key).to_string()))
             .collect();
         app.keymap = crate::keymap::Keymap::new(&keys);
+        app.config.keys = keys;
         (vault, app)
     }
 
@@ -1830,5 +1831,55 @@ mod keymap_tests {
             .find(|e| e.action == Action::ToggleLeftSidebar)
             .expect("listed");
         assert_eq!(entry.detail, "Alt+E");
+    }
+
+    #[test]
+    fn reset_puts_every_key_back_after_asking() {
+        let (_v, mut app) = remapped(&[("toggle_left_sidebar", "alt+e")]);
+        let dir =
+            std::env::temp_dir().join(format!("emeraldian-keys-reset-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        app.config_dir = Some(dir.clone());
+
+        dispatch(&mut app, Action::ResetKeys);
+        assert!(matches!(app.modal, Some(Modal::Confirm(_))), "asks first");
+        handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+        );
+
+        assert!(app.config.keys.is_empty());
+        let shown = app.config.ui.show_left_sidebar;
+        handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT),
+        );
+        assert_eq!(app.config.ui.show_left_sidebar, shown, "Alt+E is gone");
+        handle(&mut app, ctrl(KeyCode::Char('\\')));
+        assert_eq!(app.config.ui.show_left_sidebar, !shown, "the default works");
+
+        let written = std::fs::read_to_string(dir.join("config.toml")).expect("saved");
+        assert!(!written.contains("[keys]"), "and the reset is on disk");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn declining_the_reset_keeps_the_keys() {
+        let (_v, mut app) = remapped(&[("toggle_left_sidebar", "alt+e")]);
+        dispatch(&mut app, Action::ResetKeys);
+        handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+        );
+        assert!(app.modal.is_none());
+        assert_eq!(app.config.keys.len(), 1);
+    }
+
+    #[test]
+    fn reset_with_nothing_remapped_just_says_so() {
+        let (_v, mut app) = app();
+        dispatch(&mut app, Action::ResetKeys);
+        assert!(app.modal.is_none());
+        assert!(app.status.text.contains("already the default"));
     }
 }

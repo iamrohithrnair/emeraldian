@@ -265,6 +265,10 @@ pub enum Action {
     CycleSortOrder,
     /// Switches between emeraldian mode and vim mode, and writes the config.
     ToggleVimMode,
+    /// Asks before putting every shortcut back on its default key.
+    ResetKeys,
+    /// Empties `[keys]` and writes the config. What `ResetKeys` confirms.
+    ClearRemappedKeys,
     CycleSidePanel,
     OpenGraph,
     OpenLocalGraph,

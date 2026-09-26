@@ -54,6 +54,7 @@ pub fn commands() -> Vec<Entry> {
         Entry::new("Change sort order", "s", Action::CycleSortOrder),
         Entry::new("Toggle line numbers", "", Action::ToggleLineNumbers),
         Entry::new("Toggle vim mode", "F4", Action::ToggleVimMode),
+        Entry::new("Reset shortcuts to defaults", "", Action::ResetKeys),
         Entry::new("Change theme", "Ctrl+T", Action::OpenThemePicker),
         Entry::new("Open another vault", "", Action::OpenVaultPicker),
         Entry::new("Graph: toggle labels", "", Action::ToggleGraphLabels),
@@ -414,6 +415,36 @@ pub fn dispatch(app: &mut App, action: Action) {
             app.focus = Focus::Note;
         }
         Action::ToggleVimMode => toggle_vim(app),
+        Action::ResetKeys => {
+            let count = app.config.keys.len();
+            if count == 0 {
+                app.info("no shortcuts are remapped — every key is already the default");
+            } else {
+                app.modal = Some(Modal::Confirm(Confirm {
+                    message: format!(
+                        "Put every shortcut back on its default key? This removes {} from [keys] in config.toml.",
+                        if count == 1 {
+                            "1 remapped key".to_string()
+                        } else {
+                            format!("{count} remapped keys")
+                        }
+                    ),
+                    action: Action::ClearRemappedKeys,
+                }));
+            }
+        }
+        Action::ClearRemappedKeys => {
+            app.config.keys.clear();
+            app.keymap = crate::keymap::Keymap::default();
+            // Written straight away, like the vim toggle: a reset that came
+            // back on the next start would be no reset at all.
+            match app.save_config() {
+                Ok(_) => app.info("shortcuts back to their defaults — saved to config.toml"),
+                Err(err) => app.error(format!(
+                    "shortcuts back to their defaults for this session — could not save the config: {err}"
+                )),
+            }
+        }
         Action::ToggleLeftSidebar => {
             app.config.ui.show_left_sidebar = !app.config.ui.show_left_sidebar;
             if !app.config.ui.show_left_sidebar && app.focus == Focus::Explorer {

@@ -36,7 +36,8 @@ All notable changes to this project are documented here. The format follows
   reach from the keyboard. Any app-wide shortcut can now be given a key of
   your own, such as `toggle_left_sidebar = "alt+e"`. The default keeps working
   beside it, the palette shows the new key, and a name or key that isn't
-  understood is reported at startup rather than quietly ignored.
+  understood is reported at startup rather than quietly ignored. "Reset
+  shortcuts to defaults" in the palette puts every key back, after asking.
 
 ### Fixed
 

@@ -523,7 +523,8 @@ A key is modifiers and a key joined by `+`: `ctrl`, `alt` (or `option`) and
 `pageup`, `pagedown` or `f1`–`f24`. It needs `Ctrl` or `Alt` unless it is an
 F-key, so typing can never set one off. The default key keeps working
 alongside yours, and the palette shows yours. A name or key that isn't
-understood is reported when the app starts.
+understood is reported when the app starts. `Ctrl+P` → "Reset shortcuts to
+defaults" empties the section again, after asking, and saves the config.
 
 The names are `open_palette`, `open_switcher`, `open_search`, `new_note`,
 `save`, `daily_note`, `toggle_mode`, `close_tab`, `next_tab`, `previous_tab`,
