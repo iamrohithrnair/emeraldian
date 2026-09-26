@@ -370,6 +370,10 @@ base_url = "http://localhost:11434/v1"   # Ollama, LM Studio, vLLM, OpenRouterâ€
 model = "llama3.1"
 ```
 
+The same `base_url` swap also works for cloud OpenAI-compatible endpoints â€”
+point it at Novita (`https://api.novita.ai/openai/v1`) or another hosted
+provider when you don't need to stay offline.
+
 With no key configured the panel still opens and explains how to set one up;
 nothing else in the app depends on it.
 

@@ -2,9 +2,9 @@
 //!
 //! A provider turns a [`Request`] into a streamed [`Completion`]. Two are
 //! built in — Anthropic's Messages API and the OpenAI-compatible chat
-//! completions shape, which covers Ollama, LM Studio, vLLM and OpenRouter —
-//! plus an offline [`mock`] provider so the chat panel, its tools and its tests
-//! all work without network or credentials.
+//! completions shape, which covers Ollama, LM Studio, vLLM, OpenRouter and
+//! Novita — plus an offline [`mock`] provider so the chat panel, its tools
+//! and its tests all work without network or credentials.
 //!
 //! Each connector splits into a pure decoder over a byte stream and a thin HTTP
 //! wrapper. The decoders are where the protocol complexity lives, and keeping
