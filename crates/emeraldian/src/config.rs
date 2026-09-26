@@ -4,6 +4,7 @@
 //! defaults. It lives outside the vault so a vault stays a plain folder of
 //! Markdown that Obsidian and git are both happy with.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -23,6 +24,11 @@ pub struct Config {
     pub graph: GraphConfig,
     pub images: ImageConfig,
     pub agent: AgentConfig,
+    /// Shortcuts moved to other keys, by name: `toggle_left_sidebar =
+    /// "alt+e"`. Left out of the file while empty, so a config the app writes
+    /// back doesn't grow a section nobody asked for.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub keys: BTreeMap<String, String>,
 }
 
 impl Default for Config {
@@ -37,6 +43,7 @@ impl Default for Config {
             graph: GraphConfig::default(),
             images: ImageConfig::default(),
             agent: AgentConfig::default(),
+            keys: BTreeMap::new(),
         }
     }
 }
@@ -501,6 +508,20 @@ mod tests {
         let parsed: Config = toml::from_str(&text).expect("parse");
         assert_eq!(parsed.theme, "gruvbox-dark");
         assert_eq!(parsed.ui.chat_width, config.ui.chat_width);
+    }
+
+    #[test]
+    fn remapped_keys_survive_the_app_rewriting_the_file() {
+        // The app writes the config back whenever vim mode is toggled, and a
+        // section it didn't know about would be dropped on that write.
+        let text = "theme = \"nord\"\n\n[keys]\ntoggle_left_sidebar = \"alt+e\"\n";
+        let config: Config = toml::from_str(text).expect("parse");
+        let written = toml::to_string_pretty(&config).expect("serialize");
+        let reread: Config = toml::from_str(&written).expect("reparse");
+        assert_eq!(reread.keys["toggle_left_sidebar"], "alt+e");
+
+        let untouched = toml::to_string_pretty(&Config::default()).expect("serialize");
+        assert!(!untouched.contains("[keys]"), "no empty section is written");
     }
 
     #[test]

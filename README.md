@@ -132,7 +132,7 @@ doesn't. `?` shows the full list in the app.
 | `Ctrl+N` / `Ctrl+D` | New note / today's daily note |
 | `Ctrl+G` / `Ctrl+Shift+G` | Graph / local graph |
 | `Ctrl+L` | Assistant panel |
-| `Ctrl+\` / `Ctrl+]` | Toggle the sidebars |
+| `Ctrl+\` / `Ctrl+]` | Toggle the sidebars (hard to type on some layouts — [remap them](#configuration)) |
 | `Tab` | Move between panes |
 | `hjkl`, `g`, `G` | Move within a pane |
 | `Enter` | Open / follow a link |
@@ -508,6 +508,28 @@ when the terminal's answer is wrong — a recorder or a multiplexer that claims
 one it doesn't actually paint, which leaves a blank hole rather than a bad
 picture. `halfblocks` is the useful answer there: coarse, but drawn out of
 ordinary text cells, so it survives anything that can show text at all.
+
+Any app-wide shortcut can be given a key of your own under `[keys]` — useful on
+layouts where `\` and `]` sit behind AltGr and `Ctrl+\` can't be typed:
+
+```toml
+[keys]
+toggle_left_sidebar = "alt+e"
+toggle_right_sidebar = "ctrl+alt+o"
+```
+
+A key is modifiers and a key joined by `+`: `ctrl`, `alt` (or `option`) and
+`shift`, then a character, `space`, `tab`, `enter`, an arrow, `home`, `end`,
+`pageup`, `pagedown` or `f1`–`f24`. It needs `Ctrl` or `Alt` unless it is an
+F-key, so typing can never set one off. The default key keeps working
+alongside yours, and the palette shows yours. A name or key that isn't
+understood is reported when the app starts.
+
+The names are `open_palette`, `open_switcher`, `open_search`, `new_note`,
+`save`, `daily_note`, `toggle_mode`, `close_tab`, `next_tab`, `previous_tab`,
+`rename_note`, `open_theme_picker`, `toggle_chat`, `cycle_side_panel`,
+`toggle_left_sidebar`, `toggle_right_sidebar`, `open_graph`, `open_local_graph`,
+`refresh`, `back`, `toggle_vim_mode` and `quit`.
 
 ## Layout
 

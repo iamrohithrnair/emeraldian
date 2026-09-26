@@ -30,6 +30,14 @@ All notable changes to this project are documented here. The format follows
   Windows. Where none of those can copy, as over SSH, it falls back to OSC 52
   and asks the terminal to do it (tmux needs `set -g set-clipboard on`).
 
+- **Shortcuts can be moved to other keys, under `[keys]` in `config.toml`.**
+  `Ctrl+\` and `Ctrl+]` can't be typed on layouts where `\` and `]` sit
+  behind AltGr, Spanish among them, which left both sidebar toggles out of
+  reach from the keyboard. Any app-wide shortcut can now be given a key of
+  your own, such as `toggle_left_sidebar = "alt+e"`. The default keeps working
+  beside it, the palette shows the new key, and a name or key that isn't
+  understood is reported at startup rather than quietly ignored.
+
 ### Fixed
 
 - **`f`, `t` and `gg` work in Visual mode.** The key after them was read as a

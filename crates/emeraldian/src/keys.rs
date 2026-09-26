@@ -41,6 +41,14 @@ pub fn handle(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // Keys moved in `[keys]` come before everything but an overlay. The user
+    // chose them, and ahead of vim is the only place a chord like `Alt+E` can
+    // stand: Normal mode would otherwise read it as a plain `e`.
+    if let Some(action) = app.keymap.action_for(&normalize_legacy_ctrl(key)) {
+        dispatch(app, action);
+        return;
+    }
+
     // Vim comes in two layers, and keeping them apart is what stops each from
     // leaking into the other's territory.
     //
@@ -1730,5 +1738,97 @@ mod clipboard_tests {
         paste(&mut app, "q");
         assert!(app.modal.is_none(), "pasted text is not a command");
         assert_eq!(app.view, View::Notes);
+    }
+}
+
+#[cfg(test)]
+mod keymap_tests {
+    use super::*;
+    use crate::config::Config;
+    use emeraldian_core::test_support::TempVault;
+
+    fn ctrl(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
+    fn app() -> (TempVault, App) {
+        let vault = TempVault::new("keymap");
+        vault.write("A.md", "# A\n");
+        let app = App::new(vault.vault(), Config::default()).expect("app");
+        (vault, app)
+    }
+
+    fn remapped(pairs: &[(&str, &str)]) -> (TempVault, App) {
+        let (vault, mut app) = app();
+        let keys = pairs
+            .iter()
+            .map(|(name, key)| ((*name).to_string(), (*key).to_string()))
+            .collect();
+        app.keymap = crate::keymap::Keymap::new(&keys);
+        (vault, app)
+    }
+
+    #[test]
+    fn a_remapped_key_works_and_the_default_still_does() {
+        let (_v, mut app) = remapped(&[("toggle_left_sidebar", "alt+e")]);
+        let shown = app.config.ui.show_left_sidebar;
+        handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT),
+        );
+        assert_eq!(app.config.ui.show_left_sidebar, !shown);
+        handle(&mut app, ctrl(KeyCode::Char('\\')));
+        assert_eq!(app.config.ui.show_left_sidebar, shown);
+    }
+
+    #[test]
+    fn a_remapped_key_beats_vim_normal_mode() {
+        let (_v, mut app) = remapped(&[("toggle_right_sidebar", "alt+o")]);
+        let a = app.index.id_of_rel("A.md").unwrap();
+        app.open_note(a);
+        app.active_mut().unwrap().mode = Mode::Editing;
+        app.config.editor.vim = true;
+        app.focus = Focus::Note;
+        let text = app.editor_mut().unwrap().text();
+        let shown = app.config.ui.show_right_sidebar;
+
+        handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::ALT),
+        );
+        assert_eq!(app.config.ui.show_right_sidebar, !shown);
+        assert_eq!(
+            app.editor_mut().unwrap().text(),
+            text,
+            "not read as vim's o"
+        );
+    }
+
+    #[test]
+    fn an_overlay_keeps_its_keys() {
+        let (_v, mut app) = remapped(&[("toggle_left_sidebar", "alt+e")]);
+        handle(&mut app, ctrl(KeyCode::Char('p')));
+        let shown = app.config.ui.show_left_sidebar;
+        handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT),
+        );
+        assert_eq!(app.config.ui.show_left_sidebar, shown);
+        assert!(matches!(app.modal, Some(Modal::Picker(_))));
+    }
+
+    #[test]
+    fn the_palette_shows_the_remapped_key() {
+        let (_v, mut app) = remapped(&[("toggle_left_sidebar", "alt+e")]);
+        handle(&mut app, ctrl(KeyCode::Char('p')));
+        let Some(Modal::Picker(picker)) = &app.modal else {
+            panic!("palette open");
+        };
+        let entry = picker
+            .visible()
+            .map(|(entry, _)| entry)
+            .find(|e| e.action == Action::ToggleLeftSidebar)
+            .expect("listed");
+        assert_eq!(entry.detail, "Alt+E");
     }
 }

@@ -16,6 +16,7 @@ mod config;
 mod editor;
 mod explorer;
 mod images;
+mod keymap;
 mod keys;
 mod modal;
 mod obsidian;
@@ -290,6 +291,17 @@ fn run(app: &mut App) -> io::Result<()> {
              Try auto, kitty, iterm2, sixel or halfblocks.",
             app.config.images.protocol
         ));
+    }
+    // Last for the same reason: a shortcut that silently does nothing is
+    // the bug this section exists to get people out of.
+    if let Some(problem) = app.keymap.problems.first() {
+        let more = app.keymap.problems.len() - 1;
+        let problem = if more == 0 {
+            problem.clone()
+        } else {
+            format!("{problem} (and {more} more in [keys])")
+        };
+        app.error(problem);
     }
 
     // `init` panics when there's no terminal — in a pipe, a CI job, or a

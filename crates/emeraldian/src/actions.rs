@@ -460,7 +460,15 @@ pub fn dispatch(app: &mut App, action: Action) {
 
         // ---- modals -----------------------------------------------------
         Action::OpenPalette => {
-            app.modal = Some(Modal::Picker(Picker::new(PickerKind::Commands, commands())));
+            let mut entries = commands();
+            // A remapped shortcut is the one worth showing: it is the key the
+            // user actually reaches for.
+            for entry in &mut entries {
+                if let Some(label) = app.keymap.label_for(&entry.action) {
+                    entry.detail = label;
+                }
+            }
+            app.modal = Some(Modal::Picker(Picker::new(PickerKind::Commands, entries)));
         }
         Action::OpenSwitcher => {
             let entries = app

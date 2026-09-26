@@ -388,6 +388,8 @@ pub struct App {
     /// time, and a register shared across tabs is what vim does — yanking in
     /// one note and putting it in another is the whole point.
     pub vim: crate::vim::Vim,
+    /// The `[keys]` section, read once at startup.
+    pub keymap: crate::keymap::Keymap,
     /// Where `config.toml` and `state.json` are written, when it isn't the
     /// real config directory.
     ///
@@ -443,6 +445,7 @@ impl App {
             images: crate::images::Images::disabled(),
             scenes: crate::ui::drawing::Scenes::default(),
             vim: crate::vim::Vim::default(),
+            keymap: crate::keymap::Keymap::new(&config.keys),
             config_dir: None,
             quit: false,
             theme: ActiveTheme::new(theme),
