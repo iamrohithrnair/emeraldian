@@ -4,6 +4,32 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Copy and paste through the system clipboard.** While editing a note,
+  `Ctrl+C`, `Ctrl+X` and `Ctrl+V` copy, cut and paste, so text can finally move
+  between a note and another app. A paste replaces the selection, keeps its line
+  breaks, and undoes in one step. With nothing selected, `Ctrl+C` and `Ctrl+X`
+  say so rather than doing nothing silently.
+
+  The terminal's own paste now arrives as one block, using bracketed paste.
+  Into a note it goes in whole; into the chat box, a search, the palette or a
+  name prompt it becomes a single line, because a pasted newline used to send
+  a half-written chat message.
+
+  Vim mode behaves like vim with `clipboard=unnamedplus`: `y`, `d`, `c`, `x`,
+  `s` and the rest put text on the system clipboard, and `p`/`P` put whatever
+  was copied last, here or elsewhere. `"+` and `"*` are accepted and mean the
+  same register. In Visual mode `p` puts over the selection and keeps what was
+  copied, `Ctrl+C` yanks, and `Ctrl+V` pastes over the selection.
+
+  No new dependencies: the clipboard is reached through `pbcopy`/`pbpaste` on
+  macOS, `wl-copy`/`wl-paste`, `xclip` or `xsel` on Linux, and PowerShell on
+  Windows. Where none of those can copy, as over SSH, it falls back to OSC 52
+  and asks the terminal to do it (tmux needs `set -g set-clipboard on`).
+
 ## [0.5.0] — 2026-08-10
 
 A minor rather than a patch release: vim mode is a new way to use the editor,
@@ -549,6 +575,7 @@ First release.
 - Unreadable vaults are reported clearly, including the macOS privacy
   permission that usually causes it.
 
+[Unreleased]: https://github.com/iamrohithrnair/emeraldian/compare/v0.5.0...HEAD
 [0.5.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.5.0
 [0.4.2]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.4.2
 [0.4.1]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.4.1

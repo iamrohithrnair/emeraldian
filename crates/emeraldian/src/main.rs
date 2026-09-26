@@ -11,6 +11,7 @@ mod agent;
 mod app;
 mod auth;
 mod cli;
+mod clipboard;
 mod config;
 mod editor;
 mod explorer;
@@ -240,7 +241,11 @@ fn run(app: &mut App) -> io::Result<()> {
     // an unusable shell.
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::event::DisableMouseCapture,
+            crossterm::event::DisableBracketedPaste
+        );
         // Vim mode leaves a block caret behind, which would otherwise outlive
         // the process and follow the user into their shell.
         reset_cursor_style();
@@ -305,8 +310,14 @@ fn run(app: &mut App) -> io::Result<()> {
     };
 
     // Mouse reporting isn't part of ratatui's init, so clicks and scrolling
-    // only arrive if it's turned on explicitly.
-    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
+    // only arrive if it's turned on explicitly. Bracketed paste likewise: with
+    // it on, the terminal's own paste arrives as one block of text rather than
+    // as keystrokes, each of which could be a command.
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::event::EnableMouseCapture,
+        crossterm::event::EnableBracketedPaste
+    );
 
     let result = event_loop(&mut terminal, app);
 
@@ -314,7 +325,11 @@ fn run(app: &mut App) -> io::Result<()> {
     // in a test never reaches into the real config directory.
     app.save_ui_state();
 
-    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::event::DisableMouseCapture,
+        crossterm::event::DisableBracketedPaste
+    );
     reset_cursor_style();
     ratatui::restore();
     result
@@ -387,6 +402,10 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> io::Res
                 }
                 Event::Resize(_, _) => needs_redraw = true,
                 Event::Mouse(mouse) => needs_redraw |= handle_mouse(app, mouse),
+                Event::Paste(text) => {
+                    keys::paste(app, &text);
+                    needs_redraw = true;
+                }
                 _ => {}
             }
         }

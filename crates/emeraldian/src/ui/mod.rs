@@ -287,6 +287,7 @@ fn hints_for(app: &App) -> &'static [(&'static str, &'static str)] {
                     ("^B/^I", "bold/italic"),
                     ("Tab", "indent list"),
                     ("^Z", "undo"),
+                    ("^C/^V", "copy/paste"),
                     ("click", "place cursor"),
                     ("F3", "close tab"),
                     ("^\\", "files"),

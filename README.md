@@ -145,6 +145,21 @@ it on an empty item; `Tab`/`Shift+Tab` nest and unnest a list item, and are stil
 a tab in prose. `Ctrl+B`/`Ctrl+I` wrap the selection, `Ctrl+Space` starts one
 without holding `Shift`, and `Ctrl+Shift+K` deletes the line.
 
+`Ctrl+C`, `Ctrl+X` and `Ctrl+V` copy, cut and paste through the system
+clipboard, so text moves between a note and any other app. Your terminal's own
+paste (`Cmd+V` on macOS, `Ctrl+Shift+V` on most Linux terminals) arrives as one
+block: into a note with its line breaks intact, and into the chat box, a search
+or a name prompt as a single line, so a pasted newline never sends a message
+before you meant it to.
+
+Emeraldian reaches the clipboard through tools already on your system, rather
+than a dependency of its own: `pbcopy`/`pbpaste` on macOS, `wl-copy`/`wl-paste`,
+`xclip` or `xsel` on Linux, and PowerShell on Windows. Where none of them can
+copy, over SSH for instance, it asks the terminal to do it with OSC 52, which
+Ghostty, kitty, WezTerm, iTerm2, Alacritty and Windows Terminal understand;
+inside tmux that needs `set -g set-clipboard on`. Copy and paste within the app
+work either way.
+
 In the file explorer: `/` filters by name, `s` changes the sort order, `Space`
 folds a folder, and `H`/`L` collapse or expand every folder at once.
 
@@ -193,6 +208,15 @@ the app's: `Ctrl+R` redoes, `Ctrl+D`/`Ctrl+U` and `Ctrl+F`/`Ctrl+B` scroll,
 through the notes you've visited. They keep their usual meanings in Insert mode,
 in every other pane, and whenever vim mode is off. Shifted combinations are left
 alone, so `Ctrl+Shift+F` still searches the vault.
+
+Yanks and deletes go to the system clipboard, as they do in vim with
+`clipboard=unnamedplus`: `y`, `d`, `c`, `x` and `s` put their text there, and
+`p`/`P` put whatever was copied last, here or in another app. Text copied
+elsewhere goes in as whole lines when it ends in a newline. `"+` and `"*` are
+accepted in front of either — `"+yy`, `"+p` — and mean the same thing. In Visual
+mode `p` puts over the selection and keeps what was copied, so it can go over
+the next one too; `Ctrl+C` yanks the selection and `Ctrl+V` pastes over it, and
+`Ctrl+V` pastes in Normal mode too.
 
 `Esc` in Insert returns to Normal, and `Esc` again leaves for the reading view,
 which is where one press used to take you.

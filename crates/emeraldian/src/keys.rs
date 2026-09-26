@@ -438,6 +438,31 @@ fn handle_editing(app: &mut App, key: KeyEvent) {
                 }
                 return;
             }
+            KeyCode::Char(ch @ ('c' | 'C' | 'x' | 'X')) => {
+                let cut = ch.eq_ignore_ascii_case(&'x');
+                let text = app.editor_mut().and_then(|editor| {
+                    let text = editor.selected_text()?;
+                    if cut {
+                        editor.commit();
+                        editor.delete_selection();
+                        editor.commit();
+                    }
+                    Some(text)
+                });
+                match text {
+                    Some(text) => {
+                        crate::clipboard::copy(&text);
+                        app.info(if cut { "cut" } else { "copied" });
+                    }
+                    None => app.info("select some text first — Shift+arrows or drag"),
+                }
+                return;
+            }
+            KeyCode::Char('v' | 'V') => {
+                let text = crate::clipboard::paste();
+                paste_into_editor(app, &text);
+                return;
+            }
             // Emacs-style set-mark, for selecting without holding shift.
             KeyCode::Char(' ') => {
                 if let Some(editor) = app.editor_mut() {
@@ -489,6 +514,49 @@ fn handle_editing(app: &mut App, key: KeyEvent) {
             dispatch(app, Action::ToggleMode);
         }
         _ => {}
+    }
+}
+
+/// Handles text the terminal pasted in one piece.
+///
+/// Bracketed paste is on, so a paste arrives whole rather than as keystrokes.
+/// That is what keeps a pasted newline from sending a half-written chat
+/// message, and a pasted `d` from running as a vim command.
+pub fn paste(app: &mut App, text: &str) {
+    app.status.text.clear();
+    let text = crate::clipboard::normalize(text);
+
+    let typing_field = matches!(app.modal, Some(Modal::Picker(_) | Modal::Prompt(_)))
+        || (app.modal.is_none() && app.focus == Focus::Chat);
+    if typing_field {
+        // A search, a name or a chat message is one line, so the paste is
+        // typed into it as one.
+        for ch in text.chars() {
+            let ch = if ch.is_whitespace() { ' ' } else { ch };
+            handle(app, KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+    } else if app.modal.is_none() && app.focus == Focus::Note && app.editing() {
+        paste_into_editor(app, &text);
+    }
+}
+
+/// Inserts text as a single undo step, replacing any selection.
+fn paste_into_editor(app: &mut App, text: &str) {
+    let vim_normal = app.config.editor.vim && app.vim.mode.is_normal_like();
+    if vim_normal {
+        // A paste over a visual selection replaces it, and what is left is
+        // no longer a selection to stay in.
+        app.vim.reset();
+    }
+    let Some(editor) = app.editor_mut() else {
+        return;
+    };
+    editor.commit();
+    editor.insert_str(text);
+    editor.commit();
+    // Normal mode keeps the cursor on a character, never past the end.
+    if vim_normal {
+        editor.clamp_normal();
     }
 }
 
@@ -1541,5 +1609,126 @@ mod binding_tests {
             press(&mut app, 's');
         }
         assert_eq!(app.explorer.sort(), start, "a full cycle should come home");
+    }
+}
+
+#[cfg(test)]
+mod clipboard_tests {
+    use super::*;
+    use crate::config::Config;
+    use emeraldian_core::test_support::TempVault;
+
+    fn ctrl(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
+    fn app() -> (TempVault, App) {
+        let vault = TempVault::new("clip");
+        vault.write("A.md", "# A\n");
+        let app = App::new(vault.vault(), Config::default()).expect("app");
+        (vault, app)
+    }
+
+    /// A note open for editing with vim off.
+    fn editing(text: &str) -> (TempVault, App) {
+        let vault = TempVault::new("clip");
+        vault.write("N.md", text);
+        let mut app = App::new(vault.vault(), Config::default()).expect("app");
+        let id = app.index.id_of_rel("N.md").expect("indexed");
+        app.open_note(id);
+        app.active_mut().expect("tab").mode = Mode::Editing;
+        (vault, app)
+    }
+
+    fn note(app: &mut App) -> String {
+        app.editor_mut().expect("editor").text()
+    }
+
+    #[test]
+    fn ctrl_c_then_ctrl_v_copies_several_lines_intact() {
+        let (_v, mut app) = editing("- [ ] one\n- [ ] two\nend\n");
+        let editor = app.editor_mut().expect("editor");
+        editor.goto(0, 0);
+        editor.begin_selection();
+        editor.goto_extend(2, 0);
+        handle(&mut app, ctrl(KeyCode::Char('c')));
+        assert_eq!(crate::clipboard::paste(), "- [ ] one\n- [ ] two\n");
+
+        app.editor_mut().expect("editor").goto(2, 0);
+        handle(&mut app, ctrl(KeyCode::Char('v')));
+        assert_eq!(
+            note(&mut app),
+            "- [ ] one\n- [ ] two\n- [ ] one\n- [ ] two\nend\n",
+            "pasted as written — no list marker added, no line lost"
+        );
+
+        handle(&mut app, ctrl(KeyCode::Char('z')));
+        assert_eq!(
+            note(&mut app),
+            "- [ ] one\n- [ ] two\nend\n",
+            "one undo takes the whole paste back"
+        );
+    }
+
+    #[test]
+    fn ctrl_x_cuts_the_selection() {
+        let (_v, mut app) = editing("keep cut\n");
+        let editor = app.editor_mut().expect("editor");
+        editor.goto(0, 4);
+        editor.begin_selection();
+        editor.goto_extend(0, 8);
+        handle(&mut app, ctrl(KeyCode::Char('x')));
+        assert_eq!(note(&mut app), "keep\n");
+        assert_eq!(crate::clipboard::paste(), " cut");
+    }
+
+    #[test]
+    fn copying_nothing_says_how_to_select() {
+        let (_v, mut app) = editing("text\n");
+        crate::clipboard::copy("before");
+        handle(&mut app, ctrl(KeyCode::Char('c')));
+        assert!(app.status.text.contains("select"));
+        assert_eq!(
+            crate::clipboard::paste(),
+            "before",
+            "the clipboard is left alone"
+        );
+    }
+
+    #[test]
+    fn a_terminal_paste_goes_into_the_note_whole() {
+        let (_v, mut app) = editing("");
+        // Terminals send bracketed paste with `\r` for each newline.
+        paste(&mut app, "# Title\r\rbody");
+        assert_eq!(note(&mut app), "# Title\n\nbody\n");
+    }
+
+    #[test]
+    fn a_terminal_paste_into_the_chat_does_not_send_it() {
+        let (_v, mut app) = app();
+        app.focus = Focus::Chat;
+        paste(&mut app, "first line\nsecond");
+        assert_eq!(app.chat.input, "first line second");
+    }
+
+    #[test]
+    fn a_terminal_paste_into_the_palette_filters_it() {
+        let (_v, mut app) = app();
+        handle(&mut app, ctrl(KeyCode::Char('p')));
+        paste(&mut app, "sav");
+        let Some(Modal::Picker(picker)) = &app.modal else {
+            panic!("the palette is still open");
+        };
+        assert_eq!(picker.query, "sav");
+    }
+
+    #[test]
+    fn a_terminal_paste_while_reading_changes_nothing() {
+        let (_v, mut app) = app();
+        let a = app.index.id_of_rel("A.md").unwrap();
+        app.open_note(a);
+        paste(&mut app, "q");
+        assert!(app.modal.is_none(), "pasted text is not a command");
+        assert_eq!(app.view, View::Notes);
     }
 }
