@@ -816,9 +816,7 @@ impl Editor {
     /// Indents or outdents every line the cursor or the selection touches.
     pub fn indent(&mut self, forward: bool) {
         self.push_undo(EditKind::Structural);
-        let (start, end) = self
-            .selection()
-            .map_or((self.cursor, self.cursor), |(s, e)| (s, e));
+        let (start, end) = self.selection().unwrap_or((self.cursor, self.cursor));
 
         let step = if self.expand_tabs {
             " ".repeat(self.tab_width)
@@ -921,9 +919,7 @@ impl Editor {
     /// Deletes the current line, or every line the selection touches.
     pub fn delete_line(&mut self) {
         self.push_undo(EditKind::Structural);
-        let (start, end) = self
-            .selection()
-            .map_or((self.cursor, self.cursor), |(s, e)| (s, e));
+        let (start, end) = self.selection().unwrap_or((self.cursor, self.cursor));
 
         let first = start.line;
         let last = end.line.min(self.lines.len() - 1);
