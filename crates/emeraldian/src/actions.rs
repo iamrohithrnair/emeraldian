@@ -101,7 +101,21 @@ pub fn toggle_vim(app: &mut App) {
     // hung editor.
     app.vim.reset();
 
-    let saved = app.save_config();
+    // Through `TableLike` so `[editor]`, `editor.vim = …` and an inline
+    // `editor = { … }` are all edited where they are.
+    let saved = app.edit_config(|config| {
+        let editor = config.entry("editor").or_insert(toml_edit::table());
+        if let Some(editor) = editor.as_table_like_mut() {
+            // Only the value is replaced when the key is there, so a comment
+            // written above it stays with it.
+            match editor.get_mut("vim") {
+                Some(vim) => *vim = toml_edit::value(on),
+                None => {
+                    editor.insert("vim", toml_edit::value(on));
+                }
+            }
+        }
+    });
     if on {
         // The first time only, open the reference rather than making someone
         // guess how to get back out.
@@ -438,7 +452,9 @@ pub fn dispatch(app: &mut App, action: Action) {
             app.keymap = crate::keymap::Keymap::default();
             // Written straight away, like the vim toggle: a reset that came
             // back on the next start would be no reset at all.
-            match app.save_config() {
+            match app.edit_config(|config| {
+                config.remove("keys");
+            }) {
                 Ok(_) => app.info("shortcuts back to their defaults — saved to config.toml"),
                 Err(err) => app.error(format!(
                     "shortcuts back to their defaults for this session — could not save the config: {err}"

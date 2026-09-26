@@ -405,6 +405,30 @@ impl Config {
         Ok(path.to_path_buf())
     }
 
+    /// Changes a file already on disk and nothing else in it.
+    ///
+    /// For the settings the app writes on its own, the moment they change —
+    /// the vim toggle and the shortcut reset. Rewriting the whole file from
+    /// memory for those would drop the user's comments and layout, and quietly
+    /// save everything else they had only changed for this session. A file that
+    /// no longer parses is left alone and reported: overwriting it would throw
+    /// away whatever the user was halfway through fixing.
+    pub fn edit_file(
+        path: &Path,
+        edit: impl FnOnce(&mut toml_edit::DocumentMut),
+    ) -> std::io::Result<PathBuf> {
+        let text = fs::read_to_string(path)?;
+        let mut document: toml_edit::DocumentMut = text.parse().map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{} doesn't parse: {e}", path.display()),
+            )
+        })?;
+        edit(&mut document);
+        fs::write(path, document.to_string())?;
+        Ok(path.to_path_buf())
+    }
+
     /// Creates the config file with defaults if it doesn't exist yet.
     pub fn ensure_exists(&self) -> std::io::Result<PathBuf> {
         let path = Self::path().ok_or_else(|| {

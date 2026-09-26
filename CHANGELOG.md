@@ -46,6 +46,13 @@ All notable changes to this project are documented here. The format follows
   it to the `x`, and `vgg` went nowhere. They now extend the selection as they
   do in vim.
 
+- **Toggling vim mode changes one line of `config.toml`, not the whole file.**
+  It used to write out every setting from memory, which dropped your comments
+  and layout, and saved settings you had only changed for that session. It now
+  edits just `vim` under `[editor]`, however it was written there, and leaves a
+  file that doesn't parse alone rather than overwriting it. Resetting shortcuts
+  works the same way.
+
 ## [0.5.0] — 2026-08-10
 
 A minor rather than a patch release: vim mode is a new way to use the editor,

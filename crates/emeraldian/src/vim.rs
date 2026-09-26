@@ -2368,6 +2368,69 @@ mod tests {
     }
 
     #[test]
+    fn toggling_changes_only_that_line_of_the_file() {
+        let (_v, mut app, dir) = toggling("in-place", "text\n");
+        let path = dir.join("config.toml");
+        let before = "# my setup\ntheme = \"nord\"\n\n[editor]\n# modal editing\nvim = false\ntab_width = 2\n";
+        std::fs::write(&path, before).expect("seed");
+        // Changed for this session only; the toggle must not save it.
+        app.config.ui.sidebar_width = 99;
+        app.config.editor.vim = false;
+        f4(&mut app);
+
+        let written = std::fs::read_to_string(&path).expect("read");
+        assert_eq!(written, before.replace("vim = false", "vim = true"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn toggling_finds_the_setting_however_it_was_written() {
+        for (tag, before, after) in [
+            ("dotted", "editor.vim = true\n", "editor.vim = false\n"),
+            (
+                "inline",
+                "editor = { vim = true }\n",
+                "editor = { vim = false }\n",
+            ),
+            (
+                "absent",
+                "theme = \"nord\"\n",
+                "theme = \"nord\"\n\n[editor]\nvim = false\n",
+            ),
+        ] {
+            let (_v, mut app, dir) = toggling(tag, "text\n");
+            let path = dir.join("config.toml");
+            std::fs::write(&path, before).expect("seed");
+            app.config.editor.vim = true;
+            f4(&mut app);
+            assert_eq!(
+                std::fs::read_to_string(&path).expect("read"),
+                after,
+                "{tag}"
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn a_config_that_does_not_parse_is_left_alone() {
+        let (_v, mut app, dir) = toggling("broken", "text\n");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[editor\nvim = false\n").expect("seed");
+        app.config.editor.vim = false;
+        f4(&mut app);
+
+        assert!(app.config.editor.vim, "still on for this session");
+        assert!(app.status.is_error && app.status.text.contains("could not save"));
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "[editor\nvim = false\n",
+            "the half-fixed file is not overwritten"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn the_reference_opens_the_first_time_only() {
         let (_v, mut app, dir) = toggling("intro", "text\n");
         app.config.editor.vim = false;

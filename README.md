@@ -182,7 +182,9 @@ own Normal mode, so it is always the way back out. `/vim on`, `:set vim` and
 
 Unlike every other setting, this one is written to `config.toml` the moment you
 change it. It decides what every key on the keyboard does, and having that
-quietly reset on the next launch would be a poor trade for consistency.
+quietly reset on the next launch would be a poor trade for consistency. Only
+that one line of the file changes: your comments, your layout and every other
+setting stay exactly as you left them.
 
 ```
 modes     Normal · Insert · Visual · V-Line, named in the status bar
@@ -524,7 +526,8 @@ A key is modifiers and a key joined by `+`: `ctrl`, `alt` (or `option`) and
 F-key, so typing can never set one off. The default key keeps working
 alongside yours, and the palette shows yours. A name or key that isn't
 understood is reported when the app starts. `Ctrl+P` → "Reset shortcuts to
-defaults" empties the section again, after asking, and saves the config.
+defaults" removes the section again, after asking, and leaves the rest of the
+file as it was.
 
 The names are `open_palette`, `open_switcher`, `open_search`, `new_note`,
 `save`, `daily_note`, `toggle_mode`, `close_tab`, `next_tab`, `previous_tab`,

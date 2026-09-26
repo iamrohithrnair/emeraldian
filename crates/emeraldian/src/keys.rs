@@ -1882,4 +1882,26 @@ mod keymap_tests {
         assert!(app.modal.is_none());
         assert!(app.status.text.contains("already the default"));
     }
+
+    #[test]
+    fn reset_removes_only_the_keys_section() {
+        let (_v, mut app) = remapped(&[("toggle_left_sidebar", "alt+e")]);
+        let dir =
+            std::env::temp_dir().join(format!("emeraldian-keys-inplace-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        app.config_dir = Some(dir.clone());
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            "# mine\ntheme = \"nord\"\n\n[keys]\ntoggle_left_sidebar = \"alt+e\"\n",
+        )
+        .expect("seed");
+
+        dispatch(&mut app, Action::ClearRemappedKeys);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "# mine\ntheme = \"nord\"\n"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

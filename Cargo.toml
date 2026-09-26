@@ -42,6 +42,9 @@ image = { version = "0.25", default-features = false, features = [
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1"
+# Edits the config file in place, comments and all, when the app changes a
+# single setting — the vim toggle, a shortcut reset.
+toml_edit = "0.25"
 dirs = "6"
 anyhow = "1"
 unicode-width = "0.2"

@@ -476,6 +476,29 @@ impl App {
         }
     }
 
+    /// Writes one change into the config file, leaving the rest of it exactly
+    /// as it was. With no file yet, the whole config is written instead, so
+    /// the first one is the documented file `ensure_exists` would have made.
+    pub fn edit_config(
+        &self,
+        edit: impl FnOnce(&mut toml_edit::DocumentMut),
+    ) -> std::io::Result<PathBuf> {
+        let path = match &self.config_dir {
+            Some(dir) => dir.join("config.toml"),
+            None => Config::path().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "no config directory on this platform",
+                )
+            })?,
+        };
+        if path.exists() {
+            Config::edit_file(&path, edit)
+        } else {
+            self.config.save_to(&path)
+        }
+    }
+
     /// Reads the persistent UI state from wherever this app keeps it.
     pub fn load_state(&self) -> crate::state::State {
         match &self.config_dir {
