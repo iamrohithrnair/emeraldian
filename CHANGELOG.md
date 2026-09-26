@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0]
 
 ### Added
 
@@ -575,7 +575,7 @@ First release.
 - Unreadable vaults are reported clearly, including the macOS privacy
   permission that usually causes it.
 
-[Unreleased]: https://github.com/iamrohithrnair/emeraldian/compare/v0.5.0...HEAD
+[0.6.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.6.0
 [0.5.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.5.0
 [0.4.2]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.4.2
 [0.4.1]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.4.1
