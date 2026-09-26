@@ -30,6 +30,13 @@ All notable changes to this project are documented here. The format follows
   Windows. Where none of those can copy, as over SSH, it falls back to OSC 52
   and asks the terminal to do it (tmux needs `set -g set-clipboard on`).
 
+### Fixed
+
+- **`f`, `t` and `gg` work in Visual mode.** The key after them was read as a
+  Visual command of its own, so `vfx` cut the selection instead of stretching
+  it to the `x`, and `vgg` went nowhere. They now extend the selection as they
+  do in vim.
+
 ## [0.5.0] — 2026-08-10
 
 A minor rather than a patch release: vim mode is a new way to use the editor,

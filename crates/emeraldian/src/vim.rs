@@ -1561,6 +1561,37 @@ fn visual(app: &mut App, key: KeyEvent) -> bool {
         return true;
     }
 
+    // `f`, `t` and `g` wait for a second key, and that key belongs to them.
+    // Read as a Visual command of its own instead, the `x` of `vfx` cut the
+    // selection rather than stretching it to the `x`.
+    match app.vim.pending {
+        Pending::Find { forward, till, .. } => {
+            if let KeyCode::Char(ch) = key.code {
+                app.vim.last_find = Some(FindTarget { ch, forward, till });
+                let count = app.vim.count();
+                // The cursor moves and the anchor stays, so the selection grows.
+                with_editor(app, |editor| {
+                    if let Some(to) = editor.find_in_line(editor.cursor(), ch, forward, till, count)
+                    {
+                        editor.set_cursor(to);
+                    }
+                });
+            }
+            return finish_visual_motion(app);
+        }
+        Pending::G => {
+            if key.code == KeyCode::Char('g') {
+                let line = app.vim.count.map_or(0, |n| n.saturating_sub(1));
+                with_editor(app, |editor| {
+                    editor.set_cursor(crate::editor::Cursor { line, col: 0 });
+                    editor.move_first_nonblank(true);
+                });
+            }
+            return finish_visual_motion(app);
+        }
+        _ => {}
+    }
+
     match key.code {
         KeyCode::Esc => {
             app.vim.mode = VimMode::Normal;
@@ -1718,6 +1749,11 @@ fn visual(app: &mut App, key: KeyEvent) -> bool {
         }
     }
 
+    finish_visual_motion(app)
+}
+
+/// Settles the selection after the cursor has moved in Visual mode.
+fn finish_visual_motion(app: &mut App) -> bool {
     if app.vim.mode == VimMode::VisualLine {
         select_lines(app);
     }
@@ -3405,5 +3441,31 @@ mod tests {
             "abc abc\n",
             "the register is kept"
         );
+    }
+
+    #[test]
+    fn f_and_t_stretch_a_visual_selection() {
+        let (_v, mut app) = app("abc xyz\n");
+        type_str(&mut app, "vfx");
+        assert_eq!(text(&mut app), "abc xyz\n", "the x was a target, not a cut");
+        assert_eq!(app.vim.mode, VimMode::Visual);
+        press(&mut app, 'd');
+        assert_eq!(text(&mut app), "yz\n", "the selection ran to the x");
+
+        let (_w, mut other) = self::app("abc xyz\n");
+        type_str(&mut other, "vtzy");
+        assert_eq!(other.vim.register.text, "abc xy", "t stops short of the z");
+        assert_eq!(text(&mut other), "abc xyz\n");
+    }
+
+    #[test]
+    fn gg_stretches_a_visual_selection_to_the_top() {
+        let (_v, mut app) = app("one\ntwo\nthree\n");
+        type_str(&mut app, "jjvggd");
+        assert_eq!(text(&mut app), "hree\n");
+
+        let (_w, mut other) = self::app("one\ntwo\nthree\n");
+        type_str(&mut other, "jjVggd");
+        assert_eq!(text(&mut other), "\n", "every line from here to the top");
     }
 }
