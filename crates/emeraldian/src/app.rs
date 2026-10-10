@@ -70,6 +70,20 @@ impl SidePanel {
             Self::Tags => Self::Outline,
         }
     }
+
+    /// The other direction, because the tabs are drawn in a row.
+    ///
+    /// A strip of tabs invites walking it both ways, and with only one way
+    /// round the third tab is two presses from the first with no way back
+    /// except three more. `h` and `l` in the sidebar are what this is for.
+    #[must_use]
+    pub fn prev(self) -> Self {
+        match self {
+            Self::Outline => Self::Tags,
+            Self::Backlinks => Self::Outline,
+            Self::Tags => Self::Backlinks,
+        }
+    }
 }
 
 /// An open note.
@@ -270,6 +284,7 @@ pub enum Action {
     /// Empties `[keys]` and writes the config. What `ResetKeys` confirms.
     ClearRemappedKeys,
     CycleSidePanel,
+    CycleSidePanelBack,
     OpenGraph,
     OpenLocalGraph,
     OpenNotesView,
