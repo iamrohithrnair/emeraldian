@@ -16,6 +16,59 @@ All notable changes to this project are documented here. The format follows
   every N seconds while it is open. 0, the default, leaves the behaviour exactly
   as it was; the timer also needs `auto_save` on, since it is the same write on
   a different trigger.
+## [0.6.0] — 2026-09-26
+
+Copy and paste through the system clipboard, shortcuts that can be moved to
+keys every layout can reach, and settings the app writes for you that no
+longer disturb the rest of `config.toml`. A `config.toml` written by an earlier
+version loads unchanged; the new `[keys]` section is optional.
+
+### Added
+
+- **Copy and paste through the system clipboard.** While editing a note,
+  `Ctrl+C`, `Ctrl+X` and `Ctrl+V` copy, cut and paste, so text can finally move
+  between a note and another app. A paste replaces the selection, keeps its line
+  breaks, and undoes in one step. With nothing selected, `Ctrl+C` and `Ctrl+X`
+  say so rather than doing nothing silently.
+
+  The terminal's own paste now arrives as one block, using bracketed paste.
+  Into a note it goes in whole; into the chat box, a search, the palette or a
+  name prompt it becomes a single line, because a pasted newline used to send
+  a half-written chat message.
+
+  Vim mode behaves like vim with `clipboard=unnamedplus`: `y`, `d`, `c`, `x`,
+  `s` and the rest put text on the system clipboard, and `p`/`P` put whatever
+  was copied last, here or elsewhere. `"+` and `"*` are accepted and mean the
+  same register. In Visual mode `p` puts over the selection and keeps what was
+  copied, `Ctrl+C` yanks, and `Ctrl+V` pastes over the selection.
+
+  No new dependencies: the clipboard is reached through `pbcopy`/`pbpaste` on
+  macOS, `wl-copy`/`wl-paste`, `xclip` or `xsel` on Linux, and PowerShell on
+  Windows. Where none of those can copy, as over SSH, it falls back to OSC 52
+  and asks the terminal to do it (tmux needs `set -g set-clipboard on`).
+
+- **Shortcuts can be moved to other keys, under `[keys]` in `config.toml`.**
+  `Ctrl+\` and `Ctrl+]` can't be typed on layouts where `\` and `]` sit
+  behind AltGr, Spanish among them, which left both sidebar toggles out of
+  reach from the keyboard. Any app-wide shortcut can now be given a key of
+  your own, such as `toggle_left_sidebar = "alt+e"`. The default keeps working
+  beside it, the palette shows the new key, and a name or key that isn't
+  understood is reported at startup rather than quietly ignored. "Reset
+  shortcuts to defaults" in the palette puts every key back, after asking.
+
+### Fixed
+
+- **`f`, `t` and `gg` work in Visual mode.** The key after them was read as a
+  Visual command of its own, so `vfx` cut the selection instead of stretching
+  it to the `x`, and `vgg` went nowhere. They now extend the selection as they
+  do in vim.
+
+- **Toggling vim mode changes one line of `config.toml`, not the whole file.**
+  It used to write out every setting from memory, which dropped your comments
+  and layout, and saved settings you had only changed for that session. It now
+  edits just `vim` under `[editor]`, however it was written there, and leaves a
+  file that doesn't parse alone rather than overwriting it. Resetting shortcuts
+  works the same way.
 
 ## [0.5.0] — 2026-08-10
 
@@ -562,6 +615,7 @@ First release.
 - Unreadable vaults are reported clearly, including the macOS privacy
   permission that usually causes it.
 
+[0.6.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.6.0
 [0.5.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.5.0
 [0.4.2]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.4.2
 [0.4.1]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.4.1

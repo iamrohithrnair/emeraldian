@@ -132,7 +132,7 @@ doesn't. `?` shows the full list in the app.
 | `Ctrl+N` / `Ctrl+D` | New note / today's daily note |
 | `Ctrl+G` / `Ctrl+Shift+G` | Graph / local graph |
 | `Ctrl+L` | Assistant panel |
-| `Ctrl+\` / `Ctrl+]` | Toggle the sidebars |
+| `Ctrl+\` / `Ctrl+]` | Toggle the sidebars (hard to type on some layouts — [remap them](#configuration)) |
 | `Tab` | Move between panes |
 | `hjkl`, `g`, `G` | Move within a pane |
 | `Enter` | Open / follow a link |
@@ -144,6 +144,21 @@ paragraph moves through a line at a time as it looks rather than as it is stored
 it on an empty item; `Tab`/`Shift+Tab` nest and unnest a list item, and are still
 a tab in prose. `Ctrl+B`/`Ctrl+I` wrap the selection, `Ctrl+Space` starts one
 without holding `Shift`, and `Ctrl+Shift+K` deletes the line.
+
+`Ctrl+C`, `Ctrl+X` and `Ctrl+V` copy, cut and paste through the system
+clipboard, so text moves between a note and any other app. Your terminal's own
+paste (`Cmd+V` on macOS, `Ctrl+Shift+V` on most Linux terminals) arrives as one
+block: into a note with its line breaks intact, and into the chat box, a search
+or a name prompt as a single line, so a pasted newline never sends a message
+before you meant it to.
+
+Emeraldian reaches the clipboard through tools already on your system, rather
+than a dependency of its own: `pbcopy`/`pbpaste` on macOS, `wl-copy`/`wl-paste`,
+`xclip` or `xsel` on Linux, and PowerShell on Windows. Where none of them can
+copy, over SSH for instance, it asks the terminal to do it with OSC 52, which
+Ghostty, kitty, WezTerm, iTerm2, Alacritty and Windows Terminal understand;
+inside tmux that needs `set -g set-clipboard on`. Copy and paste within the app
+work either way.
 
 In the file explorer: `/` filters by name, `s` changes the sort order, `Space`
 folds a folder, and `H`/`L` collapse or expand every folder at once.
@@ -167,7 +182,9 @@ own Normal mode, so it is always the way back out. `/vim on`, `:set vim` and
 
 Unlike every other setting, this one is written to `config.toml` the moment you
 change it. It decides what every key on the keyboard does, and having that
-quietly reset on the next launch would be a poor trade for consistency.
+quietly reset on the next launch would be a poor trade for consistency. Only
+that one line of the file changes: your comments, your layout and every other
+setting stay exactly as you left them.
 
 ```
 modes     Normal · Insert · Visual · V-Line, named in the status bar
@@ -193,6 +210,15 @@ the app's: `Ctrl+R` redoes, `Ctrl+D`/`Ctrl+U` and `Ctrl+F`/`Ctrl+B` scroll,
 through the notes you've visited. They keep their usual meanings in Insert mode,
 in every other pane, and whenever vim mode is off. Shifted combinations are left
 alone, so `Ctrl+Shift+F` still searches the vault.
+
+Yanks and deletes go to the system clipboard, as they do in vim with
+`clipboard=unnamedplus`: `y`, `d`, `c`, `x` and `s` put their text there, and
+`p`/`P` put whatever was copied last, here or in another app. Text copied
+elsewhere goes in as whole lines when it ends in a newline. `"+` and `"*` are
+accepted in front of either — `"+yy`, `"+p` — and mean the same thing. In Visual
+mode `p` puts over the selection and keeps what was copied, so it can go over
+the next one too; `Ctrl+C` yanks the selection and `Ctrl+V` pastes over it, and
+`Ctrl+V` pastes in Normal mode too.
 
 `Esc` in Insert returns to Normal, and `Esc` again leaves for the reading view,
 which is where one press used to take you.
@@ -503,6 +529,30 @@ when the terminal's answer is wrong — a recorder or a multiplexer that claims
 one it doesn't actually paint, which leaves a blank hole rather than a bad
 picture. `halfblocks` is the useful answer there: coarse, but drawn out of
 ordinary text cells, so it survives anything that can show text at all.
+
+Any app-wide shortcut can be given a key of your own under `[keys]` — useful on
+layouts where `\` and `]` sit behind AltGr and `Ctrl+\` can't be typed:
+
+```toml
+[keys]
+toggle_left_sidebar = "alt+e"
+toggle_right_sidebar = "ctrl+alt+o"
+```
+
+A key is modifiers and a key joined by `+`: `ctrl`, `alt` (or `option`) and
+`shift`, then a character, `space`, `tab`, `enter`, an arrow, `home`, `end`,
+`pageup`, `pagedown` or `f1`–`f24`. It needs `Ctrl` or `Alt` unless it is an
+F-key, so typing can never set one off. The default key keeps working
+alongside yours, and the palette shows yours. A name or key that isn't
+understood is reported when the app starts. `Ctrl+P` → "Reset shortcuts to
+defaults" removes the section again, after asking, and leaves the rest of the
+file as it was.
+
+The names are `open_palette`, `open_switcher`, `open_search`, `new_note`,
+`save`, `daily_note`, `toggle_mode`, `close_tab`, `next_tab`, `previous_tab`,
+`rename_note`, `open_theme_picker`, `toggle_chat`, `cycle_side_panel`,
+`toggle_left_sidebar`, `toggle_right_sidebar`, `open_graph`, `open_local_graph`,
+`refresh`, `back`, `toggle_vim_mode` and `quit`.
 
 ## Layout
 

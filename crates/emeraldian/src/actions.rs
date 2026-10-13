@@ -54,6 +54,7 @@ pub fn commands() -> Vec<Entry> {
         Entry::new("Change sort order", "s", Action::CycleSortOrder),
         Entry::new("Toggle line numbers", "", Action::ToggleLineNumbers),
         Entry::new("Toggle vim mode", "F4", Action::ToggleVimMode),
+        Entry::new("Reset shortcuts to defaults", "", Action::ResetKeys),
         Entry::new("Change theme", "Ctrl+T", Action::OpenThemePicker),
         Entry::new("Open another vault", "", Action::OpenVaultPicker),
         Entry::new("Graph: toggle labels", "", Action::ToggleGraphLabels),
@@ -100,7 +101,21 @@ pub fn toggle_vim(app: &mut App) {
     // hung editor.
     app.vim.reset();
 
-    let saved = app.save_config();
+    // Through `TableLike` so `[editor]`, `editor.vim = …` and an inline
+    // `editor = { … }` are all edited where they are.
+    let saved = app.edit_config(|config| {
+        let editor = config.entry("editor").or_insert(toml_edit::table());
+        if let Some(editor) = editor.as_table_like_mut() {
+            // Only the value is replaced when the key is there, so a comment
+            // written above it stays with it.
+            match editor.get_mut("vim") {
+                Some(vim) => *vim = toml_edit::value(on),
+                None => {
+                    editor.insert("vim", toml_edit::value(on));
+                }
+            }
+        }
+    });
     if on {
         // The first time only, open the reference rather than making someone
         // guess how to get back out.
@@ -414,6 +429,38 @@ pub fn dispatch(app: &mut App, action: Action) {
             app.focus = Focus::Note;
         }
         Action::ToggleVimMode => toggle_vim(app),
+        Action::ResetKeys => {
+            let count = app.config.keys.len();
+            if count == 0 {
+                app.info("no shortcuts are remapped — every key is already the default");
+            } else {
+                app.modal = Some(Modal::Confirm(Confirm {
+                    message: format!(
+                        "Put every shortcut back on its default key? This removes {} from [keys] in config.toml.",
+                        if count == 1 {
+                            "1 remapped key".to_string()
+                        } else {
+                            format!("{count} remapped keys")
+                        }
+                    ),
+                    action: Action::ClearRemappedKeys,
+                }));
+            }
+        }
+        Action::ClearRemappedKeys => {
+            app.config.keys.clear();
+            app.keymap = crate::keymap::Keymap::default();
+            // Written straight away, like the vim toggle: a reset that came
+            // back on the next start would be no reset at all.
+            match app.edit_config(|config| {
+                config.remove("keys");
+            }) {
+                Ok(_) => app.info("shortcuts back to their defaults — saved to config.toml"),
+                Err(err) => app.error(format!(
+                    "shortcuts back to their defaults for this session — could not save the config: {err}"
+                )),
+            }
+        }
         Action::ToggleLeftSidebar => {
             app.config.ui.show_left_sidebar = !app.config.ui.show_left_sidebar;
             if !app.config.ui.show_left_sidebar && app.focus == Focus::Explorer {
@@ -460,7 +507,15 @@ pub fn dispatch(app: &mut App, action: Action) {
 
         // ---- modals -----------------------------------------------------
         Action::OpenPalette => {
-            app.modal = Some(Modal::Picker(Picker::new(PickerKind::Commands, commands())));
+            let mut entries = commands();
+            // A remapped shortcut is the one worth showing: it is the key the
+            // user actually reaches for.
+            for entry in &mut entries {
+                if let Some(label) = app.keymap.label_for(&entry.action) {
+                    entry.detail = label;
+                }
+            }
+            app.modal = Some(Modal::Picker(Picker::new(PickerKind::Commands, entries)));
         }
         Action::OpenSwitcher => {
             let entries = app

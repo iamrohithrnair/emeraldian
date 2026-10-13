@@ -266,6 +266,10 @@ pub enum Action {
     CycleSortOrder,
     /// Switches between emeraldian mode and vim mode, and writes the config.
     ToggleVimMode,
+    /// Asks before putting every shortcut back on its default key.
+    ResetKeys,
+    /// Empties `[keys]` and writes the config. What `ResetKeys` confirms.
+    ClearRemappedKeys,
     CycleSidePanel,
     OpenGraph,
     OpenLocalGraph,
@@ -389,6 +393,8 @@ pub struct App {
     /// time, and a register shared across tabs is what vim does — yanking in
     /// one note and putting it in another is the whole point.
     pub vim: crate::vim::Vim,
+    /// The `[keys]` section, read once at startup.
+    pub keymap: crate::keymap::Keymap,
     /// Where `config.toml` and `state.json` are written, when it isn't the
     /// real config directory.
     ///
@@ -444,6 +450,7 @@ impl App {
             images: crate::images::Images::disabled(),
             scenes: crate::ui::drawing::Scenes::default(),
             vim: crate::vim::Vim::default(),
+            keymap: crate::keymap::Keymap::new(&config.keys),
             config_dir: None,
             quit: false,
             theme: ActiveTheme::new(theme),
@@ -467,6 +474,29 @@ impl App {
         match &self.config_dir {
             Some(dir) => self.config.save_to(&dir.join("config.toml")),
             None => self.config.save(),
+        }
+    }
+
+    /// Writes one change into the config file, leaving the rest of it exactly
+    /// as it was. With no file yet, the whole config is written instead, so
+    /// the first one is the documented file `ensure_exists` would have made.
+    pub fn edit_config(
+        &self,
+        edit: impl FnOnce(&mut toml_edit::DocumentMut),
+    ) -> std::io::Result<PathBuf> {
+        let path = match &self.config_dir {
+            Some(dir) => dir.join("config.toml"),
+            None => Config::path().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "no config directory on this platform",
+                )
+            })?,
+        };
+        if path.exists() {
+            Config::edit_file(&path, edit)
+        } else {
+            self.config.save_to(&path)
         }
     }
 

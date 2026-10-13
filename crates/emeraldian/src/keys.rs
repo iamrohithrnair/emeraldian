@@ -41,6 +41,14 @@ pub fn handle(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // Keys moved in `[keys]` come before everything but an overlay. The user
+    // chose them, and ahead of vim is the only place a chord like `Alt+E` can
+    // stand: Normal mode would otherwise read it as a plain `e`.
+    if let Some(action) = app.keymap.action_for(&normalize_legacy_ctrl(key)) {
+        dispatch(app, action);
+        return;
+    }
+
     // Vim comes in two layers, and keeping them apart is what stops each from
     // leaking into the other's territory.
     //
@@ -438,6 +446,31 @@ fn handle_editing(app: &mut App, key: KeyEvent) {
                 }
                 return;
             }
+            KeyCode::Char(ch @ ('c' | 'C' | 'x' | 'X')) => {
+                let cut = ch.eq_ignore_ascii_case(&'x');
+                let text = app.editor_mut().and_then(|editor| {
+                    let text = editor.selected_text()?;
+                    if cut {
+                        editor.commit();
+                        editor.delete_selection();
+                        editor.commit();
+                    }
+                    Some(text)
+                });
+                match text {
+                    Some(text) => {
+                        crate::clipboard::copy(&text);
+                        app.info(if cut { "cut" } else { "copied" });
+                    }
+                    None => app.info("select some text first — Shift+arrows or drag"),
+                }
+                return;
+            }
+            KeyCode::Char('v' | 'V') => {
+                let text = crate::clipboard::paste();
+                paste_into_editor(app, &text);
+                return;
+            }
             // Emacs-style set-mark, for selecting without holding shift.
             KeyCode::Char(' ') => {
                 if let Some(editor) = app.editor_mut() {
@@ -489,6 +522,49 @@ fn handle_editing(app: &mut App, key: KeyEvent) {
             dispatch(app, Action::ToggleMode);
         }
         _ => {}
+    }
+}
+
+/// Handles text the terminal pasted in one piece.
+///
+/// Bracketed paste is on, so a paste arrives whole rather than as keystrokes.
+/// That is what keeps a pasted newline from sending a half-written chat
+/// message, and a pasted `d` from running as a vim command.
+pub fn paste(app: &mut App, text: &str) {
+    app.status.text.clear();
+    let text = crate::clipboard::normalize(text);
+
+    let typing_field = matches!(app.modal, Some(Modal::Picker(_) | Modal::Prompt(_)))
+        || (app.modal.is_none() && app.focus == Focus::Chat);
+    if typing_field {
+        // A search, a name or a chat message is one line, so the paste is
+        // typed into it as one.
+        for ch in text.chars() {
+            let ch = if ch.is_whitespace() { ' ' } else { ch };
+            handle(app, KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+    } else if app.modal.is_none() && app.focus == Focus::Note && app.editing() {
+        paste_into_editor(app, &text);
+    }
+}
+
+/// Inserts text as a single undo step, replacing any selection.
+fn paste_into_editor(app: &mut App, text: &str) {
+    let vim_normal = app.config.editor.vim && app.vim.mode.is_normal_like();
+    if vim_normal {
+        // A paste over a visual selection replaces it, and what is left is
+        // no longer a selection to stay in.
+        app.vim.reset();
+    }
+    let Some(editor) = app.editor_mut() else {
+        return;
+    };
+    editor.commit();
+    editor.insert_str(text);
+    editor.commit();
+    // Normal mode keeps the cursor on a character, never past the end.
+    if vim_normal {
+        editor.clamp_normal();
     }
 }
 
@@ -1541,5 +1617,291 @@ mod binding_tests {
             press(&mut app, 's');
         }
         assert_eq!(app.explorer.sort(), start, "a full cycle should come home");
+    }
+}
+
+#[cfg(test)]
+mod clipboard_tests {
+    use super::*;
+    use crate::config::Config;
+    use emeraldian_core::test_support::TempVault;
+
+    fn ctrl(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
+    fn app() -> (TempVault, App) {
+        let vault = TempVault::new("clip");
+        vault.write("A.md", "# A\n");
+        let app = App::new(vault.vault(), Config::default()).expect("app");
+        (vault, app)
+    }
+
+    /// A note open for editing with vim off.
+    fn editing(text: &str) -> (TempVault, App) {
+        let vault = TempVault::new("clip");
+        vault.write("N.md", text);
+        let mut app = App::new(vault.vault(), Config::default()).expect("app");
+        let id = app.index.id_of_rel("N.md").expect("indexed");
+        app.open_note(id);
+        app.active_mut().expect("tab").mode = Mode::Editing;
+        (vault, app)
+    }
+
+    fn note(app: &mut App) -> String {
+        app.editor_mut().expect("editor").text()
+    }
+
+    #[test]
+    fn ctrl_c_then_ctrl_v_copies_several_lines_intact() {
+        let (_v, mut app) = editing("- [ ] one\n- [ ] two\nend\n");
+        let editor = app.editor_mut().expect("editor");
+        editor.goto(0, 0);
+        editor.begin_selection();
+        editor.goto_extend(2, 0);
+        handle(&mut app, ctrl(KeyCode::Char('c')));
+        assert_eq!(crate::clipboard::paste(), "- [ ] one\n- [ ] two\n");
+
+        app.editor_mut().expect("editor").goto(2, 0);
+        handle(&mut app, ctrl(KeyCode::Char('v')));
+        assert_eq!(
+            note(&mut app),
+            "- [ ] one\n- [ ] two\n- [ ] one\n- [ ] two\nend\n",
+            "pasted as written — no list marker added, no line lost"
+        );
+
+        handle(&mut app, ctrl(KeyCode::Char('z')));
+        assert_eq!(
+            note(&mut app),
+            "- [ ] one\n- [ ] two\nend\n",
+            "one undo takes the whole paste back"
+        );
+    }
+
+    #[test]
+    fn ctrl_x_cuts_the_selection() {
+        let (_v, mut app) = editing("keep cut\n");
+        let editor = app.editor_mut().expect("editor");
+        editor.goto(0, 4);
+        editor.begin_selection();
+        editor.goto_extend(0, 8);
+        handle(&mut app, ctrl(KeyCode::Char('x')));
+        assert_eq!(note(&mut app), "keep\n");
+        assert_eq!(crate::clipboard::paste(), " cut");
+    }
+
+    #[test]
+    fn copying_nothing_says_how_to_select() {
+        let (_v, mut app) = editing("text\n");
+        crate::clipboard::copy("before");
+        handle(&mut app, ctrl(KeyCode::Char('c')));
+        assert!(app.status.text.contains("select"));
+        assert_eq!(
+            crate::clipboard::paste(),
+            "before",
+            "the clipboard is left alone"
+        );
+    }
+
+    #[test]
+    fn a_terminal_paste_goes_into_the_note_whole() {
+        let (_v, mut app) = editing("");
+        // Terminals send bracketed paste with `\r` for each newline.
+        paste(&mut app, "# Title\r\rbody");
+        assert_eq!(note(&mut app), "# Title\n\nbody\n");
+    }
+
+    #[test]
+    fn a_terminal_paste_into_the_chat_does_not_send_it() {
+        let (_v, mut app) = app();
+        app.focus = Focus::Chat;
+        paste(&mut app, "first line\nsecond");
+        assert_eq!(app.chat.input, "first line second");
+    }
+
+    #[test]
+    fn a_terminal_paste_into_the_palette_filters_it() {
+        let (_v, mut app) = app();
+        handle(&mut app, ctrl(KeyCode::Char('p')));
+        paste(&mut app, "sav");
+        let Some(Modal::Picker(picker)) = &app.modal else {
+            panic!("the palette is still open");
+        };
+        assert_eq!(picker.query, "sav");
+    }
+
+    #[test]
+    fn a_terminal_paste_while_reading_changes_nothing() {
+        let (_v, mut app) = app();
+        let a = app.index.id_of_rel("A.md").unwrap();
+        app.open_note(a);
+        paste(&mut app, "q");
+        assert!(app.modal.is_none(), "pasted text is not a command");
+        assert_eq!(app.view, View::Notes);
+    }
+}
+
+#[cfg(test)]
+mod keymap_tests {
+    use super::*;
+    use crate::config::Config;
+    use emeraldian_core::test_support::TempVault;
+
+    fn ctrl(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
+    fn app() -> (TempVault, App) {
+        let vault = TempVault::new("keymap");
+        vault.write("A.md", "# A\n");
+        let app = App::new(vault.vault(), Config::default()).expect("app");
+        (vault, app)
+    }
+
+    fn remapped(pairs: &[(&str, &str)]) -> (TempVault, App) {
+        let (vault, mut app) = app();
+        let keys = pairs
+            .iter()
+            .map(|(name, key)| ((*name).to_string(), (*key).to_string()))
+            .collect();
+        app.keymap = crate::keymap::Keymap::new(&keys);
+        app.config.keys = keys;
+        (vault, app)
+    }
+
+    #[test]
+    fn a_remapped_key_works_and_the_default_still_does() {
+        let (_v, mut app) = remapped(&[("toggle_left_sidebar", "alt+e")]);
+        let shown = app.config.ui.show_left_sidebar;
+        handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT),
+        );
+        assert_eq!(app.config.ui.show_left_sidebar, !shown);
+        handle(&mut app, ctrl(KeyCode::Char('\\')));
+        assert_eq!(app.config.ui.show_left_sidebar, shown);
+    }
+
+    #[test]
+    fn a_remapped_key_beats_vim_normal_mode() {
+        let (_v, mut app) = remapped(&[("toggle_right_sidebar", "alt+o")]);
+        let a = app.index.id_of_rel("A.md").unwrap();
+        app.open_note(a);
+        app.active_mut().unwrap().mode = Mode::Editing;
+        app.config.editor.vim = true;
+        app.focus = Focus::Note;
+        let text = app.editor_mut().unwrap().text();
+        let shown = app.config.ui.show_right_sidebar;
+
+        handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('o'), KeyModifiers::ALT),
+        );
+        assert_eq!(app.config.ui.show_right_sidebar, !shown);
+        assert_eq!(
+            app.editor_mut().unwrap().text(),
+            text,
+            "not read as vim's o"
+        );
+    }
+
+    #[test]
+    fn an_overlay_keeps_its_keys() {
+        let (_v, mut app) = remapped(&[("toggle_left_sidebar", "alt+e")]);
+        handle(&mut app, ctrl(KeyCode::Char('p')));
+        let shown = app.config.ui.show_left_sidebar;
+        handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT),
+        );
+        assert_eq!(app.config.ui.show_left_sidebar, shown);
+        assert!(matches!(app.modal, Some(Modal::Picker(_))));
+    }
+
+    #[test]
+    fn the_palette_shows_the_remapped_key() {
+        let (_v, mut app) = remapped(&[("toggle_left_sidebar", "alt+e")]);
+        handle(&mut app, ctrl(KeyCode::Char('p')));
+        let Some(Modal::Picker(picker)) = &app.modal else {
+            panic!("palette open");
+        };
+        let entry = picker
+            .visible()
+            .map(|(entry, _)| entry)
+            .find(|e| e.action == Action::ToggleLeftSidebar)
+            .expect("listed");
+        assert_eq!(entry.detail, "Alt+E");
+    }
+
+    #[test]
+    fn reset_puts_every_key_back_after_asking() {
+        let (_v, mut app) = remapped(&[("toggle_left_sidebar", "alt+e")]);
+        let dir =
+            std::env::temp_dir().join(format!("emeraldian-keys-reset-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        app.config_dir = Some(dir.clone());
+
+        dispatch(&mut app, Action::ResetKeys);
+        assert!(matches!(app.modal, Some(Modal::Confirm(_))), "asks first");
+        handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+        );
+
+        assert!(app.config.keys.is_empty());
+        let shown = app.config.ui.show_left_sidebar;
+        handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT),
+        );
+        assert_eq!(app.config.ui.show_left_sidebar, shown, "Alt+E is gone");
+        handle(&mut app, ctrl(KeyCode::Char('\\')));
+        assert_eq!(app.config.ui.show_left_sidebar, !shown, "the default works");
+
+        let written = std::fs::read_to_string(dir.join("config.toml")).expect("saved");
+        assert!(!written.contains("[keys]"), "and the reset is on disk");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn declining_the_reset_keeps_the_keys() {
+        let (_v, mut app) = remapped(&[("toggle_left_sidebar", "alt+e")]);
+        dispatch(&mut app, Action::ResetKeys);
+        handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+        );
+        assert!(app.modal.is_none());
+        assert_eq!(app.config.keys.len(), 1);
+    }
+
+    #[test]
+    fn reset_with_nothing_remapped_just_says_so() {
+        let (_v, mut app) = app();
+        dispatch(&mut app, Action::ResetKeys);
+        assert!(app.modal.is_none());
+        assert!(app.status.text.contains("already the default"));
+    }
+
+    #[test]
+    fn reset_removes_only_the_keys_section() {
+        let (_v, mut app) = remapped(&[("toggle_left_sidebar", "alt+e")]);
+        let dir =
+            std::env::temp_dir().join(format!("emeraldian-keys-inplace-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        app.config_dir = Some(dir.clone());
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            "# mine\ntheme = \"nord\"\n\n[keys]\ntoggle_left_sidebar = \"alt+e\"\n",
+        )
+        .expect("seed");
+
+        dispatch(&mut app, Action::ClearRemappedKeys);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "# mine\ntheme = \"nord\"\n"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

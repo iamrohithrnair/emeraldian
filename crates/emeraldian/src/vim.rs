@@ -59,10 +59,38 @@ impl VimMode {
 /// feature that costs a parser and a map, and nothing in a notes app reaches
 /// for them. `linewise` is what makes `yy` then `p` put a line below rather
 /// than splicing it into the middle of the current one.
+///
+/// It mirrors the system clipboard — see [`set_register`] — so `"+` and `"*`
+/// are accepted and name this same register.
 #[derive(Debug, Clone, Default)]
 pub struct Register {
     pub text: String,
     pub linewise: bool,
+}
+
+/// Fills the register, which is also the system clipboard.
+///
+/// This is vim's `clipboard=unnamedplus` — how most people set vim up, so that
+/// `y` and `p` work with every other app rather than only with each other.
+fn set_register(app: &mut App, text: String, linewise: bool) {
+    crate::clipboard::copy(&text);
+    app.vim.register = Register { text, linewise };
+}
+
+/// What `p` puts: whatever was copied most recently, here or anywhere else.
+///
+/// Text copied in another app has no linewise flag, so it gets vim's rule —
+/// it is linewise when it ends in a newline. Text yanked here keeps the flag
+/// it was yanked with, which is what makes `yy` then `p` put a whole line.
+fn register(app: &App) -> Register {
+    let text = crate::clipboard::paste();
+    if text.is_empty() || text == app.vim.register.text {
+        return app.vim.register.clone();
+    }
+    Register {
+        linewise: text.ends_with('\n'),
+        text,
+    }
 }
 
 /// What an operator does to the span a motion picks out.
@@ -153,6 +181,8 @@ enum Pending {
     LeaderFind,
     /// `[` or `]` typed, waiting for what to step through.
     Bracket(bool),
+    /// `"` typed, waiting for the register's name — the `+` of `"+y`.
+    Register,
 }
 
 /// The leader map, which is also exactly what the which-key popup lists.
@@ -501,6 +531,15 @@ fn normal(app: &mut App, key: KeyEvent) -> bool {
 
     // A pending key owns whatever comes next, before anything else is read.
     match app.vim.pending {
+        // Every register is the system clipboard, so the name is read and
+        // changes nothing — `"+yy` and `yy` do the same thing.
+        Pending::Register => {
+            app.vim.pending = Pending::None;
+            if let KeyCode::Char(name) = key.code {
+                app.vim.showcmd.push(name);
+            }
+            return true;
+        }
         Pending::Replace => {
             if let KeyCode::Char(ch) = key.code {
                 let count = app.vim.count();
@@ -718,6 +757,11 @@ fn normal(app: &mut App, key: KeyEvent) -> bool {
             app.vim.showcmd.push('g');
             return true;
         }
+        KeyCode::Char('"') => {
+            app.vim.pending = Pending::Register;
+            app.vim.showcmd.push('"');
+            return true;
+        }
         KeyCode::Char(ch @ ('f' | 'F' | 't' | 'T')) => {
             app.vim.pending = Pending::Find {
                 operator: None,
@@ -784,15 +828,12 @@ fn normal(app: &mut App, key: KeyEvent) -> bool {
                 text
             });
             if let Some(text) = text.filter(|t| !t.is_empty()) {
-                app.vim.register = Register {
-                    text,
-                    linewise: false,
-                };
+                set_register(app, text, false);
             }
         }
         KeyCode::Char('p' | 'P') => {
             let after = key.code == KeyCode::Char('p');
-            let register = app.vim.register.clone();
+            let register = register(app);
             let count = app.vim.count();
             with_editor(app, |editor| {
                 for _ in 0..count {
@@ -880,10 +921,7 @@ fn normal(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Char('s') => {
             let text = with_editor_out(app, |editor| editor.take_chars(count));
             if let Some(text) = text.filter(|t| !t.is_empty()) {
-                app.vim.register = Register {
-                    text,
-                    linewise: false,
-                };
+                set_register(app, text, false);
             }
             enter_insert(app);
             return true;
@@ -903,10 +941,7 @@ fn normal(app: &mut App, key: KeyEvent) -> bool {
                 text
             });
             if let Some(text) = text.filter(|t| !t.is_empty()) {
-                app.vim.register = Register {
-                    text,
-                    linewise: false,
-                };
+                set_register(app, text, false);
             }
         }
         KeyCode::Char('J') => {
@@ -1145,10 +1180,7 @@ fn operate_lines(app: &mut App, operator: Operator, first: usize, count: usize) 
         Operator::Yank => {
             if let Some(text) = with_editor_out(app, |editor| editor.copy_lines(first, count)) {
                 let lines = text.lines().count();
-                app.vim.register = Register {
-                    text,
-                    linewise: true,
-                };
+                set_register(app, text, true);
                 app.info_yank(lines);
             }
         }
@@ -1159,10 +1191,7 @@ fn operate_lines(app: &mut App, operator: Operator, first: usize, count: usize) 
                 editor.commit();
                 text
             }) {
-                app.vim.register = Register {
-                    text,
-                    linewise: true,
-                };
+                set_register(app, text, true);
             }
         }
         Operator::Change => {
@@ -1173,10 +1202,7 @@ fn operate_lines(app: &mut App, operator: Operator, first: usize, count: usize) 
                 editor.open_line(true);
                 text
             }) {
-                app.vim.register = Register {
-                    text,
-                    linewise: true,
-                };
+                set_register(app, text, true);
             }
             enter_insert(app);
         }
@@ -1216,10 +1242,7 @@ fn operate_chars(
                 if !text.is_empty() {
                     app.info_yank(text.lines().count().max(1));
                 }
-                app.vim.register = Register {
-                    text,
-                    linewise: false,
-                };
+                set_register(app, text, false);
             }
         }
         Operator::Delete | Operator::Change => {
@@ -1228,10 +1251,7 @@ fn operate_chars(
                 editor.commit();
                 text
             }) {
-                app.vim.register = Register {
-                    text,
-                    linewise: false,
-                };
+                set_register(app, text, false);
             }
             if operator == Operator::Change {
                 enter_insert(app);
@@ -1513,6 +1533,65 @@ fn normal_ctrl(app: &mut App, key: KeyEvent) -> bool {
 fn visual(app: &mut App, key: KeyEvent) -> bool {
     let linewise = app.vim.mode == VimMode::VisualLine;
 
+    // The keys below are matched without looking at Ctrl, which would make
+    // `Ctrl+C` a `c` — cutting the selection it was meant to copy.
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        match key.code {
+            KeyCode::Char('c' | 'C') => {
+                return visual(app, KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+            }
+            // Declined, so the editor's own paste replaces the selection.
+            KeyCode::Char('v' | 'V') => return false,
+            _ => {}
+        }
+    }
+
+    // `"+` and `"*` name the system clipboard, and every register already is
+    // it, so the name is read and has nothing left to change.
+    if app.vim.pending == Pending::Register {
+        app.vim.pending = Pending::None;
+        if let KeyCode::Char(name) = key.code {
+            app.vim.showcmd.push(name);
+        }
+        return true;
+    }
+    if key.code == KeyCode::Char('"') {
+        app.vim.pending = Pending::Register;
+        app.vim.showcmd.push('"');
+        return true;
+    }
+
+    // `f`, `t` and `g` wait for a second key, and that key belongs to them.
+    // Read as a Visual command of its own instead, the `x` of `vfx` cut the
+    // selection rather than stretching it to the `x`.
+    match app.vim.pending {
+        Pending::Find { forward, till, .. } => {
+            if let KeyCode::Char(ch) = key.code {
+                app.vim.last_find = Some(FindTarget { ch, forward, till });
+                let count = app.vim.count();
+                // The cursor moves and the anchor stays, so the selection grows.
+                with_editor(app, |editor| {
+                    if let Some(to) = editor.find_in_line(editor.cursor(), ch, forward, till, count)
+                    {
+                        editor.set_cursor(to);
+                    }
+                });
+            }
+            return finish_visual_motion(app);
+        }
+        Pending::G => {
+            if key.code == KeyCode::Char('g') {
+                let line = app.vim.count.map_or(0, |n| n.saturating_sub(1));
+                with_editor(app, |editor| {
+                    editor.set_cursor(crate::editor::Cursor { line, col: 0 });
+                    editor.move_first_nonblank(true);
+                });
+            }
+            return finish_visual_motion(app);
+        }
+        _ => {}
+    }
+
     match key.code {
         KeyCode::Esc => {
             app.vim.mode = VimMode::Normal;
@@ -1569,7 +1648,7 @@ fn visual(app: &mut App, key: KeyEvent) -> bool {
 
         KeyCode::Char('d' | 'x') => {
             let text = cut_selection(app, linewise);
-            app.vim.register = Register { text, linewise };
+            set_register(app, text, linewise);
             app.vim.mode = VimMode::Normal;
             app.vim.clear_pending();
             clamp(app);
@@ -1584,10 +1663,42 @@ fn visual(app: &mut App, key: KeyEvent) -> bool {
                     editor.goto(start.line, start.col);
                 }
             });
-            app.vim.register = Register { text, linewise };
+            set_register(app, text, linewise);
             app.vim.mode = VimMode::Normal;
             app.vim.clear_pending();
             app.info_yank(lines);
+            clamp(app);
+            return true;
+        }
+        // Replaces the selection with what was copied last. The register is
+        // left alone — vim's `P` — so the same text can go over one selection
+        // after another.
+        KeyCode::Char('p' | 'P') => {
+            let put = register(app);
+            let text = if linewise {
+                // A line selection runs from the start of its first line to the
+                // end of its last, short of the final newline, so a yanked line
+                // replaces it exactly once that newline is dropped.
+                match put.text.strip_suffix('\n') {
+                    Some(text) if put.linewise => text.to_string(),
+                    _ => put.text,
+                }
+            } else {
+                extend_inclusive(app);
+                // Lines put over part of a line go in on lines of their own.
+                if put.linewise {
+                    format!("\n{}", put.text)
+                } else {
+                    put.text
+                }
+            };
+            with_editor(app, |editor| {
+                editor.commit();
+                editor.insert_str(&text);
+                editor.commit();
+            });
+            app.vim.mode = VimMode::Normal;
+            app.vim.clear_pending();
             clamp(app);
             return true;
         }
@@ -1598,7 +1709,7 @@ fn visual(app: &mut App, key: KeyEvent) -> bool {
             if linewise {
                 with_editor(app, |editor| editor.open_line(true));
             }
-            app.vim.register = Register { text, linewise };
+            set_register(app, text, linewise);
             enter_insert(app);
             return true;
         }
@@ -1638,6 +1749,11 @@ fn visual(app: &mut App, key: KeyEvent) -> bool {
         }
     }
 
+    finish_visual_motion(app)
+}
+
+/// Settles the selection after the cursor has moved in Visual mode.
+fn finish_visual_motion(app: &mut App) -> bool {
     if app.vim.mode == VimMode::VisualLine {
         select_lines(app);
     }
@@ -2248,6 +2364,69 @@ mod tests {
         let (reloaded, error) = Config::load_from(&path);
         assert!(error.is_none());
         assert!(reloaded.editor.vim, "and it survives a reload");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn toggling_changes_only_that_line_of_the_file() {
+        let (_v, mut app, dir) = toggling("in-place", "text\n");
+        let path = dir.join("config.toml");
+        let before = "# my setup\ntheme = \"nord\"\n\n[editor]\n# modal editing\nvim = false\ntab_width = 2\n";
+        std::fs::write(&path, before).expect("seed");
+        // Changed for this session only; the toggle must not save it.
+        app.config.ui.sidebar_width = 99;
+        app.config.editor.vim = false;
+        f4(&mut app);
+
+        let written = std::fs::read_to_string(&path).expect("read");
+        assert_eq!(written, before.replace("vim = false", "vim = true"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn toggling_finds_the_setting_however_it_was_written() {
+        for (tag, before, after) in [
+            ("dotted", "editor.vim = true\n", "editor.vim = false\n"),
+            (
+                "inline",
+                "editor = { vim = true }\n",
+                "editor = { vim = false }\n",
+            ),
+            (
+                "absent",
+                "theme = \"nord\"\n",
+                "theme = \"nord\"\n\n[editor]\nvim = false\n",
+            ),
+        ] {
+            let (_v, mut app, dir) = toggling(tag, "text\n");
+            let path = dir.join("config.toml");
+            std::fs::write(&path, before).expect("seed");
+            app.config.editor.vim = true;
+            f4(&mut app);
+            assert_eq!(
+                std::fs::read_to_string(&path).expect("read"),
+                after,
+                "{tag}"
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn a_config_that_does_not_parse_is_left_alone() {
+        let (_v, mut app, dir) = toggling("broken", "text\n");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[editor\nvim = false\n").expect("seed");
+        app.config.editor.vim = false;
+        f4(&mut app);
+
+        assert!(app.config.editor.vim, "still on for this session");
+        assert!(app.status.is_error && app.status.text.contains("could not save"));
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "[editor\nvim = false\n",
+            "the half-fixed file is not overwritten"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -3244,5 +3423,112 @@ mod tests {
         // Upgrading must not silently put someone into a modal editor.
         let config: Config = toml::from_str("theme = \"nord\"\n").expect("parse");
         assert!(!config.editor.vim);
+    }
+
+    fn ctrl_key(app: &mut App, ch: char) {
+        crate::keys::handle(app, KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL));
+    }
+
+    #[test]
+    fn yanking_puts_the_text_on_the_clipboard() {
+        let (_v, mut app) = app("one\ntwo\n");
+        type_str(&mut app, "yj");
+        assert_eq!(crate::clipboard::paste(), "one\ntwo\n");
+    }
+
+    #[test]
+    fn p_puts_what_another_app_copied() {
+        let (_v, mut app) = app("a\n");
+        type_str(&mut app, "yy");
+        // Copied elsewhere since: a trailing newline makes it a line.
+        crate::clipboard::copy("x\ny\n");
+        press(&mut app, 'p');
+        assert_eq!(text(&mut app), "a\nx\ny\n");
+
+        // And without one it goes in beside the cursor.
+        crate::clipboard::copy("Z");
+        press(&mut app, 'P');
+        assert!(text(&mut app).contains('Z'));
+        assert_eq!(text(&mut app).lines().count(), 3);
+    }
+
+    #[test]
+    fn a_line_yanked_here_keeps_being_a_line() {
+        let (_v, mut app) = app("top\nbottom");
+        type_str(&mut app, "yyjp");
+        assert_eq!(text(&mut app), "top\nbottom\ntop\n");
+    }
+
+    #[test]
+    fn the_clipboard_register_names_are_accepted() {
+        let (_v, mut app) = app("one\ntwo\n");
+        type_str(&mut app, "\"+yy");
+        assert_eq!(crate::clipboard::paste(), "one\n");
+        assert_eq!(cursor(&mut app), (0, 0), "the + was a name, not a motion");
+
+        type_str(&mut app, "j\"*p");
+        assert_eq!(text(&mut app), "one\ntwo\none\n");
+    }
+
+    #[test]
+    fn ctrl_c_in_visual_copies_rather_than_cuts() {
+        let (_v, mut app) = app("keep me\n");
+        type_str(&mut app, "ve");
+        ctrl_key(&mut app, 'c');
+        assert_eq!(text(&mut app), "keep me\n", "nothing was removed");
+        assert_eq!(crate::clipboard::paste(), "keep");
+        assert_eq!(app.vim.mode, VimMode::Normal);
+    }
+
+    #[test]
+    fn ctrl_v_pastes_in_normal_mode() {
+        let (_v, mut app) = app("ab\n");
+        crate::clipboard::copy("X");
+        ctrl_key(&mut app, 'v');
+        assert_eq!(text(&mut app), "Xab\n");
+        assert_eq!(app.vim.mode, VimMode::Normal);
+    }
+
+    #[test]
+    fn p_in_visual_replaces_the_selection() {
+        let (_v, mut app) = app("abc xyz\nline2\n");
+        type_str(&mut app, "yiwwvep");
+        assert_eq!(text(&mut app), "abc abc\nline2\n");
+        assert_eq!(app.vim.mode, VimMode::Normal);
+
+        // A yanked line over a line selection swaps one line for the other.
+        type_str(&mut app, "yyjVp");
+        assert_eq!(text(&mut app), "abc abc\nabc abc\n");
+        assert_eq!(
+            crate::clipboard::paste(),
+            "abc abc\n",
+            "the register is kept"
+        );
+    }
+
+    #[test]
+    fn f_and_t_stretch_a_visual_selection() {
+        let (_v, mut app) = app("abc xyz\n");
+        type_str(&mut app, "vfx");
+        assert_eq!(text(&mut app), "abc xyz\n", "the x was a target, not a cut");
+        assert_eq!(app.vim.mode, VimMode::Visual);
+        press(&mut app, 'd');
+        assert_eq!(text(&mut app), "yz\n", "the selection ran to the x");
+
+        let (_w, mut other) = self::app("abc xyz\n");
+        type_str(&mut other, "vtzy");
+        assert_eq!(other.vim.register.text, "abc xy", "t stops short of the z");
+        assert_eq!(text(&mut other), "abc xyz\n");
+    }
+
+    #[test]
+    fn gg_stretches_a_visual_selection_to_the_top() {
+        let (_v, mut app) = app("one\ntwo\nthree\n");
+        type_str(&mut app, "jjvggd");
+        assert_eq!(text(&mut app), "hree\n");
+
+        let (_w, mut other) = self::app("one\ntwo\nthree\n");
+        type_str(&mut other, "jjVggd");
+        assert_eq!(text(&mut other), "\n", "every line from here to the top");
     }
 }

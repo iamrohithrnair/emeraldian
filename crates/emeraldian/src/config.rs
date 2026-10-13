@@ -4,6 +4,7 @@
 //! defaults. It lives outside the vault so a vault stays a plain folder of
 //! Markdown that Obsidian and git are both happy with.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -23,6 +24,11 @@ pub struct Config {
     pub graph: GraphConfig,
     pub images: ImageConfig,
     pub agent: AgentConfig,
+    /// Shortcuts moved to other keys, by name: `toggle_left_sidebar =
+    /// "alt+e"`. Left out of the file while empty, so a config the app writes
+    /// back doesn't grow a section nobody asked for.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub keys: BTreeMap<String, String>,
 }
 
 impl Default for Config {
@@ -37,6 +43,7 @@ impl Default for Config {
             graph: GraphConfig::default(),
             images: ImageConfig::default(),
             agent: AgentConfig::default(),
+            keys: BTreeMap::new(),
         }
     }
 }
@@ -413,6 +420,30 @@ impl Config {
         Ok(path.to_path_buf())
     }
 
+    /// Changes a file already on disk and nothing else in it.
+    ///
+    /// For the settings the app writes on its own, the moment they change —
+    /// the vim toggle and the shortcut reset. Rewriting the whole file from
+    /// memory for those would drop the user's comments and layout, and quietly
+    /// save everything else they had only changed for this session. A file that
+    /// no longer parses is left alone and reported: overwriting it would throw
+    /// away whatever the user was halfway through fixing.
+    pub fn edit_file(
+        path: &Path,
+        edit: impl FnOnce(&mut toml_edit::DocumentMut),
+    ) -> std::io::Result<PathBuf> {
+        let text = fs::read_to_string(path)?;
+        let mut document: toml_edit::DocumentMut = text.parse().map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{} doesn't parse: {e}", path.display()),
+            )
+        })?;
+        edit(&mut document);
+        fs::write(path, document.to_string())?;
+        Ok(path.to_path_buf())
+    }
+
     /// Creates the config file with defaults if it doesn't exist yet.
     pub fn ensure_exists(&self) -> std::io::Result<PathBuf> {
         let path = Self::path().ok_or_else(|| {
@@ -516,6 +547,20 @@ mod tests {
         let parsed: Config = toml::from_str(&text).expect("parse");
         assert_eq!(parsed.theme, "gruvbox-dark");
         assert_eq!(parsed.ui.chat_width, config.ui.chat_width);
+    }
+
+    #[test]
+    fn remapped_keys_survive_the_app_rewriting_the_file() {
+        // The app writes the config back whenever vim mode is toggled, and a
+        // section it didn't know about would be dropped on that write.
+        let text = "theme = \"nord\"\n\n[keys]\ntoggle_left_sidebar = \"alt+e\"\n";
+        let config: Config = toml::from_str(text).expect("parse");
+        let written = toml::to_string_pretty(&config).expect("serialize");
+        let reread: Config = toml::from_str(&written).expect("reparse");
+        assert_eq!(reread.keys["toggle_left_sidebar"], "alt+e");
+
+        let untouched = toml::to_string_pretty(&Config::default()).expect("serialize");
+        assert!(!untouched.contains("[keys]"), "no empty section is written");
     }
 
     #[test]
