@@ -1,18 +1,19 @@
-//! The agent chat panel's state and its wiring to the agent runtime.
+//! The agent chat panel's state and its wiring to the ACP wire.
 //!
-//! The panel keeps two parallel records: a **transcript** for the user, which
-//! includes tool calls and errors, and a **conversation** for the model, which
-//! is the exact message list replayed on the next turn. They diverge on purpose
-//! — the user wants to see that a note was created, the model needs the tool
-//! result blocks that say so.
+//! The panel keeps one record: a **transcript** for the user, which includes
+//! tool calls and errors. There is no second record any more — crow-cli owns
+//! the conversation server-side, so emeraldian keeps no model history of its
+//! own; resuming a session is the agent's job (`session/load`), not ours.
 
 use std::sync::mpsc::TryRecvError;
 
-use emeraldian_agent::{AgentEvent, Message, Runner, ToolRequests, Usage};
+use crow_term_acp as wire;
 use serde::{Deserialize, Serialize};
 
+use crate::acp::{Connection, Event};
 use crate::app::App;
-use crate::config::AgentConfig;
+use crate::config::{AgentConfig, Config};
+use crate::editor::Editor;
 
 /// One entry in the visible transcript.
 ///
@@ -45,11 +46,19 @@ pub enum ToolStatus {
 pub struct Chat {
     /// What the user sees.
     pub transcript: Vec<Entry>,
-    /// What the model sees.
-    pub conversation: Vec<Message>,
-    pub input: String,
-    /// Cursor position within `input`, in characters.
-    pub cursor: usize,
+    /// The input box is emeraldian's own editor — the same wrapped, styled,
+    /// multi-line one the notes use — not a bespoke single-line field. Text
+    /// past the pane width wraps onto the next row instead of vanishing.
+    pub input: Editor,
+    /// Columns the input's text was last laid out across, recorded while
+    /// drawing so key handling can move within it by visual rows.
+    pub input_cols: usize,
+    /// Rows of the input box that were on screen at the last draw, for paging.
+    pub input_rows: usize,
+    /// The editor settings the input was built with, so it can be replaced
+    /// whole (completion, clearing) without reaching for the config again.
+    tab_width: usize,
+    expand_tabs: bool,
     /// Which slash command the completion list has highlighted.
     ///
     /// Reset whenever the input changes, since the list it indexes into is
@@ -58,68 +67,88 @@ pub struct Chat {
     pub scroll: usize,
     /// True while a turn is in flight.
     pub busy: bool,
-    pub usage: Usage,
+    /// Set once the wire reports the turn over (`Done`).
+    ///
+    /// Scripted runs wait on this rather than on `busy`, which is false both
+    /// before the first event arrives and after the last one — those two
+    /// states are otherwise indistinguishable, and waiting on `busy` alone
+    /// races straight past a turn that has not started yet.
+    pub turn_done: bool,
+    /// Context-window usage as the agent reported it (`ctx used/size`).
+    pub context: Option<String>,
+    /// Slash commands the agent advertised (`available_commands/update`) —
+    /// `/compact`, `/stop`, … — which route to the wire instead of erroring.
+    pub available_commands: Vec<(String, String)>,
     /// Set when the panel should stick to the bottom as output streams in.
     pub follow: bool,
 
-    runner: Option<Runner>,
-    tools: Option<ToolRequests>,
+    /// The ACP connection, once the first message needs one. The agent
+    /// subprocess lives inside it; dropping it ends both.
+    connection: Option<Connection>,
     /// Snapshot of the agent settings this session started with.
     pub settings: AgentConfig,
 }
 
 impl Chat {
     #[must_use]
-    pub fn new(settings: &AgentConfig) -> Self {
+    pub fn new(config: &Config) -> Self {
         Self {
             transcript: Vec::new(),
-            conversation: Vec::new(),
-            input: String::new(),
-            cursor: 0,
+            input: Editor::new("", config.editor.tab_width, config.editor.expand_tabs),
+            input_cols: 0,
+            input_rows: 1,
+            tab_width: config.editor.tab_width,
+            expand_tabs: config.editor.expand_tabs,
             completion: 0,
             scroll: 0,
             busy: false,
-            usage: Usage::default(),
+            turn_done: false,
+            context: None,
+            available_commands: Vec::new(),
             follow: true,
-            runner: None,
-            tools: None,
-            settings: settings.clone(),
+            connection: None,
+            settings: config.agent.clone(),
         }
     }
 
-    /// Clears the session, keeping settings.
+    /// Clears the session, keeping settings. The connection goes with it: a
+    /// fresh conversation means a fresh agent subprocess and session.
     pub fn reset(&mut self) {
         self.transcript.clear();
-        self.conversation.clear();
-        self.usage = Usage::default();
+        self.context = None;
+        self.available_commands.clear();
         self.scroll = 0;
-        self.runner = None;
-        self.tools = None;
+        self.connection = None;
         self.busy = false;
+        self.turn_done = false;
     }
 
-    pub fn insert_char(&mut self, ch: char) {
-        let byte = char_to_byte(&self.input, self.cursor);
-        self.input.insert(byte, ch);
-        self.cursor += 1;
+    /// Replaces the input's text whole, cursor at the end.
+    ///
+    /// Completion and `/resume`-style flows put a whole line in at once; the
+    /// editor is rebuilt rather than edited so the change reads as one step.
+    pub fn set_input(&mut self, text: &str) {
+        let mut editor = Editor::new(text, self.tab_width, self.expand_tabs);
+        editor.move_document_end(false);
+        self.input = editor;
         self.completion = 0;
     }
 
-    pub fn backspace(&mut self) {
-        if self.cursor == 0 {
-            return;
-        }
-        let byte = char_to_byte(&self.input, self.cursor - 1);
-        self.input.remove(byte);
-        self.cursor -= 1;
-        self.completion = 0;
+    /// What is typed, without the editor's trailing newline.
+    #[must_use]
+    pub fn input_text(&self) -> String {
+        self.input.lines().join("\n")
+    }
+
+    /// Whether there is nothing typed yet.
+    #[must_use]
+    pub fn input_is_empty(&self) -> bool {
+        self.input.lines().iter().all(|line| line.is_empty())
     }
 
     /// Puts a slash command in the input, ready for its argument.
     pub fn complete_with(&mut self, name: &str) {
-        self.input = format!("/{name} ");
-        self.cursor = self.input.chars().count();
-        self.completion = 0;
+        self.set_input(&format!("/{name} "));
     }
 
     /// Moves the completion highlight, wrapping at both ends.
@@ -136,14 +165,7 @@ impl Chat {
 
     /// Empties the input, closing the completion list with it.
     pub fn clear_input(&mut self) {
-        self.input.clear();
-        self.cursor = 0;
-        self.completion = 0;
-    }
-
-    pub fn move_cursor(&mut self, delta: isize) {
-        let len = self.input.chars().count();
-        self.cursor = (self.cursor as isize + delta).clamp(0, len as isize) as usize;
+        self.set_input("");
     }
 
     /// Appends streaming text to the last assistant entry, starting one if the
@@ -162,17 +184,20 @@ impl Chat {
         }
     }
 
-    fn apply(&mut self, event: AgentEvent) {
+    fn apply(&mut self, event: Event) {
         match event {
-            AgentEvent::Started => self.busy = true,
-            AgentEvent::Text(text) => self.push_text(&text),
-            AgentEvent::Reasoning(text) => self.push_reasoning(&text),
-            AgentEvent::ToolCall { name, summary, .. } => self.transcript.push(Entry::Tool {
+            Event::Started => {
+                self.busy = true;
+                self.turn_done = false;
+            }
+            Event::Text(text) => self.push_text(&text),
+            Event::Reasoning(text) => self.push_reasoning(&text),
+            Event::ToolCall { name, summary, .. } => self.transcript.push(Entry::Tool {
                 name,
                 detail: summary,
                 status: ToolStatus::Running,
             }),
-            AgentEvent::ToolResult { ok, summary, .. } => {
+            Event::ToolResult { ok, summary, .. } => {
                 // Update the most recent running entry for this tool.
                 if let Some(Entry::Tool { status, detail, .. }) =
                     self.transcript.iter_mut().rev().find(|e| {
@@ -195,214 +220,91 @@ impl Chat {
                     }
                 }
             }
-            AgentEvent::Usage(usage) => self.usage = usage,
-            AgentEvent::Failed(message) => self.transcript.push(Entry::Error(message)),
-            AgentEvent::TurnEnd => {}
-            AgentEvent::Done => self.busy = false,
+            Event::Context(context) => self.context = Some(context),
+            Event::Commands(commands) => self.available_commands = commands,
+            Event::Failed(message) => self.transcript.push(Entry::Error(message)),
+            Event::TurnEnd => {}
+            Event::Done => {
+                self.busy = false;
+                self.turn_done = true;
+            }
         }
     }
 
     /// Asks the running turn to stop.
     pub fn cancel(&mut self) {
-        if let Some(runner) = self.runner.as_ref() {
-            runner.cancel();
+        if let Some(connection) = self.connection.as_ref() {
+            connection.cancel();
         }
     }
-
-    #[must_use]
-    pub fn is_running(&self) -> bool {
-        self.runner.is_some()
-    }
-}
-
-fn char_to_byte(text: &str, chars: usize) -> usize {
-    text.char_indices()
-        .nth(chars)
-        .map_or(text.len(), |(byte, _)| byte)
 }
 
 /// Starts a turn with the text currently in the input box.
 ///
-/// A free function rather than a method because sending needs the vault (for
-/// the system prompt and the note context) while the chat lives inside the app.
+/// A free function rather than a method because sending needs the vault (the
+/// session's working directory) while the chat lives inside the app. The
+/// connection is created lazily: the first message spawns `crow-cli acp`, opens
+/// a session rooted at the vault, and only then prompts. Later messages reuse
+/// both — crow-cli keeps the conversation server-side, so the client keeps no
+/// history of its own.
 pub fn send(app: &mut App) {
-    let text = app.chat.input.trim().to_string();
+    let text = app.chat.input_text();
+    let text = text.trim().to_string();
     if text.is_empty() || app.chat.busy {
         return;
     }
-    app.chat.input.clear();
-    app.chat.cursor = 0;
+    app.chat.clear_input();
     app.chat.follow = true;
     app.chat.transcript.push(Entry::User(text.clone()));
 
-    // The open note travels with the message so "summarize this" works without
-    // the user naming the note.
-    let mut prompt = text;
-    if app.config.agent.include_active_note
-        && let Some(id) = app.active_note()
-        && let (Some(note), Ok(body)) = (app.index.note(id), app.index.read_body(id))
-    {
-        let rel = note.meta.rel.clone();
-        let clipped: String = body.chars().take(8_000).collect();
-        app.chat
-            .transcript
-            .push(Entry::Context(format!("attached: {rel}")));
-        prompt = format!("{prompt}\n\n<active_note path=\"{rel}\">\n{clipped}\n</active_note>");
+    if app.chat.connection.is_none() {
+        // The agent's tool supply is crow-cli's MCP config, passed through at
+        // `session/new` — ACP gives the client this job, and emeraldian has no
+        // tools of its own.
+        let servers = wire::config::load(None).unwrap_or_default();
+        app.chat.connection = Some(Connection::spawn(app.index.vault.path.clone(), servers));
     }
-
-    let mut conversation = std::mem::take(&mut app.chat.conversation);
-    conversation.push(Message::user(prompt));
-
-    let (tool_tx, tool_rx) = std::sync::mpsc::channel();
-    let specs = crate::tools::specs(app.config.agent.allow_writes);
-    let host = emeraldian_agent::ChannelToolHost::new(specs, tool_tx);
-
-    let provider = emeraldian_agent::build_provider_with_key(
-        &app.config.agent.provider_kind(),
-        app.config.agent.base_url.as_deref(),
-        Some(&app.config.agent.model()),
-        crate::auth::key_for(&app.config.agent.provider, &app.auth),
-    );
-
-    let runner = emeraldian_agent::spawn(
-        provider,
-        app.config.agent.to_session_config(),
-        system_prompt(app),
-        conversation,
-        Box::new(host),
-    );
-
-    app.chat.runner = Some(runner);
-    app.chat.tools = Some(tool_rx);
-    app.chat.busy = true;
+    if let Some(connection) = app.chat.connection.as_ref() {
+        connection.prompt(text);
+    }
 }
 
-/// Drains agent events and services tool calls.
+/// Drains wire events into the transcript.
 ///
-/// Called once per frame. Both channels are taken out of the app first, because
-/// running a tool needs `&mut App` and the receivers live inside it.
+/// Called once per frame. The connection is taken out of the app first, because
+/// applying events needs `&mut Chat` and it lives inside it. A closed channel
+/// means the connection thread exited — a failed spawn, or an app that moved on
+/// — and the next message will try again.
 pub fn poll(app: &mut App) -> bool {
-    let Some(runner) = app.chat.runner.take() else {
+    let Some(mut connection) = app.chat.connection.take() else {
         return false;
     };
-    let tools = app.chat.tools.take();
     let mut changed = false;
+    let mut dead = false;
 
-    // Tools first: the agent thread is blocked waiting on them, so servicing
-    // them promptly is what keeps a turn moving.
-    if let Some(tools) = tools.as_ref() {
-        while let Ok(request) = tools.try_recv() {
-            let outcome = crate::tools::execute(app, &request.call);
-            request.respond(outcome);
-            changed = true;
-        }
-    }
-
-    let mut finished = false;
     loop {
-        match runner.events.try_recv() {
+        match connection.try_recv() {
             Ok(event) => {
-                finished |= event == AgentEvent::Done;
                 app.chat.apply(event);
                 changed = true;
             }
-            Err(TryRecvError::Empty) => break,
-            Err(TryRecvError::Disconnected) => {
-                finished = true;
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+            Err(_) => {
+                dead = true;
                 break;
             }
         }
     }
 
-    if finished {
-        app.chat.conversation = runner.take_history();
+    if dead {
+        // The thread is gone; the connection drops here and a fresh one is
+        // spawned on the next message.
         app.chat.busy = false;
-        // Dropping the runner joins its thread, which has already exited.
-        drop(runner);
     } else {
-        app.chat.runner = Some(runner);
-        app.chat.tools = tools;
+        app.chat.connection = Some(connection);
     }
 
     changed
-}
-
-/// Builds the system prompt.
-///
-/// It states what the vault is, what the agent may do, and — importantly — when
-/// to reach for tools. Current models are conservative about tool use, so
-/// naming the trigger conditions is what makes the agent actually search the
-/// vault instead of guessing from the conversation.
-#[must_use]
-pub fn system_prompt(app: &App) -> String {
-    let stats = app.index.stats();
-    let vault = &app.index.vault.name;
-    let writes = if app.config.agent.allow_writes {
-        "You may create, edit, rename and delete notes."
-    } else {
-        "This vault is read-only: you may search and read, but not modify. Say so if asked to change something."
-    };
-
-    let tags: Vec<&str> = app
-        .index
-        .tags()
-        .keys()
-        .take(30)
-        .map(String::as_str)
-        .collect();
-
-    format!(
-        "You are the assistant built into emeraldian, working inside the user's \
-Obsidian vault \"{vault}\" ({notes} notes, {tags_count} tags, {links} links between notes, \
-{unresolved} links pointing at notes that don't exist yet).
-
-{writes}
-
-Use your tools rather than guessing. In particular:
-- Call `search_notes` or `find_notes` whenever the answer depends on what is \
-actually in the vault. Never answer from memory about the user's notes.
-- Call `read_note` before summarizing, editing or quoting a note.
-- Call `get_links` when asked how notes relate, what links somewhere, or what \
-is orphaned.
-- Call `open_note` when the user would want to see a note on screen, and \
-`show_graph` when the answer is about structure.
-- When you create or edit notes, connect them: a note that nothing links to is \
-invisible in the graph. Use `link_notes`, or write `[[Wikilinks]]` directly in \
-the content.
-
-Write notes in Obsidian-flavored Markdown: `[[wikilinks]]`, `#tags`, `- [ ]` \
-tasks, and `> [!note]` callouts. Keep replies short — this is a side panel a few \
-dozen columns wide. Report what you did in one line; the user can see the notes \
-themselves.
-
-Existing tags: {tag_list}",
-        vault = vault,
-        notes = stats.notes,
-        tags_count = stats.tags,
-        links = stats.links,
-        unresolved = stats.unresolved,
-        writes = writes,
-        tag_list = if tags.is_empty() {
-            "(none yet)".to_string()
-        } else {
-            tags.join(", ")
-        },
-    )
-}
-
-/// Whether the assistant can actually reach a model.
-///
-/// Takes stored keys into account, not just exported ones, so a key typed in with
-/// `/key` counts as being set up.
-#[must_use]
-pub fn ready(app: &App) -> bool {
-    let provider = &app.config.agent.provider;
-    let key = crate::auth::key_for(provider, &app.auth);
-    emeraldian_agent::has_credentials(
-        &app.config.agent.provider_kind(),
-        app.config.agent.base_url.as_deref(),
-        key.as_deref(),
-    )
 }
 
 /// A model list being fetched from a provider.
@@ -476,57 +378,78 @@ impl Lookup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
-    use emeraldian_core::test_support::TempVault;
-
-    fn app() -> (TempVault, App) {
-        let vault = TempVault::new("chat");
-        vault.write("A.md", "# A\n\n#topic\nlinks [[B]] and [[Ghost]]\n");
-        vault.write("B.md", "# B\n");
-        let app = App::new(vault.vault(), Config::default()).expect("app");
-        (vault, app)
-    }
 
     #[test]
     fn input_editing_is_character_aware() {
-        let mut chat = Chat::new(&AgentConfig::default());
+        let mut chat = Chat::new(&Config::default());
         for ch in "héllo".chars() {
-            chat.insert_char(ch);
+            chat.input.insert_char(ch);
         }
-        assert_eq!(chat.input, "héllo");
-        assert_eq!(chat.cursor, 5);
+        assert_eq!(chat.input_text(), "héllo");
+        assert_eq!(chat.input.cursor().col, 5);
 
-        chat.move_cursor(-3);
-        chat.insert_char('X');
-        assert_eq!(chat.input, "héXllo");
+        for _ in 0..3 {
+            chat.input.move_left(false);
+        }
+        chat.input.insert_char('X');
+        assert_eq!(chat.input_text(), "héXllo");
 
-        chat.backspace();
-        assert_eq!(chat.input, "héllo");
+        chat.input.backspace();
+        assert_eq!(chat.input_text(), "héllo");
     }
 
     #[test]
-    fn cursor_movement_clamps_to_the_input() {
-        let mut chat = Chat::new(&AgentConfig::default());
-        chat.insert_char('a');
-        chat.move_cursor(-10);
-        assert_eq!(chat.cursor, 0);
-        chat.move_cursor(10);
-        assert_eq!(chat.cursor, 1);
+    fn cursor_movement_stays_inside_the_input() {
+        let mut chat = Chat::new(&Config::default());
+        chat.input.insert_char('a');
+        for _ in 0..10 {
+            chat.input.move_left(false);
+        }
+        assert_eq!(chat.input.cursor().col, 0);
+        for _ in 0..10 {
+            chat.input.move_right(false);
+        }
+        assert_eq!(chat.input.cursor().col, 1);
+    }
+
+    #[test]
+    fn set_input_puts_the_cursor_at_its_end() {
+        let mut chat = Chat::new(&Config::default());
+        chat.set_input("/resume ");
+        assert_eq!(chat.input_text(), "/resume ");
+        assert_eq!(
+            chat.input.cursor(),
+            crate::editor::Cursor { line: 0, col: 8 },
+            "the cursor follows the text"
+        );
+    }
+
+    #[test]
+    fn input_text_joins_lines_without_a_trailing_newline() {
+        let mut chat = Chat::new(&Config::default());
+        chat.set_input("first");
+        chat.input.newline();
+        chat.input.insert_char('s');
+        assert_eq!(chat.input_text(), "first\ns");
+        assert!(!chat.input_is_empty());
+
+        chat.clear_input();
+        assert!(chat.input_is_empty());
     }
 
     #[test]
     fn streamed_text_accumulates_into_one_entry() {
-        let mut chat = Chat::new(&AgentConfig::default());
-        chat.apply(AgentEvent::Text("Hel".into()));
-        chat.apply(AgentEvent::Text("lo".into()));
+        let mut chat = Chat::new(&Config::default());
+        chat.apply(Event::Text("Hel".into()));
+        chat.apply(Event::Text("lo".into()));
 
         assert_eq!(chat.transcript, vec![Entry::Assistant("Hello".into())]);
     }
 
     #[test]
     fn a_tool_call_updates_in_place_when_it_finishes() {
-        let mut chat = Chat::new(&AgentConfig::default());
-        chat.apply(AgentEvent::ToolCall {
+        let mut chat = Chat::new(&Config::default());
+        chat.apply(Event::ToolCall {
             id: "t1".into(),
             name: "create_note".into(),
             summary: "name=Ideas".into(),
@@ -539,7 +462,7 @@ mod tests {
             }
         ));
 
-        chat.apply(AgentEvent::ToolResult {
+        chat.apply(Event::ToolResult {
             id: "t1".into(),
             ok: true,
             summary: "created Ideas.md".into(),
@@ -558,82 +481,48 @@ mod tests {
 
     #[test]
     fn reasoning_and_text_stay_separate_entries() {
-        let mut chat = Chat::new(&AgentConfig::default());
-        chat.apply(AgentEvent::Reasoning("thinking".into()));
-        chat.apply(AgentEvent::Text("answer".into()));
-        chat.apply(AgentEvent::Reasoning("more".into()));
+        let mut chat = Chat::new(&Config::default());
+        chat.apply(Event::Reasoning("thinking".into()));
+        chat.apply(Event::Text("answer".into()));
+        chat.apply(Event::Reasoning("more".into()));
 
         assert_eq!(chat.transcript.len(), 3);
     }
 
     #[test]
     fn done_clears_the_busy_flag() {
-        let mut chat = Chat::new(&AgentConfig::default());
-        chat.apply(AgentEvent::Started);
+        let mut chat = Chat::new(&Config::default());
+        chat.apply(Event::Started);
         assert!(chat.busy);
-        chat.apply(AgentEvent::Done);
+        chat.apply(Event::Done);
         assert!(!chat.busy);
     }
 
     #[test]
-    fn reset_clears_both_records() {
-        let mut chat = Chat::new(&AgentConfig::default());
+    fn the_turn_done_flag_waits_for_the_wire_not_the_busy_race() {
+        let mut chat = Chat::new(&Config::default());
+        // Before the first event, both busy and turn_done are false — which is
+        // why waiting on `busy` alone raced past whole turns.
+        assert!(!chat.busy);
+        assert!(!chat.turn_done);
+
+        chat.apply(Event::Started);
+        assert!(chat.busy);
+        assert!(!chat.turn_done, "a turn that started is not over");
+
+        chat.apply(Event::Done);
+        assert!(chat.turn_done, "and now the scripted run may print");
+
+        chat.apply(Event::Started);
+        assert!(!chat.turn_done, "the next turn re-arms the wait");
+    }
+
+    #[test]
+    fn reset_clears_the_transcript() {
+        let mut chat = Chat::new(&Config::default());
         chat.transcript.push(Entry::User("hi".into()));
-        chat.conversation.push(Message::user("hi"));
         chat.reset();
 
         assert!(chat.transcript.is_empty());
-        assert!(chat.conversation.is_empty());
-    }
-
-    #[test]
-    fn the_system_prompt_describes_the_actual_vault() {
-        let (_vault, app) = app();
-        let prompt = system_prompt(&app);
-
-        assert!(prompt.contains("2 notes"));
-        assert!(prompt.contains("topic"), "existing tags are listed");
-        assert!(prompt.contains("search_notes"), "tool triggers are stated");
-        assert!(prompt.contains("create, edit, rename and delete"));
-    }
-
-    #[test]
-    fn a_read_only_vault_says_so_in_the_prompt() {
-        let (_vault, mut app) = app();
-        app.config.agent.allow_writes = false;
-        let prompt = system_prompt(&app);
-
-        assert!(prompt.contains("read-only"));
-        assert!(!prompt.contains("You may create, edit"));
-    }
-
-    #[test]
-    fn sending_attaches_the_open_note_as_context() {
-        let (_vault, mut app) = app();
-        let a = app.index.id_of_rel("A.md").unwrap();
-        app.open_note(a);
-
-        app.chat.input = "summarize this".into();
-        send(&mut app);
-
-        // The transcript shows the attachment; the model message carries it.
-        assert!(
-            app.chat
-                .transcript
-                .iter()
-                .any(|e| matches!(e, Entry::Context(c) if c.contains("A.md")))
-        );
-
-        app.chat.cancel();
-    }
-
-    #[test]
-    fn sending_an_empty_message_does_nothing() {
-        let (_vault, mut app) = app();
-        app.chat.input = "   ".into();
-        send(&mut app);
-
-        assert!(app.chat.transcript.is_empty());
-        assert!(!app.chat.is_running());
     }
 }

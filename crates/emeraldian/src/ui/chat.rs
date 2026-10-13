@@ -1,19 +1,25 @@
 //! The agent chat panel.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout as FrameLayout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph, Widget};
 
+use emeraldian_core::markdown;
 use emeraldian_theme::Palette;
 
 use crate::agent::{Entry, ToolStatus};
 use crate::app::{App, Focus};
+use crate::editor::Layout as TextLayout;
+use crate::ui::note::{Ctx, RowStyle, fenced_lines, paint_line, render_document, row_line};
 use crate::ui::{pane_block, scrollbar, wrap};
 
-/// Rows reserved for the input box.
-const INPUT_HEIGHT: u16 = 3;
+/// Rows of text the input box grows to before it scrolls instead.
+///
+/// A message longer than this gets a viewport of its own — the editor scrolls
+/// to keep the caret visible — rather than pushing the transcript out.
+const MAX_INPUT_ROWS: u16 = 8;
 
 /// Tallest the slash-command list gets before it scrolls.
 const MAX_COMPLETION_ROWS: u16 = 10;
@@ -23,15 +29,28 @@ pub fn draw(frame: &mut Frame, app: &mut App, palette: &Palette, area: Rect) {
     let title = title(app);
     let block = pane_block(&title, focused, palette, palette.bg_secondary);
     let inner = block.inner(area);
+
+    // The input box is the note editor's sibling: it wraps like a note does and
+    // grows to fit what is typed, up to a cap past which it scrolls instead.
+    // Text past the pane width therefore lands on the next row — it used to
+    // fall off the edge of a single-line paragraph and vanish.
+    let text_width = inner.width.saturating_sub(3) as usize;
+    let wrap = app.config.editor.wrap;
+    let layout = app.chat.input.layout(text_width, wrap);
+    let text_rows = (layout.rows().len() as u16).clamp(1, MAX_INPUT_ROWS);
+    let context_rows = u16::from(app.chat.context.is_some());
+    // The box's own top border row, then the editor's rows, then the footer.
+    let input_height = 1 + text_rows + context_rows;
+
     frame.render_widget(block, area);
 
-    let rows = Layout::default()
+    let rows = FrameLayout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(INPUT_HEIGHT)])
+        .constraints([Constraint::Min(1), Constraint::Length(input_height)])
         .split(inner);
 
     draw_transcript(frame, app, palette, rows[0]);
-    draw_input(frame, app, palette, rows[1], focused);
+    draw_input(frame, app, palette, rows[1], focused, &layout, text_width);
     // Drawn last so it sits over the transcript rather than under it.
     if focused {
         draw_completions(frame, app, palette, rows[0]);
@@ -40,28 +59,14 @@ pub fn draw(frame: &mut Frame, app: &mut App, palette: &Palette, area: Rect) {
 
 /// What the panel calls itself.
 ///
-/// The model answering is worth the space: "why is nothing happening" is almost
-/// always a missing key or the wrong model, and neither was visible anywhere
-/// before you went looking for it.
+/// Naming the wire is worth the space: "why is nothing happening" is almost
+/// always a missing agent binary, and that was invisible before you went looking.
 fn title(app: &App) -> String {
     if app.chat.busy {
         return "Assistant  ·  working…".to_string();
     }
-    let provider = &app.config.agent.provider;
-    let Some(preset) = emeraldian_agent::catalog::find(provider) else {
-        return format!("Assistant  ·  {provider}?");
-    };
-    if preset.kind == emeraldian_agent::ProviderKind::Offline {
-        return "Assistant  ·  no model — /provider".to_string();
-    }
-    if !crate::agent::ready(app) {
-        return format!("Assistant  ·  {} — /key", preset.label);
-    }
-    format!(
-        "Assistant  ·  {} {}",
-        preset.label,
-        app.config.agent.model()
-    )
+    // The agent is a subprocess now; the panel describes the wire, not a provider.
+    "Assistant  ·  crow-cli acp".to_string()
 }
 
 /// The slash-command list, shown while the user is typing one.
@@ -69,10 +74,10 @@ fn title(app: &App) -> String {
 /// It grows upward from the input box so the command being typed stays put —
 /// the list moving under a fixed cursor is easier to read than the reverse.
 fn draw_completions(frame: &mut Frame, app: &App, palette: &Palette, area: Rect) {
-    if app.chat.busy || !crate::slash::is_command(&app.chat.input) {
+    if app.chat.busy || !crate::slash::is_command(&app.chat.input_text()) {
         return;
     }
-    let matches = crate::slash::completions(&app.chat.input);
+    let matches = crate::slash::completions(&app.chat.input_text());
     // One exact match with nothing left to choose is not worth a popup.
     if matches.is_empty() || area.height < 2 {
         return;
@@ -176,6 +181,10 @@ fn draw_transcript(frame: &mut Frame, app: &mut App, palette: &Palette, area: Re
 }
 
 /// Renders the transcript into wrapped, styled lines.
+///
+/// User and assistant text goes through the same markdown renderer the reading
+/// pane uses — one implementation of what markdown looks like, not two — while
+/// reasoning, tool calls and errors stay plain: they are status, not prose.
 #[must_use]
 pub fn transcript_lines(app: &App, palette: &Palette, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
@@ -189,24 +198,12 @@ pub fn transcript_lines(app: &App, palette: &Palette, width: usize) -> Vec<Line<
                         .fg(palette.text_accent)
                         .add_modifier(Modifier::BOLD),
                 )));
-                for line in wrap(text, width) {
-                    lines.push(Line::from(Span::styled(
-                        line,
-                        Style::default().fg(palette.text_normal),
-                    )));
-                }
+                lines.extend(rendered(app, palette, text, width));
                 lines.push(Line::from(""));
             }
 
             Entry::Assistant(text) => {
-                for paragraph in text.split('\n') {
-                    for line in wrap(paragraph, width) {
-                        lines.push(Line::from(Span::styled(
-                            line,
-                            Style::default().fg(palette.text_normal),
-                        )));
-                    }
-                }
+                lines.extend(rendered(app, palette, text, width));
                 lines.push(Line::from(""));
             }
 
@@ -275,58 +272,139 @@ pub fn transcript_lines(app: &App, palette: &Palette, width: usize) -> Vec<Line<
     lines
 }
 
-fn draw_input(frame: &mut Frame, app: &App, palette: &Palette, area: Rect, focused: bool) {
+/// One entry's text through the reading pane's renderer.
+///
+/// No note dir and no image support: the transcript is prose from the wire, so
+/// a picture it mentions renders as its alt text rather than reaching into the
+/// vault for a file that was never part of the conversation.
+fn rendered(app: &App, palette: &Palette, text: &str, width: usize) -> Vec<Line<'static>> {
+    if text.trim().is_empty() {
+        return Vec::new();
+    }
+    let document = markdown::parse(text);
+    let mut ctx = Ctx {
+        palette,
+        index: &app.index,
+        note_dir: None,
+        images: None,
+        pictures: Vec::new(),
+        anchors: Vec::new(),
+    };
+    render_document(&document, &mut ctx, width)
+}
+
+fn draw_input(
+    frame: &mut Frame,
+    app: &mut App,
+    palette: &Palette,
+    area: Rect,
+    focused: bool,
+    layout: &TextLayout,
+    text_width: usize,
+) {
     let block = ratatui::widgets::Block::default()
         .borders(ratatui::widgets::Borders::TOP)
         .border_style(Style::default().fg(palette.border));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let width = inner.width as usize;
-    let prompt = if app.chat.busy { "…" } else { ">" };
-
-    let content = if app.chat.input.is_empty() && !focused {
-        Span::styled("Ctrl+L to focus", Style::default().fg(palette.text_faint))
-    } else {
-        Span::styled(
-            app.chat.input.clone(),
-            Style::default().fg(palette.text_normal),
-        )
-    };
-
-    Paragraph::new(Line::from(vec![
-        Span::styled(
-            format!("{prompt} "),
-            Style::default().fg(palette.text_accent),
-        ),
-        content,
-    ]))
-    .render(inner, frame.buffer_mut());
-
-    if focused && !app.chat.busy {
-        let x = inner.x + 2 + app.chat.cursor.min(width.saturating_sub(3)) as u16;
-        frame.set_cursor_position((x, inner.y));
-    }
-
-    // A second line shows token usage once a turn has run.
-    if inner.height > 1 && app.chat.usage.output_tokens > 0 {
-        let usage = &app.chat.usage;
-        let text = format!(
-            "{} in · {} out{}",
-            usage.input_tokens,
-            usage.output_tokens,
-            if usage.cache_read_tokens > 0 {
-                format!(" · {} cached", usage.cache_read_tokens)
-            } else {
-                String::new()
-            }
-        );
+    // The context footer keeps the bottom row; the editor gets what is above.
+    let mut text_rows = inner.height;
+    if inner.height > 1
+        && let Some(context) = &app.chat.context
+    {
         frame.buffer_mut().set_string(
             inner.x,
-            inner.y + 1,
-            crate::ui::truncate(&text, width),
+            inner.y + inner.height - 1,
+            crate::ui::truncate(context, inner.width as usize),
             Style::default().fg(palette.text_faint),
         );
+        text_rows -= 1;
+    }
+    let text_rect = Rect {
+        x: inner.x + 2,
+        y: inner.y,
+        width: inner.width.saturating_sub(3),
+        height: text_rows,
+    };
+
+    // Recorded for key handling: arrows move by these rows, and the caret
+    // column spare keeps one past the last character reachable.
+    app.chat.input_cols = text_width;
+    app.chat.input_rows = text_rect.height as usize;
+
+    let prompt = if app.chat.busy { "…" } else { ">" };
+    frame.buffer_mut().set_string(
+        inner.x,
+        text_rect.y,
+        prompt,
+        Style::default().fg(palette.text_accent),
+    );
+
+    if app.chat.input_is_empty() && !focused {
+        Paragraph::new(Line::from(Span::styled(
+            "Ctrl+L to focus",
+            Style::default().fg(palette.text_faint),
+        )))
+        .render(text_rect, frame.buffer_mut());
+        return;
+    }
+
+    app.chat
+        .input
+        .scroll_into_view(layout, text_rect.height as usize);
+    let scroll = app.chat.input.scroll;
+    let hscroll = app.chat.input.hscroll;
+    let (caret_row, caret_column) = app.chat.input.caret(layout);
+    let cursor_line = app.chat.input.cursor().line;
+    let selection = app.chat.input.selection();
+    let fenced = fenced_lines(app.chat.input.lines());
+
+    // Painting a whole source line at once and slicing it per row keeps one
+    // decision — what each character is — in one place, however it wrapped.
+    let mut painted: Option<(usize, Vec<(char, Style)>)> = None;
+    let mut body: Vec<Line> = Vec::new();
+    for row in layout
+        .rows()
+        .iter()
+        .skip(scroll)
+        .take(text_rect.height as usize)
+    {
+        if painted.as_ref().is_none_or(|(line, _)| *line != row.line) {
+            let source = app.chat.input.lines()[row.line].clone();
+            painted = Some((
+                row.line,
+                paint_line(&source, row.line == cursor_line, fenced[row.line], palette),
+            ));
+        }
+        let Some((_, chars)) = &painted else { continue };
+        body.push(row_line(
+            row,
+            &chars[row.start.min(chars.len())..row.end.min(chars.len())],
+            RowStyle {
+                background: palette.bg_secondary,
+                selection: palette.bg_selection,
+                search: palette.bg_selection,
+            },
+            selection,
+            &[],
+            text_rect.width as usize + hscroll,
+        ));
+    }
+    Paragraph::new(body)
+        .scroll((0, u16::try_from(hscroll).unwrap_or(u16::MAX)))
+        .render(text_rect, frame.buffer_mut());
+
+    // Place the terminal cursor so the user sees a real caret.
+    if focused && !app.chat.busy {
+        let column = usize::from(caret_column);
+        if caret_row >= scroll
+            && caret_row - scroll < text_rect.height as usize
+            && column >= hscroll
+        {
+            let x = text_rect.x + u16::try_from(column - hscroll).unwrap_or(u16::MAX);
+            frame.set_cursor_position((x, text_rect.y + (caret_row - scroll) as u16));
+        }
     }
 }
 
@@ -438,34 +516,11 @@ mod tests {
     }
 
     #[test]
-    fn the_panel_says_which_model_is_answering_or_what_is_missing() {
-        let (vault, mut app) = app();
-        app.auth = crate::auth::Auth::at(vault.path().join("auth.json"));
+    fn the_panel_says_what_is_answering_and_when_it_is_working() {
+        let (_vault, mut app) = app();
 
-        crate::actions::set_provider(&mut app, "offline").expect("a known provider");
-        assert!(
-            title(&app).contains("/provider"),
-            "with nothing set up, the title is the instructions: {}",
-            title(&app)
-        );
-
-        crate::actions::set_provider(&mut app, "anthropic").expect("a known provider");
-        if crate::auth::key_for("anthropic", &app.auth).is_none() {
-            assert!(
-                title(&app).contains("/key"),
-                "a provider with no key says so: {}",
-                title(&app)
-            );
-        }
-
-        // A local server needs no key, so it is ready as soon as it is chosen.
-        crate::actions::set_provider(&mut app, "ollama").expect("a known provider");
-        let ready = title(&app);
-        assert!(ready.contains("Ollama"), "{ready}");
-        assert!(
-            ready.contains(&app.config.agent.model()),
-            "and names the model, which is the other half of 'why did that fail': {ready}"
-        );
+        // The agent is a subprocess now; the title names the wire, not a provider.
+        assert!(title(&app).contains("crow-cli acp"), "{}", title(&app));
 
         app.chat.busy = true;
         assert!(
@@ -477,7 +532,7 @@ mod tests {
     #[test]
     fn the_command_list_scrolls_to_keep_the_highlight_in_view() {
         let (_v, mut app) = app();
-        app.chat.input = "/".into();
+        app.chat.set_input("/");
         let total = crate::slash::completions("/").len();
         assert!(
             total > MAX_COMPLETION_ROWS as usize,
@@ -505,7 +560,7 @@ mod tests {
     #[test]
     fn the_highlight_is_the_row_the_arrows_landed_on() {
         let (_v, mut app) = app();
-        app.chat.input = "/".into();
+        app.chat.set_input("/");
         app.chat.completion = 2;
 
         let area = Rect::new(0, 0, 60, 20);
@@ -531,19 +586,112 @@ mod tests {
     #[test]
     fn a_pane_with_no_room_draws_no_popup_rather_than_panicking() {
         let (_v, mut app) = app();
-        app.chat.input = "/".into();
+        app.chat.set_input("/");
         assert!(popup_rows(&app, 1).is_empty());
     }
 
     #[test]
-    fn multi_line_assistant_text_keeps_its_line_breaks() {
+    fn assistant_paragraphs_render_with_their_breaks() {
         let (_v, mut app) = app();
         app.chat
             .transcript
-            .push(Entry::Assistant("first\nsecond".into()));
+            .push(Entry::Assistant("first\n\nsecond".into()));
 
         let lines = text_of(&transcript_lines(&app, &palette(), 40));
         assert_eq!(lines[0], "first");
-        assert_eq!(lines[1], "second");
+        assert_eq!(lines[1], "");
+        assert_eq!(lines[2], "second");
+    }
+
+    #[test]
+    fn assistant_text_renders_as_markdown() {
+        let (_v, mut app) = app();
+        app.chat
+            .transcript
+            .push(Entry::Assistant("plain **bold** text".into()));
+
+        let lines = transcript_lines(&app, &palette(), 40);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.spans.iter().any(|s| {
+                    s.content == "bold" && s.style.add_modifier.contains(Modifier::BOLD)
+                })),
+            "the emphasis run is drawn bold, the way the reading pane draws it"
+        );
+    }
+
+    #[test]
+    fn typing_past_the_pane_width_wraps_onto_the_next_row() {
+        let (_v, mut app) = app();
+        app.focus = Focus::Chat;
+        // Longer than one row of a 40-column pane: the old single-line input
+        // clipped everything past the edge, so it looked like the text was
+        // never typed at all.
+        let message = "z".repeat(80);
+        app.chat.set_input(&message);
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 20)).expect("terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app, &palette(), Rect::new(0, 0, 40, 20)))
+            .expect("drawn");
+
+        let buffer = terminal.backend().buffer().clone();
+        let mut count = 0;
+        let mut rows: Vec<u16> = Vec::new();
+        for y in 0..20u16 {
+            for x in 0..40u16 {
+                if buffer[(x, y)].symbol() == "z" {
+                    count += 1;
+                    if !rows.contains(&y) {
+                        rows.push(y);
+                    }
+                }
+            }
+        }
+        assert!(count > 40, "more than one row's worth is visible: {count}");
+        assert!(rows.len() >= 2, "wrapped onto a second row: {rows:?}");
+    }
+
+    #[test]
+    fn the_input_box_grows_to_fit_and_then_caps() {
+        let (_v, mut app) = app();
+        app.focus = Focus::Chat;
+
+        let rows_with_text = |app: &mut App| {
+            let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 30))
+                .expect("terminal");
+            terminal
+                .draw(|frame| draw(frame, app, &palette(), Rect::new(0, 0, 60, 30)))
+                .expect("drawn");
+            let buffer = terminal.backend().buffer().clone();
+            (0..30u16)
+                .filter(|y| (0..60u16).any(|x| buffer[(x, *y)].symbol() != " "))
+                .filter(|y| {
+                    (0..60u16)
+                        .map(|x| buffer[(x, *y)].symbol())
+                        .collect::<String>()
+                        .contains("zork")
+                })
+                .count()
+        };
+
+        app.chat.set_input("one zork");
+        assert_eq!(rows_with_text(&mut app), 1, "a short message, one row");
+
+        let mut text = String::new();
+        for i in 1..=12 {
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(&format!("zork {i}"));
+        }
+        app.chat.set_input(&text);
+        assert_eq!(
+            rows_with_text(&mut app),
+            MAX_INPUT_ROWS as usize,
+            "long messages cap rather than pushing the transcript out"
+        );
     }
 }

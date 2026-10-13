@@ -53,11 +53,6 @@ pub const COMMANDS: &[SlashCommand] = &[
         argument_hint: Some("[delete <name>]"),
     },
     SlashCommand {
-        name: "compact",
-        description: "Drop older turns to free up context",
-        argument_hint: None,
-    },
-    SlashCommand {
         name: "provider",
         description: "Choose a backend: Anthropic, OpenAI, Ollama, …",
         argument_hint: Some("[name]"),
@@ -228,7 +223,6 @@ pub fn run(app: &mut App, input: &str) -> Outcome {
         "save" => save(app, args),
         "resume" | "load" => resume(app, args),
         "sessions" | "list" => sessions(app, args),
-        "compact" => compact(app),
         "provider" => provider(app, args),
         "model" => model(app, args),
         "key" | "apikey" | "api-key" => key(app, args),
@@ -289,7 +283,7 @@ fn save(app: &mut App, args: &str) {
     } else {
         args.to_string()
     };
-    if app.chat.conversation.is_empty() && app.chat.transcript.is_empty() {
+    if app.chat.transcript.is_empty() {
         say(app, "nothing to save yet");
         return;
     }
@@ -299,7 +293,8 @@ fn save(app: &mut App, args: &str) {
         saved_at: session::now(),
         vault: Some(app.index.vault.path.clone()),
         transcript: app.chat.transcript.clone(),
-        conversation: app.chat.conversation.clone(),
+        // crow-cli owns the model-side history now; saves are transcript-only.
+        conversation: Vec::new(),
     };
     match session::save(&record) {
         Ok(path) => say(app, &format!("saved as '{name}' → {}", path.display())),
@@ -324,10 +319,9 @@ fn resume(app: &mut App, args: &str) {
 fn load_session(app: &mut App, name: &str) {
     match session::load(name) {
         Ok(record) => {
-            let turns = record.conversation.len();
+            let turns = record.transcript.len();
             app.chat.reset();
             app.chat.transcript = record.transcript;
-            app.chat.conversation = record.conversation;
             app.chat.follow = true;
 
             // A conversation about a different vault will refer to notes that
@@ -370,45 +364,6 @@ fn sessions(app: &mut App, args: &str) {
     }
     lines.push("/resume <name> to reload one, /sessions delete <name> to remove one".to_string());
     say(app, &lines.join("\n"));
-}
-
-/// Keeps the tail of the conversation and drops the rest.
-///
-/// A real summarization would need a model round-trip; trimming is instant,
-/// predictable, and solves the actual problem — a context window filling up
-/// mid-task.
-fn compact(app: &mut App) {
-    const KEEP: usize = 6;
-    let before = app.chat.conversation.len();
-    if before <= KEEP {
-        say(app, "nothing to compact yet");
-        return;
-    }
-    app.chat.conversation.drain(..before - KEEP);
-    // A conversation must not start with tool results whose calls were just
-    // dropped; providers reject that.
-    while app
-        .chat
-        .conversation
-        .first()
-        .is_some_and(|m| !is_plain_user_turn(m))
-    {
-        app.chat.conversation.remove(0);
-    }
-    let after = app.chat.conversation.len();
-    say(app, &format!("compacted: {before} turns → {after}"));
-}
-
-/// Whether a message is a plain user turn, safe to begin a conversation with.
-fn is_plain_user_turn(message: &emeraldian_agent::Message) -> bool {
-    if message.role != emeraldian_agent::Role::User {
-        return false;
-    }
-    message.content.as_array().is_none_or(|blocks| {
-        !blocks
-            .iter()
-            .any(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
-    })
 }
 
 /// `/provider` with no argument offers the list; with one, switches to it.
@@ -556,26 +511,9 @@ fn logout(app: &mut App) {
 }
 
 fn status_text(app: &App) -> String {
-    let provider = &app.config.agent.provider;
-    let usage = app.chat.usage;
     format!(
-        "provider  {}\nmodel     {}\nendpoint  {}\nkey       {}\nnetwork   {}\nwrites    {}\ncontext   {}\nturns     {}\ntokens    {} in / {} out",
-        provider,
-        app.config.agent.model(),
-        app.config.agent.base_url.as_deref().unwrap_or("(default)"),
-        if emeraldian_agent::catalog::needs_key(provider) {
-            crate::auth::source(provider, &app.auth).to_string()
-        } else {
-            "not needed".to_string()
-        },
-        // Which roots and which proxy. On a managed network this is the line that
-        // turns "it just fails" into something actionable.
-        emeraldian_agent::http::trust(),
-        on_off(app.config.agent.allow_writes),
-        on_off(app.config.agent.include_active_note),
-        app.chat.conversation.len(),
-        usage.input_tokens,
-        usage.output_tokens,
+        "agent     crow-cli acp — ACP v1\ncontext   {}",
+        app.chat.context.as_deref().unwrap_or("(not reported yet)")
     )
 }
 
@@ -824,7 +762,7 @@ mod tests {
             Outcome::Unknown("nonsense".into())
         );
         assert!(
-            app.chat.conversation.is_empty(),
+            app.chat.transcript.is_empty(),
             "a typo must never reach the model"
         );
     }
@@ -973,73 +911,14 @@ mod tests {
     }
 
     #[test]
-    fn new_clears_both_halves_of_the_chat() {
+    fn new_clears_the_transcript_but_says_so() {
         let (_v, mut app) = app();
         app.chat.transcript.push(Entry::User("hi".into()));
-        app.chat
-            .conversation
-            .push(emeraldian_agent::Message::user("hi"));
 
         run(&mut app, "/new");
 
-        assert!(app.chat.conversation.is_empty());
         // The confirmation itself is the only thing left.
         assert_eq!(app.chat.transcript.len(), 1);
-    }
-
-    #[test]
-    fn compact_keeps_the_recent_turns() {
-        let (_v, mut app) = app();
-        for i in 0..12 {
-            app.chat
-                .conversation
-                .push(emeraldian_agent::Message::user(format!("turn {i}")));
-        }
-        run(&mut app, "/compact");
-        assert_eq!(app.chat.conversation.len(), 6);
-        assert!(
-            format!("{:?}", app.chat.conversation[0]).contains("turn 6"),
-            "the tail is what's worth keeping"
-        );
-    }
-
-    #[test]
-    fn compact_never_leaves_a_conversation_starting_on_a_tool_result() {
-        let (_v, mut app) = app();
-        // A conversation that would be trimmed straight into tool results,
-        // which every provider rejects.
-        for i in 0..10 {
-            app.chat
-                .conversation
-                .push(emeraldian_agent::Message::user(format!("turn {i}")));
-        }
-        app.chat.conversation.insert(
-            4,
-            emeraldian_agent::Message::tool_results(&[emeraldian_agent::ToolResult {
-                id: "1".into(),
-                content: "done".into(),
-                is_error: false,
-            }]),
-        );
-        run(&mut app, "/compact");
-        assert!(
-            app.chat
-                .conversation
-                .first()
-                .is_some_and(is_plain_user_turn),
-            "the first message has to be a plain user turn"
-        );
-    }
-
-    #[test]
-    fn compact_on_a_short_conversation_does_nothing() {
-        let (_v, mut app) = app();
-        app.chat
-            .conversation
-            .push(emeraldian_agent::Message::user("hi"));
-        run(&mut app, "/compact");
-        assert_eq!(app.chat.conversation.len(), 1);
-        assert!(last(&app).contains("nothing to compact"));
     }
 
     #[test]
@@ -1100,13 +979,13 @@ mod tests {
     fn status_reports_what_the_next_turn_will_do() {
         let (_v, app) = app();
         let text = status_text(&app);
-        assert!(text.contains("provider"));
-        assert!(text.contains("model"));
-        assert!(text.contains("tokens"));
         assert!(
-            text.contains("network") && text.contains("roots"),
-            "on a managed network, which roots and which proxy is the whole \
-             diagnosis: {text}"
+            text.contains("crow-cli acp"),
+            "the agent is a subprocess now; /status names it: {text}"
+        );
+        assert!(
+            text.contains("context"),
+            "context usage is what the wire reports back: {text}"
         );
     }
 

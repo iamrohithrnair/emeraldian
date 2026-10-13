@@ -1,0 +1,13 @@
+[package]
+name = "crow-term-acp"
+description = "ACP v1 client: spawns an agent subprocess and speaks the Agent Client Protocol over stdio."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+agent-client-protocol = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+yaml-rust2 = { workspace = true }

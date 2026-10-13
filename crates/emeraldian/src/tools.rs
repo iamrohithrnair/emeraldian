@@ -8,6 +8,12 @@
 //! Descriptions state *when* to call each tool, not just what it does — current
 //! models under-reach for tools given a bare capability description, and the
 //! trigger condition is what fixes that.
+//!
+//! Dormant since the ACP swap: the agent is now a subprocess whose tool supply
+//! comes from crow-cli's MCP config, so nothing here is dispatched any more —
+//! `/tools` still lists the specs. Kept for the rip-out phase to decide what
+//! survives.
+#![allow(dead_code)]
 
 use emeraldian_agent::{ToolCall, ToolOutcome, ToolSpec};
 use emeraldian_core::graph::NodeKind;
