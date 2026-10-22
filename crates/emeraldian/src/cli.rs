@@ -179,12 +179,13 @@ pub const HELP: &str = "\
 emeraldian — a terminal UI for your Obsidian vault
 
 USAGE:
-    emeraldian [VAULT] [OPTIONS]
+    emeraldian [PATH] [OPTIONS]
     emeraldian 'obsidian://open?vault=Notes&file=Ideas'
 
 ARGS:
-    VAULT                  Vault folder. Defaults to the config `vault`, then to
-                           the vault Obsidian last had open.
+    PATH                   A vault folder, `.` for the one you are in, or a note
+                           to open in its vault. Defaults to the config `vault`,
+                           then to the vault Obsidian last had open.
 
 OPTIONS:
     -n, --note <NAME>      Open a note by name or path
