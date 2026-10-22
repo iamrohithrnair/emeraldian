@@ -6,7 +6,8 @@
 //! outline and the agent's note summaries.
 //!
 //! The dialect is Obsidian's: CommonMark blocks plus wikilinks, embeds, tags,
-//! `==highlights==` and `> [!note]` callouts. It is deliberately line-oriented.
+//! `==highlights==`, `> [!note]` callouts and `$` maths. It is deliberately
+//! line-oriented.
 //! A terminal renders line by line and the user edits line by line, so a
 //! line-oriented model maps directly onto both, and it stays fast on large
 //! notes because no line is ever visited twice.
@@ -56,6 +57,9 @@ pub enum BlockKind {
         lang: String,
         lines: Vec<String>,
     },
+    /// A `$$` equation set on lines of its own, as the TeX between the
+    /// delimiters. Typesetting it is the renderer's business.
+    Math(String),
     Table(Table),
     Rule,
     Blank,
@@ -134,8 +138,12 @@ pub enum SpanKind {
     },
     /// An inline `#tag`, without the `#`.
     Tag(String),
-    /// `$inline math$`, passed through verbatim.
-    Math,
+    /// `$maths$`, with the TeX between the dollars as its text. `display` is
+    /// set for `$$…$$` written in the middle of a line, which Obsidian sets
+    /// apart from the text around it rather than inline.
+    Math {
+        display: bool,
+    },
 }
 
 /// Parses a full note, frontmatter included.
@@ -204,6 +212,22 @@ fn parse_blocks(lines: &[&str], offset: usize, out: &mut Vec<Block>) {
                 line: file_line,
                 kind: BlockKind::Code { lang, lines: body },
             });
+            continue;
+        }
+
+        if let Some(math) = math_block(&lines[i..]) {
+            out.push(Block {
+                line: file_line,
+                kind: BlockKind::Math(math.tex),
+            });
+            i += math.lines;
+            // Text after the closing `$$` carries on as a paragraph of its own.
+            if !math.after.is_empty() {
+                out.push(Block {
+                    line: offset + i - 1,
+                    kind: BlockKind::Paragraph(parse_inline(math.after)),
+                });
+            }
             continue;
         }
 
@@ -278,6 +302,7 @@ fn parse_blocks(lines: &[&str], offset: usize, out: &mut Vec<Block>) {
                 || heading(ct).is_some()
                 || ct.starts_with('>')
                 || list_item(candidate).is_some()
+                || math_block(&lines[i..]).is_some()
             {
                 break;
             }
@@ -338,6 +363,55 @@ fn opening_fence(trimmed: &str) -> Option<(char, usize)> {
 fn is_closing_fence(trimmed: &str, fence_char: char, fence_len: usize) -> bool {
     let len = trimmed.chars().take_while(|&c| c == fence_char).count();
     len >= fence_len && trimmed[len..].trim().is_empty()
+}
+
+/// A `$$` equation found by [`math_block`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MathBlock<'a> {
+    /// The TeX between the delimiters.
+    pub tex: String,
+    /// How many source lines it took, the delimiters included.
+    pub lines: usize,
+    /// Anything after the closing `$$` on its line.
+    pub after: &'a str,
+}
+
+/// An equation that starts at the first of `lines` and is set apart from the
+/// text: `$$E = mc^2$$` alone on a line, or a `$$` line, the TeX, and a line
+/// that ends it with `$$` again.
+///
+/// An opening `$$` that is never closed is not one. It stays text, so typing
+/// the first half of an equation can't swallow the rest of the note.
+#[must_use]
+pub fn math_block<'a>(lines: &[&'a str]) -> Option<MathBlock<'a>> {
+    let opening = lines.first()?.trim_start().strip_prefix("$$")?;
+
+    if let Some(end) = opening.find("$$") {
+        // Text after it on the same line makes it part of a paragraph, where
+        // it is still set apart, but from the text around it.
+        let tex = opening[..end].trim();
+        let trailing = opening[end + 2..].trim();
+        return (!tex.is_empty() && trailing.is_empty()).then(|| MathBlock {
+            tex: tex.to_string(),
+            lines: 1,
+            after: "",
+        });
+    }
+
+    let mut tex = vec![opening];
+    for (offset, line) in lines.iter().enumerate().skip(1) {
+        if let Some(end) = line.find("$$") {
+            tex.push(&line[..end]);
+            let tex = tex.join("\n").trim().to_string();
+            return (!tex.is_empty()).then(|| MathBlock {
+                tex,
+                lines: offset + 1,
+                after: line[end + 2..].trim(),
+            });
+        }
+        tex.push(line);
+    }
+    None
 }
 
 fn is_rule(trimmed: &str) -> bool {
@@ -577,9 +651,22 @@ fn match_inline(rest: &str, tag_boundary: bool) -> Option<(usize, Vec<Span>)> {
         ));
     }
 
+    // Maths is matched ahead of emphasis for the same reason as code: TeX is
+    // full of `_` and `*` that are not Markdown.
+    if let Some((consumed, tex, display)) = math_span(rest) {
+        return Some((
+            consumed,
+            vec![Span {
+                text: tex.to_string(),
+                style: Style::default(),
+                kind: SpanKind::Math { display },
+            }],
+        ));
+    }
+
     for (delim, apply) in DOUBLE_DELIMITERS {
         if rest.starts_with(delim)
-            && let Some((consumed, inner)) = delimited_text(rest, delim)
+            && let Some((consumed, inner)) = emphasis_text(rest, delim)
         {
             // The inside is parsed too, so `**bold `code`**` keeps both.
             let spans = parse_inline(inner)
@@ -599,7 +686,7 @@ fn match_inline(rest: &str, tag_boundary: bool) -> Option<(usize, Vec<Span>)> {
         let doubled = rest.starts_with(&delim.repeat(2));
         if rest.starts_with(delim)
             && !doubled
-            && let Some((consumed, inner)) = delimited_text(rest, delim)
+            && let Some((consumed, inner)) = emphasis_text(rest, delim)
         {
             let spans = parse_inline(inner)
                 .into_iter()
@@ -610,19 +697,6 @@ fn match_inline(rest: &str, tag_boundary: bool) -> Option<(usize, Vec<Span>)> {
                 .collect();
             return Some((consumed, spans));
         }
-    }
-
-    if rest.starts_with('$')
-        && let Some((consumed, inner)) = delimited_text(rest, "$")
-    {
-        return Some((
-            consumed,
-            vec![Span {
-                text: inner.to_string(),
-                style: Style::default(),
-                kind: SpanKind::Math,
-            }],
-        ));
     }
 
     if tag_boundary && rest.starts_with('#') {
@@ -720,6 +794,66 @@ fn delimited_text<'a>(rest: &'a str, delim: &str) -> Option<(usize, &'a str)> {
     Some((delim.len() * 2 + end, &after[..end]))
 }
 
+/// Like [`delimited_text`] for emphasis, whose closing delimiter can't be
+/// inside code or maths: those claim their own `*` and `_`, so `snake_case
+/// and $x_1$` has no italics in it. An escaped delimiter doesn't close either.
+fn emphasis_text<'a>(rest: &'a str, delim: &str) -> Option<(usize, &'a str)> {
+    let after = &rest[delim.len()..];
+    let mut at = 0;
+    while at < after.len() {
+        let here = &after[at..];
+        if here.starts_with(delim) {
+            if at == 0 {
+                return None; // `**` with nothing between is literal
+            }
+            return Some((delim.len() * 2 + at, &after[..at]));
+        }
+        let skip = if let Some(escaped) = here.strip_prefix('\\') {
+            1 + escaped.chars().next().map_or(0, char::len_utf8)
+        } else if here.starts_with('`') {
+            delimited_text(here, "`").map_or(1, |(consumed, _)| consumed)
+        } else if here.starts_with('$') {
+            math_span(here).map_or(1, |(consumed, _, _)| consumed)
+        } else {
+            here.chars().next().map_or(1, char::len_utf8)
+        };
+        at += skip;
+    }
+    None
+}
+
+/// Matches `$…$` or `$$…$$` at the start of `rest`, returning the bytes
+/// consumed, the TeX inside, and whether it is the display form.
+///
+/// A single `$` follows Pandoc's rule, which matches what Obsidian renders:
+/// the opening one has something other than a space after it, and the next
+/// unescaped `$` closes it only if it has something other than a space before
+/// it and no digit after. If that one can't close, nothing does. That is what
+/// keeps "between $5 and $10" a pair of prices, and stops a price swallowing
+/// the prose up to a formula later in the paragraph. `\$` is a dollar sign.
+fn math_span(rest: &str) -> Option<(usize, &str, bool)> {
+    if let Some(after) = rest.strip_prefix("$$") {
+        let end = after.find("$$")?;
+        let tex = after[..end].trim();
+        return (!tex.is_empty()).then_some((2 + end + 2, tex, true));
+    }
+
+    let after = rest.strip_prefix('$')?;
+    if after.is_empty() || after.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let mut escaped = false;
+    let (at, _) = after.char_indices().find(|&(_, ch)| {
+        let closes = ch == '$' && !escaped;
+        escaped = ch == '\\' && !escaped;
+        closes
+    })?;
+    let before = after[..at].chars().next_back();
+    let next = after[at + 1..].chars().next();
+    (before.is_some_and(|c| !c.is_whitespace()) && !next.is_some_and(|c| c.is_ascii_digit()))
+        .then_some((1 + at + 1, &after[..at], false))
+}
+
 /// Flattens spans back to plain text, for search snippets and note previews.
 #[must_use]
 pub fn spans_to_text(spans: &[Span]) -> String {
@@ -748,7 +882,7 @@ impl Ink {
             // Alt text standing in for a picture reads as a link to it.
             SpanKind::Image { .. } => Self::Link,
             SpanKind::Tag(_) => Self::Tag,
-            SpanKind::Math => Self::Math,
+            SpanKind::Math { .. } => Self::Math,
         }
     }
 }
@@ -1155,5 +1289,163 @@ mod tests {
     fn horizontal_rules_are_not_frontmatter() {
         let doc = parse_body("text\n\n---\n\nmore\n", 0);
         assert!(kinds(&doc).iter().any(|k| matches!(k, BlockKind::Rule)));
+    }
+
+    /// The maths in a line, as `(tex, display)` pairs.
+    fn maths(text: &str) -> Vec<(String, bool)> {
+        parse_inline(text)
+            .into_iter()
+            .filter_map(|span| match span.kind {
+                SpanKind::Math { display } => Some((span.text, display)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn inline_maths_keeps_its_tex() {
+        assert_eq!(
+            maths(r"where $\alpha_1 + x^2$ holds"),
+            [(r"\alpha_1 + x^2".to_string(), false)]
+        );
+        assert_eq!(
+            spans_to_text(&parse_inline("a $x$ b")),
+            "a x b",
+            "the dollars are delimiters, not text"
+        );
+    }
+
+    #[test]
+    fn prices_are_not_maths() {
+        // Pandoc's rule, which Obsidian follows: no space just inside either
+        // dollar, and no digit straight after the closing one.
+        assert!(maths("between $5 and $10").is_empty());
+        assert!(maths("$5-$10 a night").is_empty());
+        assert!(maths("$ x $").is_empty());
+        assert!(maths(r"\$x\$ is literal").is_empty());
+        assert_eq!(
+            spans_to_text(&parse_inline("costs $5, or $3 off")),
+            "costs $5, or $3 off"
+        );
+    }
+
+    #[test]
+    fn a_price_does_not_swallow_the_prose_up_to_a_formula() {
+        let line = "The ticket was $5, and the formula is $E = mc^2$.";
+        assert_eq!(maths(line), [("E = mc^2".to_string(), false)]);
+        assert_eq!(
+            spans_to_text(&parse_inline(line)),
+            "The ticket was $5, and the formula is E = mc^2."
+        );
+
+        let spans = parse_inline("*only $5* today, see $x$");
+        assert!(spans.iter().any(|s| s.style.italic && s.text == "only $5"));
+        assert_eq!(
+            maths("*only $5* today, see $x$"),
+            [("x".to_string(), false)]
+        );
+    }
+
+    #[test]
+    fn an_escaped_dollar_inside_maths_does_not_close_it() {
+        assert_eq!(maths(r"$a\$b$"), [(r"a\$b".to_string(), false)]);
+    }
+
+    #[test]
+    fn double_dollars_in_a_line_are_display_maths() {
+        assert_eq!(
+            maths("so $$ e^{i\\pi} = -1 $$ follows"),
+            [("e^{i\\pi} = -1".to_string(), true)]
+        );
+    }
+
+    #[test]
+    fn emphasis_cannot_close_inside_maths_or_code() {
+        // TeX is full of underscores, and an unpaired one in the prose before
+        // it used to pair with the first one inside the maths.
+        let spans = parse_inline("my_var is $x_1$ here");
+        assert_eq!(maths("my_var is $x_1$ here"), [("x_1".to_string(), false)]);
+        assert!(!spans.iter().any(|s| s.style.italic));
+
+        let spans = parse_inline("a * b and `c * d`");
+        assert!(!spans.iter().any(|s| s.style.italic));
+
+        // Emphasis around maths still works, and keeps the maths inside it.
+        let spans = parse_inline("*if $a_1 > 0$ then*");
+        assert!(spans.iter().all(|s| s.style.italic));
+        assert_eq!(
+            maths("*if $a_1 > 0$ then*"),
+            [("a_1 > 0".to_string(), false)]
+        );
+    }
+
+    #[test]
+    fn a_display_equation_on_its_own_lines_is_a_block() {
+        let doc = parse_body("Before\n$$\n\\int_0^1 x\\,dx\n= \\frac12\n$$\nAfter\n", 0);
+        let blocks: Vec<_> = doc.blocks.iter().map(|b| (b.line, &b.kind)).collect();
+        assert_eq!(blocks.len(), 3, "{blocks:?}");
+        assert_eq!(blocks[1].0, 1, "the block starts on its opening line");
+        assert_eq!(
+            blocks[1].1,
+            &BlockKind::Math("\\int_0^1 x\\,dx\n= \\frac12".into())
+        );
+        assert!(
+            matches!(blocks[2].1, BlockKind::Paragraph(spans) if spans_to_text(spans) == "After"),
+            "the text after it is a paragraph of its own: {blocks:?}"
+        );
+    }
+
+    #[test]
+    fn a_display_equation_on_one_line_is_a_block() {
+        let doc = parse_body("$$E = mc^2$$\n", 0);
+        assert_eq!(kinds(&doc), [&BlockKind::Math("E = mc^2".into())]);
+    }
+
+    #[test]
+    fn markdown_inside_a_display_equation_is_tex() {
+        // Lines that would start a list, a heading or a quote are maths here.
+        let doc = parse_body("$$\n- x\n# y\n> z\n$$\n", 0);
+        assert_eq!(kinds(&doc), [&BlockKind::Math("- x\n# y\n> z".into())]);
+    }
+
+    #[test]
+    fn an_unclosed_display_equation_stays_text() {
+        // Half an equation, mid-way through typing it, can't swallow the note.
+        let doc = parse_body("$$\nx^2\n\n# Next\n", 0);
+        assert!(!kinds(&doc).iter().any(|k| matches!(k, BlockKind::Math(_))));
+        assert!(
+            kinds(&doc)
+                .iter()
+                .any(|k| matches!(k, BlockKind::Heading { .. }))
+        );
+    }
+
+    #[test]
+    fn text_after_a_closing_double_dollar_is_kept() {
+        let doc = parse_body("$$\nx\n$$ and so on\n", 0);
+        assert!(matches!(
+            kinds(&doc).as_slice(),
+            [BlockKind::Math(_), BlockKind::Paragraph(spans)] if spans_to_text(spans) == "and so on"
+        ));
+    }
+
+    #[test]
+    fn display_equations_work_inside_callouts() {
+        let doc = parse_body("> [!note] Identity\n> $$\n> e^{i\\pi} + 1 = 0\n> $$\n", 0);
+        let BlockKind::Callout { body, .. } = &doc.blocks[0].kind else {
+            panic!("expected a callout: {:?}", doc.blocks);
+        };
+        assert!(
+            body.iter()
+                .any(|b| b.kind == BlockKind::Math("e^{i\\pi} + 1 = 0".into()))
+        );
+    }
+
+    #[test]
+    fn scan_inline_paints_maths_and_dims_its_dollars() {
+        assert_eq!(shape("a $x_1$ b"), "..#...#..");
+        assert_eq!(scan_inline("a $x_1$ b")[4].ink, Ink::Math);
+        assert_eq!(shape("$$x$$"), "##.##");
+        assert_eq!(shape("$5 and $10"), "..........", "a price is text");
     }
 }

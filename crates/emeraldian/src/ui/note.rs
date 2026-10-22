@@ -13,6 +13,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 use ratatui_image::sliced::{SignedPosition, SlicedImage};
+use unicode_width::UnicodeWidthStr;
 
 use emeraldian_core::excalidraw;
 use emeraldian_core::index::VaultIndex;
@@ -22,7 +23,7 @@ use emeraldian_theme::Palette;
 use crate::app::{App, Mode, Regions};
 use crate::editor::{Cursor, Row};
 use crate::images::{self, Images};
-use crate::ui::{drawing, icons, scrollbar, truncate};
+use crate::ui::{drawing, icons, math, scrollbar, truncate};
 
 /// Left padding inside the note pane, matching Obsidian's generous margins.
 const PADDING: u16 = 2;
@@ -485,7 +486,7 @@ fn render_block(
             let style = Style::default()
                 .fg(palette.heading(*level))
                 .add_modifier(Modifier::BOLD);
-            let text: String = spans.iter().map(|s| s.text.as_str()).collect();
+            let text = shown_text(spans);
             out.push(Line::from(Span::styled(format!("{pad}{text}"), style)));
             // Obsidian underlines H1 and H2; a rule is the terminal equivalent
             // of the larger type it uses to separate sections.
@@ -600,7 +601,7 @@ fn render_block(
             let label = if title.is_empty() {
                 capitalize(kind)
             } else {
-                title.iter().map(|s| s.text.as_str()).collect()
+                shown_text(title)
             };
 
             out.push(Line::from(vec![
@@ -648,6 +649,8 @@ fn render_block(
             }
         }
 
+        BlockKind::Math(tex) => display_math(tex, palette, inner_width, &pad, out),
+
         BlockKind::Table(table) => render_table(table, palette, &pad, out),
 
         BlockKind::Rule => out.push(Line::from(Span::styled(
@@ -674,11 +677,29 @@ fn render_spans(
     out: &mut Vec<Line<'static>>,
 ) {
     let mut run: Vec<markdown::Span> = Vec::new();
+    // Text resuming after something lifted out starts a line of its own, and
+    // shouldn't start it with the space that separated them.
+    let mut lifted = false;
     for span in spans {
-        let Some((path, size)) = measure_picture(span, ctx, width) else {
-            run.push(span.clone());
-            continue;
+        let picture = match span.kind {
+            // `$$…$$` written mid-paragraph is lifted out the same way, since
+            // Obsidian sets it apart from the text around it.
+            SpanKind::Math { display: true } => None,
+            _ => match measure_picture(span, ctx, width) {
+                Some(picture) => Some(picture),
+                None => {
+                    let mut span = span.clone();
+                    if lifted && run.is_empty() {
+                        span.text = span.text.trim_start().to_string();
+                    }
+                    if !span.text.is_empty() {
+                        run.push(span);
+                    }
+                    continue;
+                }
+            },
         };
+        lifted = true;
 
         if !run.is_empty() {
             let pad = if out.is_empty() { first_pad } else { rest_pad };
@@ -687,6 +708,11 @@ fn render_spans(
             run.clear();
         }
 
+        let Some((path, size)) = picture else {
+            let pad = if out.is_empty() { first_pad } else { rest_pad };
+            display_math(&span.text, ctx.palette, width, pad, out);
+            continue;
+        };
         ctx.pictures.push(Picture {
             line: out.len(),
             indent: indent as u16,
@@ -783,13 +809,76 @@ fn style_spans(
                 SpanKind::Tag(_) => {
                     style = style.fg(palette.tag_fg).bg(palette.tag_bg);
                 }
-                SpanKind::Math => style = style.fg(palette.text_accent),
+                SpanKind::Math { .. } => {
+                    style = style.fg(palette.text_accent);
+                    return (
+                        math::inline(&span.text),
+                        emphasis(style, span.style, palette),
+                    );
+                }
                 SpanKind::Text => {}
             }
 
             (span.text.clone(), emphasis(style, span.style, palette))
         })
         .collect()
+}
+
+/// Inline spans as the reading pane shows them, for the places that draw them
+/// as a single run: headings, callout titles and table cells.
+fn shown_text(spans: &[markdown::Span]) -> String {
+    spans
+        .iter()
+        .map(|span| match span.kind {
+            SpanKind::Math { .. } => math::inline(&span.text),
+            _ => span.text.clone(),
+        })
+        .collect()
+}
+
+/// Sets an equation on rows of its own, centred as Obsidian centres it.
+///
+/// One wider than the pane starts at the margin instead and is panned across,
+/// like a wide table. `width` counts the `pad` in front of each row, as it does
+/// for [`wrap_spans`].
+fn display_math(
+    tex: &str,
+    palette: &Palette,
+    width: usize,
+    pad: &str,
+    out: &mut Vec<Line<'static>>,
+) {
+    let set = math::display(tex);
+    let style = Style::default().fg(palette.text_accent);
+    let room = width.saturating_sub(pad.width());
+    let tag = set.tag.as_deref().map(|tag| (tag, tag.width()));
+    // A tag sits at the right margin, so the equation is centred clear of it.
+    let reserve = tag.map_or(0, |(_, tag_width)| 2 * (tag_width + 2));
+    let left = if set.width + reserve <= room {
+        (room - set.width) / 2
+    } else {
+        0
+    };
+
+    for (at, row) in set.rows.iter().enumerate() {
+        let row = row.trim_end();
+        let mut spans = vec![
+            Span::raw(format!("{pad}{}", " ".repeat(left))),
+            Span::styled(row.to_string(), style),
+        ];
+        if at == set.baseline
+            && let Some((tag, tag_width)) = tag
+        {
+            let used = left + row.width();
+            let gap = room.saturating_sub(used + tag_width).max(2);
+            spans.push(Span::raw(" ".repeat(gap)));
+            spans.push(Span::styled(
+                tag.to_string(),
+                Style::default().fg(palette.text_muted),
+            ));
+        }
+        out.push(Line::from(spans));
+    }
 }
 
 /// Wraps styled spans to `width`, breaking on spaces and keeping styles intact.
@@ -858,14 +947,16 @@ fn render_table(table: &Table, palette: &Palette, pad: &str, out: &mut Vec<Line<
     let cell_text = |cells: &Vec<Vec<markdown::Span>>, i: usize| -> String {
         cells
             .get(i)
-            .map(|spans| markdown::spans_to_text(spans))
+            .map(|spans| shown_text(spans))
             .unwrap_or_default()
     };
 
+    // Measured in columns rather than characters: typeset maths puts its
+    // accents on as combining marks, which take no room of their own.
     for (i, width) in widths.iter_mut().enumerate() {
-        *width = (*width).max(cell_text(&table.header, i).chars().count());
+        *width = (*width).max(cell_text(&table.header, i).width());
         for row in &table.rows {
-            *width = (*width).max(cell_text(row, i).chars().count());
+            *width = (*width).max(cell_text(row, i).width());
         }
         *width = (*width).clamp(1, MAX_COLUMN);
     }
@@ -884,7 +975,7 @@ fn render_table(table: &Table, palette: &Palette, pad: &str, out: &mut Vec<Line<
         let mut spans = vec![Span::raw(pad.to_string()), Span::styled("│", border)];
         for (i, w) in widths.iter().enumerate() {
             let text = truncate(&cell_text(cells, i), *w);
-            let padding = w.saturating_sub(text.chars().count());
+            let padding = w.saturating_sub(text.width());
             let (before, after) = match table.aligns.get(i).copied().unwrap_or(Align::Left) {
                 Align::Left => (0, padding),
                 Align::Right => (padding, 0),
@@ -1178,7 +1269,7 @@ fn draw_editing(
             row,
             &chars[row.start.min(chars.len())..row.end.min(chars.len())],
             RowStyle {
-                background: if fenced[row.line] {
+                background: if fenced[row.line] == Fence::Code {
                     palette.code_bg
                 } else if on_cursor_line {
                     palette.cursor_line_bg
@@ -1324,21 +1415,54 @@ fn row_line(
     Line::from(spans)
 }
 
-/// Which lines sit inside a fenced code block, so their content is never read
-/// as Markdown while it is being edited.
-fn fenced_lines(lines: &[String]) -> Vec<bool> {
-    let mut inside = false;
-    lines
-        .iter()
-        .map(|line| {
-            let trimmed = line.trim_start();
-            let fence = trimmed.starts_with("```") || trimmed.starts_with("~~~");
-            // The fence lines belong to the block they open and close.
-            let fenced = inside || fence;
-            inside ^= fence;
-            fenced
-        })
-        .collect()
+/// What a source line belongs to, as far as painting it goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fence {
+    Prose,
+    /// Inside a fenced code block, the fences included.
+    Code,
+    /// Inside a `$$` equation set on lines of its own, the delimiters included.
+    Math,
+}
+
+/// Which lines sit inside a fenced code block or a `$$` equation, so their
+/// content is never read as Markdown while it is being edited. TeX is full of
+/// `_` and `*`, which would otherwise be dimmed and italicised as emphasis.
+fn fenced_lines(lines: &[String]) -> Vec<Fence> {
+    let is_fence = |line: &String| {
+        let trimmed = line.trim_start();
+        trimmed.starts_with("```") || trimmed.starts_with("~~~")
+    };
+    let mut fences = vec![Fence::Prose; lines.len()];
+    let mut at = 0;
+    while at < lines.len() {
+        if is_fence(&lines[at]) {
+            // The fence lines belong to the block they open and close, and an
+            // unclosed one runs to the end.
+            let end = lines[at + 1..]
+                .iter()
+                .position(is_fence)
+                .map_or(lines.len() - 1, |offset| at + 1 + offset);
+            fences[at..=end].fill(Fence::Code);
+            at = end + 1;
+            continue;
+        }
+        // The same test the reading pane uses, so the two agree on where an
+        // equation starts and stops. One on a single line is left to
+        // `scan_inline`, which already paints it.
+        if lines[at].trim_start().starts_with("$$") {
+            let rest: Vec<&str> = lines[at..].iter().map(String::as_str).collect();
+            if let Some(math) = markdown::math_block(&rest)
+                && math.lines > 1
+            {
+                fences[at..at + math.lines].fill(Fence::Math);
+                at += math.lines;
+                continue;
+            }
+        }
+        at += 1;
+    }
+    fences
 }
 
 /// Styles one source line character by character, ready to be sliced across
@@ -1352,13 +1476,36 @@ fn fenced_lines(lines: &[String]) -> Vec<bool> {
 fn paint_line(
     text: &str,
     on_cursor_line: bool,
-    fenced: bool,
+    fence: Fence,
     palette: &Palette,
 ) -> Vec<(char, Style)> {
     let chars: Vec<char> = text.chars().collect();
-    if fenced {
-        let style = Style::default().fg(palette.code_fg).bg(palette.code_bg);
-        return chars.into_iter().map(|ch| (ch, style)).collect();
+    match fence {
+        Fence::Code => {
+            let style = Style::default().fg(palette.code_fg).bg(palette.code_bg);
+            return chars.into_iter().map(|ch| (ch, style)).collect();
+        }
+        Fence::Math => {
+            // TeX in the maths colour, with its `$$` dimmed like any other
+            // delimiter.
+            let paint = |ink| {
+                let paint = markdown::Paint {
+                    style: markdown::Style::default(),
+                    ink,
+                };
+                paint_style(paint, on_cursor_line, palette)
+            };
+            let (tex, marker) = (paint(markdown::Ink::Math), paint(markdown::Ink::Marker));
+            let mut out: Vec<(char, Style)> = chars.iter().map(|&ch| (ch, tex)).collect();
+            for at in 1..chars.len() {
+                if chars[at - 1] == '$' && chars[at] == '$' {
+                    out[at - 1].1 = marker;
+                    out[at].1 = marker;
+                }
+            }
+            return out;
+        }
+        Fence::Prose => {}
     }
 
     let mut out: Vec<(char, Style)> = markdown::scan_inline(text)
@@ -2096,5 +2243,166 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Rendered rows with trailing space trimmed and non-breaking spaces shown
+    /// as the plain ones they look like.
+    fn shown(source: &str, width: usize) -> Vec<String> {
+        let vault = TempVault::new("render-maths");
+        let index = vault.index();
+        let lines = render_document(
+            &markdown::parse(source),
+            &mut Ctx::text(&palette(), &index),
+            width,
+        );
+        text_of(&lines)
+            .into_iter()
+            .map(|line| line.replace('\u{a0}', " ").trim_end().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn inline_maths_is_typeset_in_the_line() {
+        assert_eq!(
+            shown("Energy is $E=mc^2$, roughly.\n", 60),
+            ["Energy is E = mc², roughly."]
+        );
+        // A price is still a price.
+        assert_eq!(shown("From $5 to $10.\n", 60), ["From $5 to $10."]);
+    }
+
+    #[test]
+    fn inline_maths_is_drawn_in_the_maths_colour() {
+        let vault = TempVault::new("render-maths-colour");
+        let index = vault.index();
+        let palette = palette();
+        let lines = render_document(
+            &markdown::parse("a $x$ b\n"),
+            &mut Ctx::text(&palette, &index),
+            40,
+        );
+        let maths = lines[0]
+            .spans
+            .iter()
+            .find(|span| span.content == "x")
+            .expect("the maths has a span of its own");
+        assert_eq!(maths.style.fg, Some(palette.text_accent));
+    }
+
+    #[test]
+    fn a_display_equation_is_centred_on_rows_of_its_own() {
+        assert_eq!(
+            shown("Before\n\n$$\n\\frac{a+b}{2}\n$$\n\nAfter\n", 21),
+            [
+                "Before",
+                "",
+                "        a + b",
+                "        ─────",
+                "          2",
+                "",
+                "After"
+            ]
+        );
+    }
+
+    #[test]
+    fn display_maths_in_the_middle_of_a_paragraph_is_set_apart() {
+        assert_eq!(
+            shown("so that $$x^2 = 4$$ which means\n", 20),
+            ["so that", "       x² = 4", "which means"]
+        );
+    }
+
+    #[test]
+    fn an_equation_wider_than_the_pane_starts_at_the_margin() {
+        let tex = "a + b + c + d + e + f + g + h";
+        let rows = shown(&format!("$${tex}$$\n"), 10);
+        assert_eq!(rows, [tex], "panned across rather than wrapped");
+    }
+
+    #[test]
+    fn an_equation_number_sits_at_the_right_margin() {
+        assert_eq!(
+            shown("$$E = mc^2 \\tag{1}$$\n", 30),
+            ["           E = mc²         (1)"]
+        );
+    }
+
+    #[test]
+    fn maths_in_headings_and_tables_is_typeset_too() {
+        let rows = shown(
+            "# The $\\alpha$ case\n\n| a | b |\n|---|---|\n| $x^2$ | $\\hat{y}$ |\n",
+            40,
+        );
+        assert!(rows.contains(&"The α case".to_string()), "{rows:?}");
+        // The combining hat takes no room, so the borders still line up.
+        let widths: Vec<usize> = rows
+            .iter()
+            .filter(|row| row.starts_with(['┌', '│', '└']))
+            .map(|row| row.width())
+            .collect();
+        assert!(widths.windows(2).all(|pair| pair[0] == pair[1]), "{rows:?}");
+        assert!(rows.iter().any(|row| row.contains("x²")), "{rows:?}");
+    }
+
+    #[test]
+    fn a_display_equation_is_tex_in_the_editor() {
+        let lines: Vec<String> = ["$$", "x_1 + y_2 * z", "$$", "a_b c_d"]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            fenced_lines(&lines),
+            [Fence::Math, Fence::Math, Fence::Math, Fence::Prose]
+        );
+
+        // The underscores are TeX, not emphasis to dim and italicise.
+        let palette = palette();
+        let painted = paint_line(&lines[1], false, Fence::Math, &palette);
+        assert!(
+            painted
+                .iter()
+                .all(|(_, style)| style.fg == Some(palette.text_accent)
+                    && !style.add_modifier.contains(Modifier::ITALIC))
+        );
+        let delimiters = paint_line(&lines[0], false, Fence::Math, &palette);
+        assert!(
+            delimiters
+                .iter()
+                .all(|(_, style)| style.fg == Some(palette.text_faint)),
+            "the dollars are dimmed like any delimiter"
+        );
+    }
+
+    #[test]
+    fn an_unclosed_equation_does_not_take_over_the_editor() {
+        let lines: Vec<String> = ["$$", "x^2", "", "# Next"]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert!(
+            fenced_lines(&lines)
+                .iter()
+                .all(|fence| *fence == Fence::Prose)
+        );
+    }
+
+    #[test]
+    fn code_fences_still_paint_as_code() {
+        let lines: Vec<String> = ["```", "$$", "```", "text", "```"]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            fenced_lines(&lines),
+            [
+                Fence::Code,
+                Fence::Code,
+                Fence::Code,
+                Fence::Prose,
+                Fence::Code
+            ],
+            "and an unclosed fence still runs to the end"
+        );
     }
 }
