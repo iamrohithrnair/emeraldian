@@ -531,6 +531,9 @@ pub fn dispatch(app: &mut App, action: Action) {
         }
         Action::OpenNotesView => {
             app.view = View::Notes;
+            // Opening the graph lays it out afresh, so a closed one is only
+            // memory: for a large vault, a few hundred megabytes of it.
+            app.graph = None;
             app.focus = if app.tabs.is_empty() {
                 Focus::Explorer
             } else {

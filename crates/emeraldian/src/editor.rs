@@ -301,10 +301,67 @@ enum EditKind {
     Structural,
 }
 
+/// The text and cursor as they were when an edit began.
 #[derive(Debug, Clone)]
 struct Snapshot {
     lines: Vec<String>,
     cursor: Cursor,
+}
+
+/// One step of undo history: lines `start..start + len` of the text it is
+/// applied to are replaced with `lines`, and the cursor goes to `cursor`.
+///
+/// Only the lines an edit changed are kept. A copy of the whole note for every
+/// step, as history used to keep, ran to gigabytes for a long note edited for
+/// a while.
+#[derive(Debug, Clone)]
+struct Patch {
+    start: usize,
+    len: usize,
+    lines: Vec<String>,
+    cursor: Cursor,
+}
+
+impl Patch {
+    /// The step that turns the text `now` back into `then`, or `None` when the
+    /// two are the same.
+    fn between(now: &[String], mut then: Vec<String>, cursor: Cursor) -> Option<Self> {
+        let prefix = now
+            .iter()
+            .zip(&then)
+            .take_while(|(now, then)| now == then)
+            .count();
+        if prefix == now.len() && prefix == then.len() {
+            return None;
+        }
+        let room = now.len().min(then.len()) - prefix;
+        let suffix = now
+            .iter()
+            .rev()
+            .zip(then.iter().rev())
+            .take(room)
+            .take_while(|(now, then)| now == then)
+            .count();
+        then.truncate(then.len() - suffix);
+        then.drain(..prefix);
+        then.shrink_to_fit();
+        Some(Self {
+            start: prefix,
+            len: now.len() - prefix - suffix,
+            lines: then,
+            cursor,
+        })
+    }
+
+    /// Roughly the memory it holds.
+    fn bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self
+                .lines
+                .iter()
+                .map(|line| std::mem::size_of::<String>() + line.capacity())
+                .sum::<usize>()
+    }
 }
 
 pub struct Editor {
@@ -326,8 +383,13 @@ pub struct Editor {
     modified: bool,
     /// Bumped on every change, so a caller can tell whether one happened.
     revision: u64,
-    undo: Vec<Snapshot>,
-    redo: Vec<Snapshot>,
+    undo: Vec<Patch>,
+    redo: Vec<Patch>,
+    /// The text as it was when the edit in progress began. Cut down to a
+    /// [`Patch`] once the edit is over and it is known what changed.
+    before: Option<Snapshot>,
+    /// What [`Editor::undo`]'s steps hold, kept within [`UNDO_BUDGET`].
+    undo_bytes: usize,
     last_edit: Option<EditKind>,
     tab_width: usize,
     expand_tabs: bool,
@@ -336,6 +398,12 @@ pub struct Editor {
 /// Undo history depth. Deep enough to recover from a bad paste, bounded so a
 /// long session can't grow without limit.
 const MAX_UNDO: usize = 500;
+
+/// The most memory undo history may hold. Ordinary edits keep only the lines
+/// they changed, so this is far more than [`MAX_UNDO`] of them; replacing all
+/// of a very long note a few times over is what reaches it, and then the
+/// oldest steps go first.
+const UNDO_BUDGET: usize = 32 * 1024 * 1024;
 
 impl Editor {
     #[must_use]
@@ -351,6 +419,8 @@ impl Editor {
             revision: 0,
             undo: Vec::new(),
             redo: Vec::new(),
+            before: None,
+            undo_bytes: 0,
             last_edit: None,
             tab_width,
             expand_tabs,
@@ -1270,7 +1340,8 @@ impl Editor {
 
     // ---- undo ------------------------------------------------------------
 
-    /// Records a snapshot, coalescing runs of the same kind of edit.
+    /// Records the text as it stands before an edit, coalescing runs of the
+    /// same kind of edit.
     ///
     /// Undo should step back by a *thought*, not a keystroke, so consecutive
     /// typing collapses into one entry while a delete after typing starts a new
@@ -1282,12 +1353,31 @@ impl Editor {
         if coalesce {
             return;
         }
-        self.undo.push(Snapshot {
+        self.close_group();
+        self.before = Some(Snapshot {
             lines: self.lines.clone(),
             cursor: self.cursor,
         });
-        if self.undo.len() > MAX_UNDO {
-            self.undo.remove(0);
+    }
+
+    /// Turns the edit in progress into a step of history.
+    ///
+    /// Only now is it known which lines it changed, so only now can the copy
+    /// of the whole text taken when it began be cut down to those lines.
+    fn close_group(&mut self) {
+        let Some(before) = self.before.take() else {
+            return;
+        };
+        let Some(patch) = Patch::between(&self.lines, before.lines, before.cursor) else {
+            // Nothing changed, and a step that undoes nothing is a keypress
+            // wasted.
+            return;
+        };
+        self.undo_bytes += patch.bytes();
+        self.undo.push(patch);
+        while self.undo.len() > MAX_UNDO || (self.undo_bytes > UNDO_BUDGET && self.undo.len() > 1) {
+            let oldest = self.undo.remove(0);
+            self.undo_bytes -= oldest.bytes();
         }
     }
 
@@ -1297,35 +1387,44 @@ impl Editor {
     }
 
     pub fn undo(&mut self) -> bool {
-        let Some(snapshot) = self.undo.pop() else {
+        self.close_group();
+        let Some(patch) = self.undo.pop() else {
             return false;
         };
-        self.redo.push(Snapshot {
-            lines: self.lines.clone(),
-            cursor: self.cursor,
-        });
-        self.lines = snapshot.lines;
-        self.cursor = snapshot.cursor;
-        self.selection_anchor = None;
-        self.last_edit = None;
-        self.touch();
+        self.undo_bytes -= patch.bytes();
+        let inverse = self.apply(patch);
+        self.redo.push(inverse);
         true
     }
 
     pub fn redo(&mut self) -> bool {
-        let Some(snapshot) = self.redo.pop() else {
+        let Some(patch) = self.redo.pop() else {
             return false;
         };
-        self.undo.push(Snapshot {
-            lines: self.lines.clone(),
+        let inverse = self.apply(patch);
+        self.undo_bytes += inverse.bytes();
+        self.undo.push(inverse);
+        true
+    }
+
+    /// Puts a step of history into the text, returning the step that takes it
+    /// back out again.
+    fn apply(&mut self, patch: Patch) -> Patch {
+        let start = patch.start.min(self.lines.len());
+        let end = (start + patch.len).min(self.lines.len());
+        let inverse = Patch {
+            start,
+            len: patch.lines.len(),
+            lines: self.lines.splice(start..end, patch.lines).collect(),
             cursor: self.cursor,
-        });
-        self.lines = snapshot.lines;
-        self.cursor = snapshot.cursor;
-        self.selection_anchor = None;
+        };
+        if self.lines.is_empty() {
+            self.lines.push(String::new());
+        }
+        self.goto(patch.cursor.line, patch.cursor.col);
         self.last_edit = None;
         self.touch();
-        true
+        inverse
     }
 
     // ---- vim motions -----------------------------------------------------
@@ -2266,6 +2365,86 @@ mod tests {
         ed.insert_char('b');
         ed.undo();
         assert_eq!(ed.text(), "a\n");
+    }
+
+    #[test]
+    fn undo_and_redo_walk_a_long_history_exactly() {
+        let mut ed = editor("one\ntwo\nthree");
+        let mut states = vec![ed.text()];
+        for (line, text) in [(0, "a"), (2, "b\nc"), (1, "d"), (4, "e")] {
+            ed.goto(line, 0);
+            ed.insert_str(text);
+            ed.commit();
+            states.push(ed.text());
+        }
+        ed.select_all();
+        ed.delete_selection();
+        ed.commit();
+        states.push(ed.text());
+
+        for expected in states.iter().rev().skip(1) {
+            assert!(ed.undo());
+            assert_eq!(&ed.text(), expected);
+        }
+        assert!(!ed.undo(), "back at the start");
+        for expected in states.iter().skip(1) {
+            assert!(ed.redo());
+            assert_eq!(&ed.text(), expected);
+        }
+        assert!(!ed.redo());
+    }
+
+    #[test]
+    fn history_keeps_the_lines_an_edit_changed_not_the_whole_note() {
+        let text: String = (0..20_000).map(|i| format!("line number {i}\n")).collect();
+        let mut ed = editor(&text);
+        for i in 0..200 {
+            ed.goto(i * 50, 0);
+            ed.insert_char('x');
+            ed.commit();
+        }
+        // Undoing closes the last edit too, so every step is counted.
+        assert!(ed.undo());
+        assert_eq!(ed.undo.len(), 199);
+        assert!(
+            ed.undo_bytes < 64 * 1024,
+            "{} bytes for 200 one-character edits",
+            ed.undo_bytes
+        );
+    }
+
+    #[test]
+    fn history_past_its_budget_lets_the_oldest_steps_go() {
+        let mut ed = editor("start");
+        let big = "x".repeat(UNDO_BUDGET / 3);
+        for round in 0..5 {
+            ed.select_all();
+            ed.delete_selection();
+            ed.insert_str(&format!("{round}{big}"));
+            ed.commit();
+        }
+        assert!(ed.undo_bytes <= UNDO_BUDGET, "{} bytes", ed.undo_bytes);
+        // The last replacement is two steps, the delete and the insert.
+        assert!(ed.undo() && ed.undo());
+        assert!(ed.text().starts_with('3'), "the newest steps are kept");
+        while ed.undo() {}
+        assert_ne!(ed.text(), "start\n", "and the oldest were let go");
+    }
+
+    #[test]
+    fn an_edit_that_changes_nothing_leaves_no_step_to_undo() {
+        let mut ed = editor("text");
+        ed.insert_char('!');
+        ed.commit();
+        ed.goto(0, 0);
+        ed.indent(false);
+        ed.commit();
+        assert!(ed.undo());
+        assert_eq!(
+            ed.text(),
+            "text\n",
+            "the outdent did nothing, so undo skips it"
+        );
     }
 
     #[test]

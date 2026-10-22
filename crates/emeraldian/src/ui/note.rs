@@ -87,6 +87,7 @@ impl<'a> Ctx<'a> {
 }
 
 /// A picture and the rows reserved for it.
+#[derive(Debug, Clone)]
 pub struct Picture {
     /// Index of its first row in the rendered lines.
     pub line: usize,
@@ -94,6 +95,47 @@ pub struct Picture {
     pub indent: u16,
     pub size: Size,
     pub path: PathBuf,
+}
+
+/// The note last laid out for reading, kept until something it was laid out
+/// from changes.
+///
+/// Every frame used to read the note from disk, parse it and lay all of it out,
+/// to show one screen of it. On a long note that was most of the work of each
+/// keypress, and most of the memory the app touched: paging through a note of a
+/// few megabytes took it past half a gigabyte. A frame that changes nothing the
+/// layout depends on now reuses it.
+#[derive(Default)]
+pub struct ReadingCache {
+    key: Option<ReadingKey>,
+    lines: Vec<Line<'static>>,
+    anchors: Vec<(usize, usize)>,
+    pictures: Vec<Picture>,
+    widest: usize,
+}
+
+/// Everything a reading layout depends on.
+#[derive(PartialEq)]
+struct ReadingKey {
+    note: usize,
+    /// When the file was last written, and its length: a cheap stand-in for
+    /// its content that needs no reading.
+    modified: Option<std::time::SystemTime>,
+    len: u64,
+    /// Which links resolve, and which attachments exist.
+    index: u64,
+    /// What each picture measures.
+    images: u64,
+    width: usize,
+    height: u16,
+    palette: Palette,
+}
+
+impl ReadingCache {
+    /// Forgets the layout, for when something outside its key has changed.
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
 }
 
 pub fn draw(
@@ -285,9 +327,11 @@ fn draw_reading(
     // Taken whether or not this frame can use it, so it can't go off later on
     // some other note.
     let reveal = app.reveal.take();
-    let Ok(content) = app.index.read(id) else {
-        Paragraph::new("could not read this note").render(area, frame.buffer_mut());
+    let Some(path) = app.index.note(id).map(|note| note.meta.path.clone()) else {
         return;
+    };
+    let unreadable = |frame: &mut Frame| {
+        Paragraph::new("could not read this note").render(area, frame.buffer_mut());
     };
     // The scrollbar stays on the pane's edge; the prose sits inside the gutter.
     let full = area;
@@ -302,6 +346,9 @@ fn draw_reading(
         .note(id)
         .is_some_and(|note| excalidraw::is_drawing(&note.meta.rel));
     if is_drawing {
+        let Ok(content) = app.index.read(id) else {
+            return unreadable(frame);
+        };
         let scroll = app.active().map_or(0, |tab| tab.scroll);
         if let Some(scene) = app.scenes.get(&content) {
             let rows = drawing::draw(frame, palette, area, scene, scroll);
@@ -312,53 +359,92 @@ fn draw_reading(
             return;
         }
     }
+    let file = std::fs::metadata(&path).ok();
 
     let width = area.width.saturating_sub(1) as usize;
-    let document = markdown::parse(&content);
-
-    let note_dir = app
-        .index
-        .note(id)
-        .map(|note| app.index.vault.path.join(&note.meta.rel))
-        .and_then(|path| path.parent().map(Path::to_path_buf));
     // Pictures are capped at a share of the pane, so the layout pass has to
     // know how tall it is before it measures the first one.
     app.images.set_pane_height(area.height);
-    let mut ctx = Ctx {
-        palette,
-        index: &app.index,
-        note_dir,
-        images: Some(&mut app.images),
-        pictures: Vec::new(),
-        anchors: Vec::new(),
-    };
-    let lines = render_document(&document, &mut ctx, width);
-    let pictures = std::mem::take(&mut ctx.pictures);
-    regions.anchors = std::mem::take(&mut ctx.anchors);
 
+    let key = ReadingKey {
+        note: id,
+        modified: file.as_ref().and_then(|file| file.modified().ok()),
+        len: file.as_ref().map_or(0, std::fs::Metadata::len),
+        index: app.index.revision(),
+        images: app.images.generation(),
+        width,
+        height: area.height,
+        palette: palette.clone(),
+    };
+    // A file that can't be looked at can't be trusted to be unchanged either.
+    if file.is_none() || app.reading.key.as_ref() != Some(&key) {
+        let Ok(content) = app.index.read(id) else {
+            app.reading.clear();
+            return unreadable(frame);
+        };
+        let document = markdown::parse(&content);
+        let note_dir = app
+            .index
+            .note(id)
+            .map(|note| app.index.vault.path.join(&note.meta.rel))
+            .and_then(|path| path.parent().map(Path::to_path_buf));
+        let mut ctx = Ctx {
+            palette,
+            index: &app.index,
+            note_dir,
+            images: Some(&mut app.images),
+            pictures: Vec::new(),
+            anchors: Vec::new(),
+        };
+        let lines = render_document(&document, &mut ctx, width);
+        // Content can be wider than the pane — a table laid out at its
+        // natural width, a long code line — and panning is the only way to
+        // reach the rest.
+        let widest = lines.iter().map(Line::width).max().unwrap_or(0);
+        app.reading = ReadingCache {
+            key: Some(key),
+            lines,
+            anchors: std::mem::take(&mut ctx.anchors),
+            pictures: std::mem::take(&mut ctx.pictures),
+            widest,
+        };
+    }
+    regions.anchors.clone_from(&app.reading.anchors);
+
+    let total = app.reading.lines.len();
     let height = area.height as usize;
     if let Some(reveal) = reveal {
         let start = anchor_row(&regions.anchors, reveal.line);
-        let row =
-            row_showing(&lines, &regions.anchors, start, &reveal.text, reveal.nth).unwrap_or(start);
+        let row = row_showing(
+            &app.reading.lines,
+            &regions.anchors,
+            start,
+            &reveal.text,
+            reveal.nth,
+        )
+        .unwrap_or(start);
         if let Some(tab) = app.active_mut() {
             // In the upper part of the pane, with a little of what leads up to
             // it above.
             tab.scroll = row.saturating_sub(height / 3);
         }
     }
-    let max_scroll = lines.len().saturating_sub(height);
-    // Content can be wider than the pane — a table laid out at its natural
-    // width, a long code line — and panning is the only way to reach the rest.
-    let widest = lines.iter().map(Line::width).max().unwrap_or(0);
-    let max_hscroll = widest.saturating_sub(area.width as usize);
+    let max_scroll = total.saturating_sub(height);
+    let max_hscroll = app.reading.widest.saturating_sub(area.width as usize);
     if let Some(tab) = app.active_mut() {
         tab.scroll = tab.scroll.min(max_scroll);
         tab.hscroll = tab.hscroll.min(max_hscroll);
     }
     let (scroll, hscroll) = app.active().map_or((0, 0), |t| (t.scroll, t.hscroll));
 
-    let visible: Vec<Line> = lines.iter().skip(scroll).take(height).cloned().collect();
+    let visible: Vec<Line> = app
+        .reading
+        .lines
+        .iter()
+        .skip(scroll)
+        .take(height)
+        .cloned()
+        .collect();
     Paragraph::new(visible)
         .scroll((0, u16::try_from(hscroll).unwrap_or(u16::MAX)))
         .render(area, frame.buffer_mut());
@@ -367,11 +453,11 @@ fn draw_reading(
         &mut app.images,
         palette,
         area,
-        &pictures,
+        &app.reading.pictures,
         scroll,
         hscroll,
     );
-    scrollbar(frame, palette, full, scroll, lines.len());
+    scrollbar(frame, palette, full, scroll, total);
 }
 
 /// Draws the pictures whose rows are on screen, over the blanks left for them.
@@ -1852,6 +1938,38 @@ mod tests {
 
     fn palette() -> Palette {
         Palette::from(&presets::default_theme())
+    }
+
+    #[test]
+    fn the_reading_layout_is_reused_until_the_note_changes() {
+        let vault = TempVault::new("reading-cache");
+        vault.write("A.md", "first version\n");
+        let mut app = App::new(vault.vault(), crate::config::Config::default()).expect("app");
+        let id = app.index.id_of_rel("A.md").expect("indexed");
+        app.open_note(id);
+        let screen = |app: &mut App| -> String {
+            let backend = ratatui::backend::TestBackend::new(80, 20);
+            let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+            terminal
+                .draw(|frame| crate::ui::draw(frame, app))
+                .expect("draw");
+            let buffer = terminal.backend().buffer();
+            buffer.content.iter().map(|cell| cell.symbol()).collect()
+        };
+
+        assert!(screen(&mut app).contains("first version"));
+        let laid_out = app.reading.lines.as_ptr();
+        screen(&mut app);
+        assert_eq!(
+            app.reading.lines.as_ptr(),
+            laid_out,
+            "a redraw lays nothing out again"
+        );
+
+        // Changed on disk and indexed again, as the watcher does.
+        vault.write("A.md", "the second version\n");
+        app.index.refresh_note(id).expect("refresh");
+        assert!(screen(&mut app).contains("the second version"));
     }
 
     fn text_of(lines: &[Line<'_>]) -> Vec<String> {

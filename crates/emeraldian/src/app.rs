@@ -418,6 +418,9 @@ pub struct App {
     pub images: crate::images::Images,
     /// The Excalidraw scene currently on screen, kept parsed between frames.
     pub scenes: crate::ui::drawing::Scenes,
+    /// The note last laid out for reading, reused while nothing it depends on
+    /// has changed.
+    pub reading: crate::ui::note::ReadingCache,
     /// Modal-editing state. Inert unless `config.editor.vim` is on.
     ///
     /// One per app rather than one per tab: only one editor has focus at a
@@ -488,6 +491,7 @@ impl App {
             status: Status::default(),
             images: crate::images::Images::disabled(),
             scenes: crate::ui::drawing::Scenes::default(),
+            reading: crate::ui::note::ReadingCache::default(),
             vim: crate::vim::Vim::default(),
             keymap: crate::keymap::Keymap::new(&config.keys),
             config_dir: None,
@@ -708,6 +712,9 @@ impl App {
         }
 
         self.view = View::Notes;
+        // The graph is laid out afresh whenever it opens, so once a note has
+        // replaced it there is nothing to keep it for.
+        self.graph = None;
         self.focus = Focus::Note;
         self.side_selected = 0;
         // A note opens in Normal mode, never mid-insert: arriving in a fresh

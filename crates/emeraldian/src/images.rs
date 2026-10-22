@@ -94,6 +94,16 @@ pub struct Images {
     cache: HashMap<Key, Entry>,
     clock: u64,
     worker: Option<Worker>,
+    /// Changed by [`Images::forget`], since what a picture measures may have
+    /// changed with it. Drawn from one counter, so a new `Images` never
+    /// repeats an old one's number either.
+    generation: u64,
+}
+
+static GENERATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn next_generation() -> u64 {
+    GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
 }
 
 type Key = (PathBuf, u16, u16);
@@ -184,6 +194,7 @@ impl Images {
             cache: HashMap::new(),
             clock: 0,
             worker: None,
+            generation: next_generation(),
         }
     }
 
@@ -334,6 +345,13 @@ impl Images {
     pub fn forget(&mut self) {
         self.dims.clear();
         self.cache.clear();
+        self.generation = next_generation();
+    }
+
+    /// A number that changes whenever pictures may measure differently.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Drops the least recently drawn half once the cache is full.

@@ -63,10 +63,36 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- **Much less memory, however big the vault or the note.** On a test vault of
+  20,000 notes and 176,000 links, Emeraldian now takes about 120 MB once it
+  has loaded, down from 400 MB, and about 140 MB with the graph open, down from
+  over 600 MB. Paging through a note of a few megabytes stays at the memory
+  its first screen took, where it used to climb past 300 MB, and editing such
+  a note for a while no longer runs into gigabytes. What changed:
+
+  - The index keeps the stretch of text around each link, not the whole line,
+    and keeps it once rather than twice. A note written as one long paragraph
+    cost its whole text again for every link in it.
+  - Undo history keeps only the lines each edit changed, rather than a copy of
+    the whole note for every step, and stays within 32 MB.
+  - Reading view lays a note out once and reuses that while you scroll,
+    instead of reading, parsing and laying out the whole file on every key.
+  - The graph is let go when you leave it. It used to stay in memory, and be
+    rebuilt out of sight whenever a note was renamed or deleted. While it is
+    settling, its layout reuses the memory each step works in.
+
+- **The graph opens quickly on a large vault.** Building it compared each link
+  with every link before it to drop duplicates, which took seven seconds for
+  20,000 notes. It now takes milliseconds.
+
 - **`Ctrl+T` opens the quick switcher, the nearest thing to a new tab.** It
   used to open the theme picker, which is now in the palette as "Change
   theme". To keep it on `Ctrl+T`, set `open_theme_picker = "ctrl+t"` under
   `[keys]`.
+
+- For code using the `emeraldian-core` crate: `ResolvedLink::context` and
+  `Backlink::context` are now `Arc<str>`, shared between the two, and
+  `IndexedNote::frontmatter`, which nothing read, is gone.
 
 ### Fixed
 

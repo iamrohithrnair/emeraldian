@@ -17,7 +17,8 @@
 //! positions, so reopening the graph shows the same picture and tests can
 //! assert on it.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
+use std::fmt;
 
 use crate::index::{LinkTarget, NoteId, VaultIndex};
 
@@ -135,19 +136,14 @@ impl Graph {
             });
         }
 
-        let add_edge = |edges: &mut Vec<Edge>, from: usize, to: usize| {
-            if from == to {
-                return;
+        // The graph is undirected for layout purposes, so a mutual link is one
+        // edge, not two overlapping ones. Looked up in a set: checking every
+        // edge so far for each new one took seconds on a large vault.
+        let mut seen: HashSet<(usize, usize)> = HashSet::new();
+        let mut add_edge = |edges: &mut Vec<Edge>, from: usize, to: usize| {
+            if from != to && seen.insert((from.min(to), from.max(to))) {
+                edges.push(Edge { from, to });
             }
-            // The graph is undirected for layout purposes, so a mutual link is
-            // one edge, not two overlapping ones.
-            if edges
-                .iter()
-                .any(|e| (e.from == from && e.to == to) || (e.from == to && e.to == from))
-            {
-                return;
-            }
-            edges.push(Edge { from, to });
         };
 
         for (id, note) in index.notes().iter().enumerate() {
@@ -458,6 +454,9 @@ impl Default for ForceParams {
 pub struct Simulation {
     pub graph: Graph,
     pub params: ForceParams,
+    /// Buffers each step works in, kept from one step to the next while the
+    /// layout is moving and let go once it settles.
+    scratch: Scratch,
     /// Total kinetic energy from the last step, used for settle detection.
     energy: f32,
     /// How much of each step's motion is actually applied, decayed every step.
@@ -498,6 +497,7 @@ impl Simulation {
         Self {
             graph,
             params: ForceParams::default(),
+            scratch: Scratch::default(),
             energy: f32::MAX,
             alpha: ALPHA_START,
             settled: false,
@@ -538,16 +538,23 @@ impl Simulation {
         }
 
         let count = self.graph.nodes.len();
-        let mut forces = vec![Vec2::default(); count];
+        let Scratch {
+            mut forces,
+            mut tree,
+            mut stack,
+        } = std::mem::take(&mut self.scratch);
+        forces.clear();
+        forces.resize(count, Vec2::default());
 
         // Repulsion, approximated with a quadtree.
-        let tree = QuadTree::build(&self.graph.nodes);
+        tree.rebuild(&self.graph.nodes);
         for (index, force) in forces.iter_mut().enumerate() {
             let repulsion = tree.repulsion(
                 &self.graph.nodes,
                 index,
                 self.params.repel,
                 self.params.theta,
+                &mut stack,
             );
             force.x += repulsion.x;
             force.y += repulsion.y;
@@ -618,7 +625,15 @@ impl Simulation {
         self.alpha *= ALPHA_DECAY;
         self.steps += 1;
         if self.alpha <= ALPHA_MIN || self.energy < SETTLE_ENERGY || self.steps >= MAX_STEPS {
+            // A settled graph sits on screen for as long as it is open, and
+            // the next step is only after a drag.
             self.settled = true;
+        } else {
+            self.scratch = Scratch {
+                forces,
+                tree,
+                stack,
+            };
         }
     }
 
@@ -670,12 +685,28 @@ impl Simulation {
 // Barnes-Hut quadtree
 // ---------------------------------------------------------------------------
 
+/// What a step of the simulation works in.
+#[derive(Clone, Default)]
+struct Scratch {
+    forces: Vec<Vec2>,
+    tree: QuadTree,
+    /// Cells still to visit while adding up the repulsion on one node.
+    stack: Vec<usize>,
+}
+
+impl fmt::Debug for Scratch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Scratch").finish_non_exhaustive()
+    }
+}
+
 /// Flat-array quadtree over node positions.
 ///
 /// Stored as a `Vec` of cells with index links rather than boxed children: the
 /// tree is rebuilt from scratch every simulation step, so allocation cost
-/// dominates, and one contiguous buffer is far cheaper than thousands of small
-/// allocations.
+/// dominates, and one contiguous buffer, reused from step to step, is far
+/// cheaper than thousands of small allocations.
+#[derive(Clone, Default)]
 struct QuadTree {
     cells: Vec<Cell>,
     root: usize,
@@ -736,7 +767,8 @@ const MIN_HALF: f32 = 0.05;
 const MAX_TREE_DEPTH: usize = 48;
 
 impl QuadTree {
-    fn build(nodes: &[Node]) -> Self {
+    /// Rebuilds the tree over `nodes` in the cells it already has.
+    fn rebuild(&mut self, nodes: &[Node]) {
         let mut min_x = f32::MAX;
         let mut min_y = f32::MAX;
         let mut max_x = f32::MIN;
@@ -752,14 +784,12 @@ impl QuadTree {
         let cy = (min_y + max_y) / 2.0;
         let half = ((max_x - min_x).max(max_y - min_y) / 2.0).max(1.0) * 1.05;
 
-        let mut tree = Self {
-            cells: vec![Cell::new(cx, cy, half)],
-            root: 0,
-        };
+        self.cells.clear();
+        self.cells.push(Cell::new(cx, cy, half));
+        self.root = 0;
         for (i, node) in nodes.iter().enumerate() {
-            tree.insert(0, i, node.pos, mass_of(node), 0);
+            self.insert(0, i, node.pos, mass_of(node), 0);
         }
-        tree
     }
 
     fn insert(&mut self, cell: usize, body: usize, pos: Vec2, mass: f32, depth: usize) {
@@ -827,11 +857,20 @@ impl QuadTree {
         c.children[index]
     }
 
-    /// Repulsive force on `body` from every other node.
-    fn repulsion(&self, nodes: &[Node], body: usize, strength: f32, theta: f32) -> Vec2 {
+    /// Repulsive force on `body` from every other node. `stack` is somewhere
+    /// to work, passed in so it is allocated once rather than once a node.
+    fn repulsion(
+        &self,
+        nodes: &[Node],
+        body: usize,
+        strength: f32,
+        theta: f32,
+        stack: &mut Vec<usize>,
+    ) -> Vec2 {
         let pos = nodes[body].pos;
         let mut force = Vec2::default();
-        let mut stack = vec![self.root];
+        stack.clear();
+        stack.push(self.root);
 
         while let Some(index) = stack.pop() {
             if index == NO_CELL {
