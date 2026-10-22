@@ -4,7 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.8.0]
+## [0.8.0] — 2026-10-22
+
+Shortcuts that follow your system, on Windows, Linux and the Mac alike, find
+in the note on `Ctrl+F`, a focus mode on `F8`, long headings and words that
+wrap in reading mode, and a fraction of the memory on a large vault. Notes and
+a `config.toml` from an earlier version work unchanged. One shortcut has moved:
+`Ctrl+T` now opens the quick switcher, and the theme picker is in the palette.
 
 ### Added
 
