@@ -167,13 +167,19 @@ fn handle_global(app: &mut App, key: KeyEvent) -> bool {
         return true;
     }
 
-    // Pane cycling skips panes that aren't on screen. The note editor and the
-    // graph both bind Tab themselves — indent and next-node — so they keep it;
-    // Ctrl+Tab still switches document tabs from anywhere. The chat claims Tab
-    // only while a slash command is being typed, where completing it is what
-    // the key obviously means.
-    let completing = app.focus == Focus::Chat && crate::slash::is_command(&app.chat.input);
-    let owns_tab = matches!(app.focus, Focus::Note | Focus::Graph) || completing;
+    // Pane cycling skips panes that aren't on screen. Tab moves on from every
+    // pane except where it already means something: typing in a note, where it
+    // nests a list item, the graph, where it steps to the next node, and a slash
+    // command being typed in the chat, where it completes the name. Reading a
+    // note is none of those, and the note pane used to keep the key anyway, so
+    // opening a note left no way back to the explorer without the mouse.
+    // Ctrl+Tab still switches document tabs from anywhere.
+    let owns_tab = match app.focus {
+        Focus::Note => typing_in_note(app),
+        Focus::Graph => true,
+        Focus::Chat => crate::slash::is_command(&app.chat.input),
+        Focus::Explorer | Focus::Sidebar => false,
+    };
     if key.code == KeyCode::Tab && !ctrl && !owns_tab {
         cycle_focus(app, 1);
         return true;
@@ -184,6 +190,15 @@ fn handle_global(app: &mut App, key: KeyEvent) -> bool {
     }
 
     false
+}
+
+/// Whether keys in the note pane are going into its text.
+///
+/// Only then does `Tab` belong to the note. Vim's Normal and Visual modes edit
+/// without typing, and have `>` and `<` for indenting, so like the reading view
+/// they let `Tab` move on to the next pane.
+fn typing_in_note(app: &App) -> bool {
+    app.editing() && (!app.config.editor.vim || app.vim.mode == crate::vim::VimMode::Insert)
 }
 
 pub fn cycle_focus(app: &mut App, delta: isize) {
@@ -882,6 +897,61 @@ mod tests {
 
         assert!(app.active_note().is_some(), "Enter opens the selected note");
         assert_eq!(app.focus, Focus::Note);
+    }
+
+    fn shift_tab() -> KeyEvent {
+        // What terminals send for Shift+Tab: a key of its own, with Shift held.
+        KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)
+    }
+
+    #[test]
+    fn tab_moves_on_from_a_note_opened_in_the_explorer() {
+        // Opening a note hands it the focus, in reading mode. The note pane
+        // used to keep Tab and Shift+Tab for itself even there, where they did
+        // nothing, so the keyboard had no way back to the explorer.
+        let (_v, mut app) = app();
+        app.focus = Focus::Explorer;
+        handle(&mut app, key(KeyCode::Enter));
+        assert_eq!(app.focus, Focus::Note);
+        assert_eq!(app.active().unwrap().mode, Mode::Reading);
+
+        handle(&mut app, shift_tab());
+        assert_eq!(app.focus, Focus::Explorer, "Shift+Tab goes back");
+
+        handle(&mut app, key(KeyCode::Tab));
+        handle(&mut app, key(KeyCode::Tab));
+        assert_eq!(app.focus, Focus::Sidebar, "Tab goes on past the note");
+    }
+
+    #[test]
+    fn tab_moves_on_from_an_empty_note_pane() {
+        let (_v, mut app) = app();
+        app.focus = Focus::Note;
+        assert!(app.active().is_none());
+
+        handle(&mut app, key(KeyCode::Tab));
+        assert_eq!(app.focus, Focus::Sidebar);
+        handle(&mut app, shift_tab());
+        handle(&mut app, shift_tab());
+        assert_eq!(app.focus, Focus::Explorer);
+    }
+
+    #[test]
+    fn tab_still_nests_a_list_item_while_editing() {
+        let (vault, mut app) = app();
+        vault.write("List.md", "- item\n");
+        app.refresh();
+        let list = app.index.id_of_rel("List.md").unwrap();
+        app.open_note(list);
+        app.active_mut().unwrap().mode = Mode::Editing;
+
+        handle(&mut app, key(KeyCode::Tab));
+        assert_eq!(app.focus, Focus::Note, "typing keeps the key");
+        assert_eq!(app.editor_mut().unwrap().text(), "    - item\n");
+
+        handle(&mut app, shift_tab());
+        assert_eq!(app.focus, Focus::Note);
+        assert_eq!(app.editor_mut().unwrap().text(), "- item\n");
     }
 
     #[test]

@@ -294,10 +294,13 @@ fn hints_for(app: &App) -> &'static [(&'static str, &'static str)] {
                     ("^]", "outline"),
                     ("^P", "palette"),
                 ],
+                // Opening a note moves focus here, so this row is where someone
+                // looks for the way back to the explorer.
                 _ => &[
                     ("^E", "edit"),
                     ("F4", "vim"),
                     ("Enter", "follow link"),
+                    ("Tab", "panes"),
                     ("^O", "switcher"),
                     ("^G", "graph"),
                     ("F3", "close tab"),

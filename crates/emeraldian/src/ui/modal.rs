@@ -229,7 +229,10 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+O", "Quick switcher: open a note by name"),
             ("Ctrl+P", "Command palette"),
             ("Ctrl+Shift+F", "Search all notes"),
-            ("Tab / Shift+Tab", "Move between panes"),
+            (
+                "Tab / Shift+Tab",
+                "Move between panes — Esc first while typing",
+            ),
             ("hjkl / arrows", "Move within a pane"),
             ("Enter", "Open the selection / follow a link"),
             ("Alt+←", "Back to the previous note"),

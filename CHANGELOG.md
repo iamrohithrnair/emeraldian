@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0]
+
+### Fixed
+
+- **`Tab` moves between panes from an open note.** Opening a note from the
+  explorer gives it the focus, and the note pane kept `Tab` and `Shift+Tab` for
+  itself even while you were reading, where they did nothing. That left no way
+  back to the explorer without the mouse. They now move between panes from a
+  note you are reading, from an empty note pane, and from vim's Normal and
+  Visual modes, where they used to change the note instead. While you are
+  typing, `Tab` still nests a list item; press `Esc` first to move on.
+
 ## [0.6.0] — 2026-09-26
 
 Copy and paste through the system clipboard, shortcuts that can be moved to
@@ -603,6 +615,7 @@ First release.
 - Unreadable vaults are reported clearly, including the macOS privacy
   permission that usually causes it.
 
+[0.7.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.7.0
 [0.6.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.6.0
 [0.5.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.5.0
 [0.4.2]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.4.2
