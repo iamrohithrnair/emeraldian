@@ -69,6 +69,14 @@ pub struct Visible {
 
 impl Visible {
     fn resolve(app: &App, width: u16) -> Self {
+        if app.focus_mode {
+            return Self {
+                ribbon: false,
+                left: false,
+                right: false,
+                chat: false,
+            };
+        }
         let ui = &app.config.ui;
         // Chat outranks the outline sidebar: it was opened deliberately, while
         // the sidebar is on by default.
@@ -106,7 +114,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let show_hints = app.config.ui.show_hints && area.height >= 8;
     let hint_rows = if show_hints {
         hint_lines(
-            hints_for(app),
+            &hints(app),
             &palette,
             area.width as usize,
             if area.height >= 10 { 2 } else { 1 },
@@ -166,9 +174,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         column += 1;
     }
 
-    let main = columns[column];
+    let main = if app.focus_mode && app.view == View::Notes {
+        readable(columns[column])
+    } else {
+        columns[column]
+    };
     column += 1;
     regions.main = Some(main);
+    regions.screen = Some(area);
     match app.view {
         View::Notes => note::draw(frame, app, &palette, main, &mut regions),
         View::Graph => graph::draw(frame, app, &palette, main, &mut regions),
@@ -204,6 +217,47 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     app.regions = regions;
 }
 
+/// Widest the note is drawn in focus mode, in columns, gutter and margins
+/// included.
+///
+/// Prose much wider than this is hard to read, which is why Obsidian narrows
+/// its own by default. Tables and code wider than it still pan.
+const FOCUS_WIDTH: u16 = 100;
+
+/// The pane, narrowed to [`FOCUS_WIDTH`] and centred if it is wider.
+fn readable(pane: Rect) -> Rect {
+    if pane.width <= FOCUS_WIDTH {
+        return pane;
+    }
+    Rect {
+        x: pane.x + (pane.width - FOCUS_WIDTH) / 2,
+        width: FOCUS_WIDTH,
+        ..pane
+    }
+}
+
+/// The hint bar's keys, with focus mode's among them wherever there isn't an
+/// overlay to deal with first.
+///
+/// Placed near the front, because the bar drops what doesn't fit from the
+/// end, and the way back out of focus mode must not be what goes.
+fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    let mut hints = hints_for(app).to_vec();
+    if app.modal.is_none() {
+        let label = if app.focus_mode {
+            "exit focus"
+        } else {
+            "focus"
+        };
+        hints.insert(hints.len().min(2), ("F8", label));
+    }
+    // There is only the one pane to be in.
+    if app.focus_mode {
+        hints.retain(|(key, _)| *key != "Tab");
+    }
+    hints
+}
+
 /// The keys worth showing for wherever the user currently is.
 ///
 /// Discoverability in a TUI comes from the screen, not the manual — a user who
@@ -214,6 +268,12 @@ fn hints_for(app: &App) -> &'static [(&'static str, &'static str)] {
             Some(Modal::Confirm(_)) => &[("y/Enter", "confirm"), ("Esc", "cancel")],
             Some(Modal::Help(_)) => &[("j/k", "scroll"), ("Esc", "close")],
             Some(Modal::Prompt(_)) => &[("Enter", "confirm"), ("Esc", "cancel")],
+            Some(Modal::Picker(picker)) if picker.kind == crate::modal::PickerKind::Find => &[
+                ("Enter", "go to"),
+                ("↑↓", "move"),
+                ("^F", "every note"),
+                ("Esc", "cancel"),
+            ],
             _ => &[
                 ("Enter", "select"),
                 ("↑↓", "move"),
@@ -1665,5 +1725,124 @@ mod tests {
         let inner = centered(area, 60, 20);
         assert_eq!(inner.width, 20);
         assert_eq!(inner.height, 10);
+    }
+
+    fn press(app: &mut App, code: crossterm::event::KeyCode) {
+        crate::keys::handle(
+            app,
+            crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::empty()),
+        );
+    }
+
+    #[test]
+    fn f8_shows_the_note_alone_and_f8_again_puts_the_layout_back() {
+        let (_vault, mut app) = demo_app();
+        app.focus = crate::app::Focus::Explorer;
+        let before = render(&mut app, 160, 40).join("\n");
+        assert!(before.contains("Files") && before.contains("Outline"));
+
+        press(&mut app, crossterm::event::KeyCode::F(8));
+        assert!(app.focus_mode);
+        assert_eq!(
+            app.focus,
+            crate::app::Focus::Note,
+            "the note takes the keyboard"
+        );
+        let focused = render(&mut app, 160, 40).join("\n");
+        assert!(
+            !focused.contains("Files") && !focused.contains("Outline"),
+            "{focused}"
+        );
+        assert!(focused.contains("Welcome"), "the note is still there");
+
+        press(&mut app, crossterm::event::KeyCode::F(8));
+        assert!(!app.focus_mode);
+        let after = render(&mut app, 160, 40).join("\n");
+        assert!(
+            after.contains("Files") && after.contains("Outline"),
+            "{after}"
+        );
+        assert!(
+            app.config.ui.show_left_sidebar && app.config.ui.show_right_sidebar,
+            "the settings were never touched"
+        );
+    }
+
+    #[test]
+    fn focus_mode_centres_the_note_on_a_wide_terminal() {
+        let (_vault, mut app) = demo_app();
+        crate::actions::dispatch(&mut app, crate::app::Action::ToggleFocusMode);
+        render(&mut app, 200, 40);
+        let main = app.regions.main.expect("the note was drawn");
+        assert_eq!(main.width, FOCUS_WIDTH);
+        assert_eq!(main.x, (200 - FOCUS_WIDTH) / 2);
+
+        render(&mut app, 80, 40);
+        assert_eq!(
+            app.regions.main.expect("drawn").width,
+            80,
+            "a narrow one keeps it all"
+        );
+    }
+
+    #[test]
+    fn tab_has_nowhere_to_go_in_focus_mode() {
+        let (_vault, mut app) = demo_app();
+        crate::actions::dispatch(&mut app, crate::app::Action::ToggleFocusMode);
+        press(&mut app, crossterm::event::KeyCode::Tab);
+        assert_eq!(app.focus, crate::app::Focus::Note);
+    }
+
+    #[test]
+    fn asking_for_a_sidebar_leaves_focus_mode_with_it_showing() {
+        for show_before in [true, false] {
+            let (_vault, mut app) = demo_app();
+            app.config.ui.show_left_sidebar = show_before;
+            crate::actions::dispatch(&mut app, crate::app::Action::ToggleFocusMode);
+            crate::actions::dispatch(&mut app, crate::app::Action::ToggleLeftSidebar);
+            assert!(!app.focus_mode);
+            assert!(
+                app.config.ui.show_left_sidebar,
+                "shown either way ({show_before})"
+            );
+        }
+
+        let (_vault, mut app) = demo_app();
+        crate::actions::dispatch(&mut app, crate::app::Action::ToggleFocusMode);
+        crate::actions::dispatch(
+            &mut app,
+            crate::app::Action::FocusPane(crate::app::Focus::Explorer),
+        );
+        assert!(!app.focus_mode, "vim's Ctrl+W h asks for the explorer too");
+        assert_eq!(app.focus, crate::app::Focus::Explorer);
+    }
+
+    #[test]
+    fn the_hint_bar_offers_focus_mode_and_the_way_back_out() {
+        let (_vault, mut app) = demo_app();
+        assert!(hints(&app).contains(&("F8", "focus")));
+        crate::actions::dispatch(&mut app, crate::app::Action::ToggleFocusMode);
+        assert!(hints(&app).contains(&("F8", "exit focus")));
+        assert!(
+            !hints(&app).iter().any(|(key, _)| *key == "Tab"),
+            "Tab has no other pane to go to"
+        );
+        let bar = render(&mut app, 100, 40).join("\n");
+        assert!(bar.contains("F8 exit focus"), "{bar}");
+    }
+
+    #[test]
+    fn the_note_pane_shows_when_it_has_the_keyboard() {
+        // The side panes light their borders up; the note pane had nothing, so
+        // Tab looked as if it never reached it.
+        let (_vault, mut app) = demo_app();
+        app.focus = crate::app::Focus::Note;
+        let screen = render(&mut app, 160, 40);
+        assert!(screen[1].contains("▎Welcome"), "{}", screen[1]);
+
+        app.focus = crate::app::Focus::Explorer;
+        let screen = render(&mut app, 160, 40);
+        assert!(!screen[1].contains("▎Welcome"), "{}", screen[1]);
+        assert!(screen[1].contains(" Welcome"));
     }
 }

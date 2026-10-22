@@ -87,6 +87,7 @@ impl<'a> Ctx<'a> {
 }
 
 /// A picture and the rows reserved for it.
+#[derive(Debug, Clone)]
 pub struct Picture {
     /// Index of its first row in the rendered lines.
     pub line: usize,
@@ -94,6 +95,47 @@ pub struct Picture {
     pub indent: u16,
     pub size: Size,
     pub path: PathBuf,
+}
+
+/// The note last laid out for reading, kept until something it was laid out
+/// from changes.
+///
+/// Every frame used to read the note from disk, parse it and lay all of it out,
+/// to show one screen of it. On a long note that was most of the work of each
+/// keypress, and most of the memory the app touched: paging through a note of a
+/// few megabytes took it past half a gigabyte. A frame that changes nothing the
+/// layout depends on now reuses it.
+#[derive(Default)]
+pub struct ReadingCache {
+    key: Option<ReadingKey>,
+    lines: Vec<Line<'static>>,
+    anchors: Vec<(usize, usize)>,
+    pictures: Vec<Picture>,
+    widest: usize,
+}
+
+/// Everything a reading layout depends on.
+#[derive(PartialEq)]
+struct ReadingKey {
+    note: usize,
+    /// When the file was last written, and its length: a cheap stand-in for
+    /// its content that needs no reading.
+    modified: Option<std::time::SystemTime>,
+    len: u64,
+    /// Which links resolve, and which attachments exist.
+    index: u64,
+    /// What each picture measures.
+    images: u64,
+    width: usize,
+    height: u16,
+    palette: Palette,
+}
+
+impl ReadingCache {
+    /// Forgets the layout, for when something outside its key has changed.
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
 }
 
 pub fn draw(
@@ -178,6 +220,9 @@ fn draw_tab_bar(
         return;
     }
 
+    // The side panes light their borders up when they have the keyboard. The
+    // note pane has no border, so its active tab carries the same colour.
+    let focused = app.focus == crate::app::Focus::Note;
     let mut spans = Vec::new();
     let mut x = area.x;
     for (index, tab) in app.tabs.iter().enumerate() {
@@ -209,7 +254,12 @@ fn draw_tab_bar(
                 .fg(palette.tab_inactive_fg)
         };
 
-        spans.push(Span::styled(format!(" {title}"), style));
+        if active && focused {
+            spans.push(Span::styled("▎", style.fg(palette.border_focus)));
+            spans.push(Span::styled(title.clone(), style.fg(palette.text_accent)));
+        } else {
+            spans.push(Span::styled(format!(" {title}"), style));
+        }
         // Obsidian marks an unsaved tab with a dot where the close button goes.
         spans.push(Span::styled(
             if tab.is_modified() {
@@ -274,9 +324,14 @@ fn draw_reading(
     regions: &mut Regions,
 ) {
     let Some(id) = app.active_note() else { return };
-    let Ok(content) = app.index.read(id) else {
-        Paragraph::new("could not read this note").render(area, frame.buffer_mut());
+    // Taken whether or not this frame can use it, so it can't go off later on
+    // some other note.
+    let reveal = app.reveal.take();
+    let Some(path) = app.index.note(id).map(|note| note.meta.path.clone()) else {
         return;
+    };
+    let unreadable = |frame: &mut Frame| {
+        Paragraph::new("could not read this note").render(area, frame.buffer_mut());
     };
     // The scrollbar stays on the pane's edge; the prose sits inside the gutter.
     let full = area;
@@ -291,6 +346,9 @@ fn draw_reading(
         .note(id)
         .is_some_and(|note| excalidraw::is_drawing(&note.meta.rel));
     if is_drawing {
+        let Ok(content) = app.index.read(id) else {
+            return unreadable(frame);
+        };
         let scroll = app.active().map_or(0, |tab| tab.scroll);
         if let Some(scene) = app.scenes.get(&content) {
             let rows = drawing::draw(frame, palette, area, scene, scroll);
@@ -301,43 +359,92 @@ fn draw_reading(
             return;
         }
     }
+    let file = std::fs::metadata(&path).ok();
 
     let width = area.width.saturating_sub(1) as usize;
-    let document = markdown::parse(&content);
-
-    let note_dir = app
-        .index
-        .note(id)
-        .map(|note| app.index.vault.path.join(&note.meta.rel))
-        .and_then(|path| path.parent().map(Path::to_path_buf));
     // Pictures are capped at a share of the pane, so the layout pass has to
     // know how tall it is before it measures the first one.
     app.images.set_pane_height(area.height);
-    let mut ctx = Ctx {
-        palette,
-        index: &app.index,
-        note_dir,
-        images: Some(&mut app.images),
-        pictures: Vec::new(),
-        anchors: Vec::new(),
-    };
-    let lines = render_document(&document, &mut ctx, width);
-    let pictures = std::mem::take(&mut ctx.pictures);
-    regions.anchors = std::mem::take(&mut ctx.anchors);
 
+    let key = ReadingKey {
+        note: id,
+        modified: file.as_ref().and_then(|file| file.modified().ok()),
+        len: file.as_ref().map_or(0, std::fs::Metadata::len),
+        index: app.index.revision(),
+        images: app.images.generation(),
+        width,
+        height: area.height,
+        palette: palette.clone(),
+    };
+    // A file that can't be looked at can't be trusted to be unchanged either.
+    if file.is_none() || app.reading.key.as_ref() != Some(&key) {
+        let Ok(content) = app.index.read(id) else {
+            app.reading.clear();
+            return unreadable(frame);
+        };
+        let document = markdown::parse(&content);
+        let note_dir = app
+            .index
+            .note(id)
+            .map(|note| app.index.vault.path.join(&note.meta.rel))
+            .and_then(|path| path.parent().map(Path::to_path_buf));
+        let mut ctx = Ctx {
+            palette,
+            index: &app.index,
+            note_dir,
+            images: Some(&mut app.images),
+            pictures: Vec::new(),
+            anchors: Vec::new(),
+        };
+        let lines = render_document(&document, &mut ctx, width);
+        // Content can be wider than the pane — a table laid out at its
+        // natural width, a long code line — and panning is the only way to
+        // reach the rest.
+        let widest = lines.iter().map(Line::width).max().unwrap_or(0);
+        app.reading = ReadingCache {
+            key: Some(key),
+            lines,
+            anchors: std::mem::take(&mut ctx.anchors),
+            pictures: std::mem::take(&mut ctx.pictures),
+            widest,
+        };
+    }
+    regions.anchors.clone_from(&app.reading.anchors);
+
+    let total = app.reading.lines.len();
     let height = area.height as usize;
-    let max_scroll = lines.len().saturating_sub(height);
-    // Content can be wider than the pane — a table laid out at its natural
-    // width, a long code line — and panning is the only way to reach the rest.
-    let widest = lines.iter().map(Line::width).max().unwrap_or(0);
-    let max_hscroll = widest.saturating_sub(area.width as usize);
+    if let Some(reveal) = reveal {
+        let start = anchor_row(&regions.anchors, reveal.line);
+        let row = row_showing(
+            &app.reading.lines,
+            &regions.anchors,
+            start,
+            &reveal.text,
+            reveal.nth,
+        )
+        .unwrap_or(start);
+        if let Some(tab) = app.active_mut() {
+            // In the upper part of the pane, with a little of what leads up to
+            // it above.
+            tab.scroll = row.saturating_sub(height / 3);
+        }
+    }
+    let max_scroll = total.saturating_sub(height);
+    let max_hscroll = app.reading.widest.saturating_sub(area.width as usize);
     if let Some(tab) = app.active_mut() {
         tab.scroll = tab.scroll.min(max_scroll);
         tab.hscroll = tab.hscroll.min(max_hscroll);
     }
     let (scroll, hscroll) = app.active().map_or((0, 0), |t| (t.scroll, t.hscroll));
 
-    let visible: Vec<Line> = lines.iter().skip(scroll).take(height).cloned().collect();
+    let visible: Vec<Line> = app
+        .reading
+        .lines
+        .iter()
+        .skip(scroll)
+        .take(height)
+        .cloned()
+        .collect();
     Paragraph::new(visible)
         .scroll((0, u16::try_from(hscroll).unwrap_or(u16::MAX)))
         .render(area, frame.buffer_mut());
@@ -346,11 +453,11 @@ fn draw_reading(
         &mut app.images,
         palette,
         area,
-        &pictures,
+        &app.reading.pictures,
         scroll,
         hscroll,
     );
-    scrollbar(frame, palette, full, scroll, lines.len());
+    scrollbar(frame, palette, full, scroll, total);
 }
 
 /// Draws the pictures whose rows are on screen, over the blanks left for them.
@@ -448,6 +555,56 @@ pub fn anchor_row(anchors: &[(usize, usize)], line: usize) -> usize {
         .map_or(line, |(_, row)| *row)
 }
 
+/// The row, from `start` to the end of its block, showing the `nth` time
+/// `text` occurs there, counting from 0 and ignoring case. A row and the one
+/// after it are read together, so text wrapped onto the next row is found as
+/// well. Short of `nth`, the last one found.
+fn row_showing(
+    lines: &[Line],
+    anchors: &[(usize, usize)],
+    start: usize,
+    text: &str,
+    nth: usize,
+) -> Option<usize> {
+    let needle = text.to_lowercase();
+    if needle.trim().is_empty() {
+        return None;
+    }
+    let end = anchors
+        .iter()
+        .map(|(_, row)| *row)
+        .find(|row| *row > start)
+        .unwrap_or(lines.len())
+        .min(lines.len());
+    let row_text = |row: usize| -> String {
+        lines.get(row).map_or_else(String::new, |line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+                .to_lowercase()
+        })
+    };
+    let count = |text: &str| text.matches(needle.as_str()).count();
+    let mut seen = 0;
+    let mut last = None;
+    for row in start..end {
+        let here = row_text(row);
+        let next = row_text(row + 1);
+        let joined = format!("{} {}", here.trim_end(), next.trim_start());
+        // What this row shows, and what only shows across its end.
+        let found = count(&here) + count(&joined).saturating_sub(count(&here) + count(&next));
+        if found > 0 {
+            last = Some(row);
+            if seen + found > nth {
+                return last;
+            }
+            seen += found;
+        }
+    }
+    last
+}
+
 fn render_block(
     block: &Block,
     ctx: &mut Ctx,
@@ -464,16 +621,17 @@ fn render_block(
 
         BlockKind::Frontmatter(entries) => {
             for (key, value) in entries {
-                out.push(Line::from(vec![
-                    Span::styled(
-                        format!("{pad}{key}: "),
+                let entry = [
+                    (
+                        format!("{key}: "),
                         Style::default().fg(palette.frontmatter_key),
                     ),
-                    Span::styled(
+                    (
                         value.clone(),
                         Style::default().fg(palette.frontmatter_value),
                     ),
-                ]));
+                ];
+                out.extend(wrap_spans(&entry, width, &pad, &format!("{pad}  ")));
             }
             out.push(Line::from(Span::styled(
                 "─".repeat(width.min(60)),
@@ -486,16 +644,22 @@ fn render_block(
             let style = Style::default()
                 .fg(palette.heading(*level))
                 .add_modifier(Modifier::BOLD);
-            let text = shown_text(spans);
-            out.push(Line::from(Span::styled(format!("{pad}{text}"), style)));
+            // Wrapped like a paragraph is. A heading can be longer than the
+            // pane, and one pasted in from elsewhere can carry a whole page of
+            // text and maths on its single line.
+            let start = out.len();
+            render_styled_spans(spans, ctx, inner_width, indent, &pad, &pad, style, out);
             // Obsidian underlines H1 and H2; a rule is the terminal equivalent
             // of the larger type it uses to separate sections.
             if *level <= 2 {
+                let widest = out[start..]
+                    .iter()
+                    .map(Line::width)
+                    .max()
+                    .unwrap_or(0)
+                    .saturating_sub(indent);
                 out.push(Line::from(Span::styled(
-                    format!(
-                        "{pad}{}",
-                        "─".repeat(inner_width.min(text.chars().count() + 8))
-                    ),
+                    format!("{pad}{}", "─".repeat(inner_width.min(widest + 8))),
                     Style::default().fg(palette.border),
                 )));
             }
@@ -598,20 +762,32 @@ fn render_block(
 
         BlockKind::Callout { kind, title, body } => {
             let color = palette.callout(kind);
-            let label = if title.is_empty() {
-                capitalize(kind)
-            } else {
-                shown_text(title)
-            };
+            let fallback = [markdown::Span::plain(capitalize(kind))];
+            let title: &[markdown::Span] = if title.is_empty() { &fallback } else { title };
 
-            out.push(Line::from(vec![
-                Span::raw(pad.clone()),
-                Span::styled(format!("{} ", icons::QUOTE_BAR), Style::default().fg(color)),
-                Span::styled(
-                    label,
-                    Style::default().fg(color).add_modifier(Modifier::BOLD),
-                ),
-            ]));
+            // The title wraps under its bar, like the body below it.
+            let mark = ctx.pictures.len();
+            let mut heading = Vec::new();
+            let style = Style::default().fg(color).add_modifier(Modifier::BOLD);
+            render_styled_spans(
+                title,
+                ctx,
+                width.saturating_sub(2),
+                0,
+                "",
+                "",
+                style,
+                &mut heading,
+            );
+            shift(&mut ctx.pictures[mark..], out.len(), indent as u16 + 2);
+            for line in heading {
+                let mut spans = vec![
+                    Span::raw(pad.clone()),
+                    Span::styled(format!("{} ", icons::QUOTE_BAR), Style::default().fg(color)),
+                ];
+                spans.extend(line.spans);
+                out.push(Line::from(spans));
+            }
 
             let mark = ctx.pictures.len();
             let mut inner = Vec::new();
@@ -676,6 +852,24 @@ fn render_spans(
     rest_pad: &str,
     out: &mut Vec<Line<'static>>,
 ) {
+    let base = Style::default().fg(ctx.palette.text_normal);
+    render_styled_spans(spans, ctx, width, indent, first_pad, rest_pad, base, out);
+}
+
+/// [`render_spans`] for text whose plain parts take `base` rather than the
+/// body colour, such as a heading or a callout title. Links, tags and maths
+/// inside it are still coloured as they are anywhere else.
+#[allow(clippy::too_many_arguments)]
+fn render_styled_spans(
+    spans: &[markdown::Span],
+    ctx: &mut Ctx,
+    width: usize,
+    indent: usize,
+    first_pad: &str,
+    rest_pad: &str,
+    base: Style,
+    out: &mut Vec<Line<'static>>,
+) {
     let mut run: Vec<markdown::Span> = Vec::new();
     // Text resuming after something lifted out starts a line of its own, and
     // shouldn't start it with the space that separated them.
@@ -703,7 +897,7 @@ fn render_spans(
 
         if !run.is_empty() {
             let pad = if out.is_empty() { first_pad } else { rest_pad };
-            let styled = style_spans(&run, ctx.palette, ctx.index);
+            let styled = style_spans(&run, ctx.palette, ctx.index, base);
             out.extend(wrap_spans(&styled, width, pad, rest_pad));
             run.clear();
         }
@@ -727,7 +921,7 @@ fn render_spans(
 
     if !run.is_empty() || out.is_empty() {
         let pad = if out.is_empty() { first_pad } else { rest_pad };
-        let styled = style_spans(&run, ctx.palette, ctx.index);
+        let styled = style_spans(&run, ctx.palette, ctx.index, base);
         out.extend(wrap_spans(&styled, width, pad, rest_pad));
     }
 }
@@ -777,16 +971,17 @@ fn shift(pictures: &mut [Picture], lines: usize, indent: u16) {
     }
 }
 
-/// Applies theme colors to parsed inline spans.
+/// Applies theme colors to parsed inline spans, starting from `base`.
 fn style_spans(
     spans: &[markdown::Span],
     palette: &Palette,
     index: &emeraldian_core::index::VaultIndex,
+    base: Style,
 ) -> Vec<(String, Style)> {
     spans
         .iter()
         .map(|span| {
-            let mut style = Style::default().fg(palette.text_normal);
+            let mut style = base;
 
             match &span.kind {
                 SpanKind::WikiLink { target, .. } => {
@@ -882,6 +1077,10 @@ fn display_math(
 }
 
 /// Wraps styled spans to `width`, breaking on spaces and keeping styles intact.
+///
+/// Widths are display columns, so wide characters wrap where they are drawn.
+/// A word wider than a whole line, such as a long URL, is broken at the edge
+/// of the pane rather than left running off it.
 #[must_use]
 pub fn wrap_spans(
     spans: &[(String, Style)],
@@ -893,38 +1092,63 @@ pub fn wrap_spans(
         return Vec::new();
     }
 
+    let indent_width = indent.width();
     let mut lines: Vec<Line> = Vec::new();
     let mut current: Vec<Span> = vec![Span::raw(first_indent.to_string())];
-    let mut used = first_indent.chars().count();
+    let mut used = first_indent.width();
+    let mut break_line = |current: &mut Vec<Span<'static>>, used: &mut usize| {
+        lines.push(Line::from(std::mem::take(current)));
+        current.push(Span::raw(indent.to_string()));
+        *used = indent_width;
+    };
 
     for (text, style) in spans {
         // Splitting inclusively keeps the space attached to the preceding word,
         // so styles don't fragment on every gap.
         for word in text.split_inclusive(' ') {
-            let word_width = word.chars().count();
-
-            if used + word_width > width && used > indent.chars().count() {
-                lines.push(Line::from(std::mem::take(&mut current)));
-                current.push(Span::raw(indent.to_string()));
-                used = indent.chars().count();
+            let mut word = word;
+            if used + word.width() > width && used > indent_width {
+                break_line(&mut current, &mut used);
                 // A wrapped line shouldn't start with the space that ended the
                 // previous one.
-                let trimmed = word.trim_start();
-                if trimmed.is_empty() {
+                word = word.trim_start();
+                if word.is_empty() {
                     continue;
                 }
-                current.push(Span::styled(trimmed.to_string(), *style));
-                used += trimmed.chars().count();
-                continue;
             }
-
-            current.push(Span::styled(word.to_string(), *style));
-            used += word_width;
+            // Checked for emptiness as well as width: with an indent as wide as
+            // the pane, even the last character of a word is too wide.
+            while !word.trim_end().is_empty() && used + word.trim_end().width() > width {
+                let (head, rest) = split_at_column(word, width.saturating_sub(used));
+                current.push(Span::styled(head.to_string(), *style));
+                break_line(&mut current, &mut used);
+                word = rest;
+            }
+            if !word.is_empty() {
+                current.push(Span::styled(word.to_string(), *style));
+                used += word.width();
+            }
         }
     }
 
     lines.push(Line::from(current));
     lines
+}
+
+/// Splits `text` after as many characters as fit in `columns`, and after one
+/// at the least, so that breaking a word always makes progress.
+fn split_at_column(text: &str, columns: usize) -> (&str, &str) {
+    use unicode_width::UnicodeWidthChar;
+
+    let mut used = 0;
+    for (at, ch) in text.char_indices() {
+        let width = ch.width().unwrap_or(0);
+        if at > 0 && used + width > columns {
+            return text.split_at(at);
+        }
+        used += width;
+    }
+    (text, "")
 }
 
 fn render_table(table: &Table, palette: &Palette, pad: &str, out: &mut Vec<Line<'static>>) {
@@ -1716,6 +1940,38 @@ mod tests {
         Palette::from(&presets::default_theme())
     }
 
+    #[test]
+    fn the_reading_layout_is_reused_until_the_note_changes() {
+        let vault = TempVault::new("reading-cache");
+        vault.write("A.md", "first version\n");
+        let mut app = App::new(vault.vault(), crate::config::Config::default()).expect("app");
+        let id = app.index.id_of_rel("A.md").expect("indexed");
+        app.open_note(id);
+        let screen = |app: &mut App| -> String {
+            let backend = ratatui::backend::TestBackend::new(80, 20);
+            let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+            terminal
+                .draw(|frame| crate::ui::draw(frame, app))
+                .expect("draw");
+            let buffer = terminal.backend().buffer();
+            buffer.content.iter().map(|cell| cell.symbol()).collect()
+        };
+
+        assert!(screen(&mut app).contains("first version"));
+        let laid_out = app.reading.lines.as_ptr();
+        screen(&mut app);
+        assert_eq!(
+            app.reading.lines.as_ptr(),
+            laid_out,
+            "a redraw lays nothing out again"
+        );
+
+        // Changed on disk and indexed again, as the watcher does.
+        vault.write("A.md", "the second version\n");
+        app.index.refresh_note(id).expect("refresh");
+        assert!(screen(&mut app).contains("the second version"));
+    }
+
     fn text_of(lines: &[Line<'_>]) -> Vec<String> {
         lines
             .iter()
@@ -2243,6 +2499,93 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The widest rendered row, in display columns, ignoring trailing space.
+    fn widest(lines: &[String]) -> usize {
+        lines
+            .iter()
+            .map(|line| line.trim_end().width())
+            .max()
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn a_long_heading_wraps_instead_of_running_off_the_pane() {
+        // One line of an exported chat, pasted as a single heading. It used to
+        // be drawn as one row, so everything past the first few words — maths
+        // included — was off the edge of the pane.
+        let rows = shown(&format!("# {}\n", "a long heading ".repeat(20)), 40);
+        assert!(rows.len() > 5, "{rows:?}");
+        assert!(widest(&rows) <= 40, "{rows:?}");
+        let rule = rows.iter().position(|row| row.starts_with('─'));
+        assert_eq!(
+            rule,
+            Some(rows.len() - 1),
+            "the rule goes under the last row"
+        );
+    }
+
+    #[test]
+    fn maths_in_a_heading_is_typeset_and_display_maths_set_apart() {
+        let rows = shown(
+            "# Such as $\\pi$, and $$ \\pi = 4\\arctan(1) $$ which takes a few symbols\n",
+            40,
+        );
+        assert!(rows[0].starts_with("Such as π,"), "{rows:?}");
+        assert!(
+            rows.iter().any(|row| row.trim() == "π = 4 arctan(1)"),
+            "the display maths has a row of its own: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.starts_with("which takes")),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
+    fn a_word_longer_than_the_pane_is_broken_at_its_edge() {
+        let url =
+            "https://docs.example.com/r/en-US/a-very-long-path/Floating-Point-Numerical-Formats";
+        let rows = shown(&format!("See {url} for more.\n"), 30);
+        assert!(widest(&rows) <= 30, "{rows:?}");
+        let joined: String = rows.concat().split_whitespace().collect();
+        assert_eq!(
+            joined,
+            format!("See{url}formore."),
+            "nothing is lost along the way"
+        );
+    }
+
+    #[test]
+    fn wide_characters_wrap_by_the_columns_they_take() {
+        let rows = shown(&format!("{}\n", "日本語のテキスト ".repeat(6)), 20);
+        assert!(widest(&rows) <= 20, "{rows:?}");
+    }
+
+    #[test]
+    fn a_callout_title_and_a_frontmatter_value_wrap() {
+        let title = "a callout title that is far too long for the pane ";
+        let rows = shown(&format!("> [!note] {title}\n> body\n"), 24);
+        assert!(widest(&rows) <= 24, "{rows:?}");
+        assert!(rows.len() > 3, "the title takes several rows: {rows:?}");
+
+        let rows = shown(
+            &format!("---\nsummary: {}\n---\nbody\n", "words ".repeat(20)),
+            30,
+        );
+        assert!(widest(&rows) <= 30, "{rows:?}");
+        assert!(
+            rows[1].starts_with("  "),
+            "continued under the value: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn wrapping_inside_an_indent_wider_than_the_pane_still_ends() {
+        let spans = [("abcdef".to_string(), Style::default())];
+        let lines = wrap_spans(&spans, 2, "", "    ");
+        assert!(lines.len() >= 6, "one character a row, without looping");
     }
 
     /// Rendered rows with trailing space trimmed and non-breaking spaces shown

@@ -11,9 +11,11 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::links::{self, Heading, LinkRef};
-use crate::note::{self, Frontmatter, NoteMeta};
+use crate::note::{self, NoteMeta};
 use crate::vault::{Scan, ScanOptions, Vault};
 
 /// Index of a note within [`VaultIndex::notes`]. Stable for the lifetime of an
@@ -39,12 +41,13 @@ pub enum LinkTarget {
 pub struct ResolvedLink {
     pub raw: LinkRef,
     pub target: LinkTarget,
-    /// The source line the link appears on, trimmed.
+    /// The source line the link appears on, trimmed, and cut down to the
+    /// stretch around the link when the line is long. See [`context_of`].
     ///
     /// Captured while the body is already in hand so the backlinks pane can
     /// show context without the index re-reading every file in the vault each
-    /// time a note changes.
-    pub context: String,
+    /// time a note changes. Shared with the [`Backlink`] made from it.
+    pub context: Arc<str>,
 }
 
 impl ResolvedLink {
@@ -63,15 +66,15 @@ pub struct Backlink {
     /// 0-based line in the source note's body.
     pub line: usize,
     /// The source line, trimmed — shown as context in the backlinks pane so
-    /// the user can see *how* they were linked without opening the note.
-    pub context: String,
+    /// the user can see *how* they were linked without opening the note. The
+    /// same text as the link's own [`ResolvedLink::context`], not a copy.
+    pub context: Arc<str>,
 }
 
 /// A fully indexed note.
 #[derive(Debug, Clone)]
 pub struct IndexedNote {
     pub meta: NoteMeta,
-    pub frontmatter: Frontmatter,
     pub links: Vec<ResolvedLink>,
     pub tags: Vec<String>,
     pub aliases: Vec<String>,
@@ -113,7 +116,13 @@ pub struct VaultIndex {
     unresolved: BTreeMap<String, Vec<NoteId>>,
     folders: Vec<String>,
     attachments: Vec<String>,
+    /// Changed whenever anything a note's links resolve to may have, so a
+    /// view drawn from the index can tell whether to draw it again. Drawn from
+    /// one counter for every index, so a rebuilt one never repeats a number.
+    revision: u64,
 }
+
+static REVISIONS: AtomicU64 = AtomicU64::new(0);
 
 impl VaultIndex {
     /// Builds an index by scanning and reading every note in the vault.
@@ -135,7 +144,7 @@ impl VaultIndex {
         // Pass 1: read and parse each note. Link resolution needs the full
         // name table, so it can't happen until every note is known.
         let mut notes: Vec<IndexedNote> = Vec::with_capacity(metas.len());
-        let mut raw_links: Vec<Vec<(LinkRef, String)>> = Vec::with_capacity(metas.len());
+        let mut raw_links: Vec<Vec<(LinkRef, Arc<str>)>> = Vec::with_capacity(metas.len());
 
         for mut meta in metas {
             let content = fs::read_to_string(&meta.path).unwrap_or_default();
@@ -159,7 +168,6 @@ impl VaultIndex {
                 headings: links::extract_headings(body),
                 words: links::word_count(body),
                 tags,
-                frontmatter,
                 links: Vec::new(),
                 body_offset,
             });
@@ -177,6 +185,7 @@ impl VaultIndex {
             notes,
             folders,
             attachments,
+            revision: 0,
         };
 
         index.rebuild_lookup();
@@ -190,7 +199,7 @@ impl VaultIndex {
         index
     }
 
-    fn resolve_links(&self, raw: Vec<(LinkRef, String)>) -> Vec<ResolvedLink> {
+    fn resolve_links(&self, raw: Vec<(LinkRef, Arc<str>)>) -> Vec<ResolvedLink> {
         raw.into_iter()
             .map(|(link, context)| ResolvedLink {
                 target: self.classify(&link),
@@ -233,12 +242,13 @@ impl VaultIndex {
 
     /// Rebuilds backlinks, the tag table and the unresolved-link table.
     fn rebuild_derived(&mut self) {
+        self.revision = REVISIONS.fetch_add(1, Ordering::Relaxed) + 1;
         self.backlinks.clear();
         self.tags.clear();
         self.unresolved.clear();
 
-        for id in 0..self.notes.len() {
-            for tag in self.notes[id].tags.clone() {
+        for (id, note) in self.notes.iter().enumerate() {
+            for tag in &note.tags {
                 // Nested tags are also members of each ancestor, so `#a/b`
                 // shows up when browsing `#a` — as it does in Obsidian.
                 let mut prefix = String::new();
@@ -254,13 +264,13 @@ impl VaultIndex {
                 }
             }
 
-            for link in self.notes[id].links.clone() {
+            for link in &note.links {
                 match &link.target {
                     LinkTarget::Note(target) => {
                         self.backlinks.entry(*target).or_default().push(Backlink {
                             source: id,
                             line: link.raw.line,
-                            context: link.context.clone(),
+                            context: Arc::clone(&link.context),
                         });
                     }
                     LinkTarget::Unresolved(name) => {
@@ -497,7 +507,6 @@ impl VaultIndex {
         note.headings = links::extract_headings(body);
         note.words = links::word_count(body);
         note.tags = tags;
-        note.frontmatter = frontmatter;
         note.body_offset = body_offset;
 
         let raw = links_with_context(body);
@@ -518,21 +527,28 @@ impl VaultIndex {
         Ok(())
     }
 
+    /// A number that changes whenever the index does. Only ever compared for
+    /// equality with an earlier one.
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
     /// Re-resolves every note's outgoing links against the current name table,
     /// keeping the already-captured line context.
+    ///
+    /// Only the targets are worked out afresh. Copying every link in the vault
+    /// to do it, as this used to, doubled the index for a moment on every save.
     fn resolve_all_links(&mut self) {
-        let raws: Vec<Vec<(LinkRef, String)>> = self
+        let targets: Vec<Vec<LinkTarget>> = self
             .notes
             .iter()
-            .map(|n| {
-                n.links
-                    .iter()
-                    .map(|l| (l.raw.clone(), l.context.clone()))
-                    .collect()
-            })
+            .map(|note| note.links.iter().map(|l| self.classify(&l.raw)).collect())
             .collect();
-        for (id, raw) in raws.into_iter().enumerate() {
-            self.notes[id].links = self.resolve_links(raw);
+        for (note, targets) in self.notes.iter_mut().zip(targets) {
+            for (link, target) in note.links.iter_mut().zip(targets) {
+                link.target = target;
+            }
         }
     }
 
@@ -548,7 +564,6 @@ impl VaultIndex {
         self.notes.insert(
             position,
             IndexedNote {
-                frontmatter: Frontmatter::default(),
                 links: Vec::new(),
                 tags: Vec::new(),
                 aliases: Vec::new(),
@@ -596,19 +611,66 @@ pub struct IndexStats {
     pub words: usize,
 }
 
-/// Extracts links along with the trimmed text of the line each one sits on.
-fn links_with_context(body: &str) -> Vec<(LinkRef, String)> {
+/// Extracts links along with the text around each one.
+fn links_with_context(body: &str) -> Vec<(LinkRef, Arc<str>)> {
     let lines: Vec<&str> = body.lines().collect();
     links::extract_links(body)
         .into_iter()
         .map(|link| {
             let context = lines
                 .get(link.line)
-                .map(|line| line.trim().to_string())
-                .unwrap_or_default();
+                .map_or_else(|| Arc::from(""), |line| context_of(line, &link));
             (link, context)
         })
         .collect()
+}
+
+/// The most of a line kept as a link's context, in characters.
+///
+/// The backlinks pane shows a row of it. Keeping whole lines instead cost a
+/// note written as one long paragraph its whole body again for every link in
+/// it, which in a large vault was most of the index.
+const CONTEXT_CHARS: usize = 160;
+
+/// How far before the link its context starts, in characters, when the line
+/// is too long to keep whole.
+const CONTEXT_LEAD: usize = 40;
+
+/// The line a link is on, trimmed, or the stretch of it around the link when
+/// it is longer than [`CONTEXT_CHARS`], marked with `…` where it was cut.
+fn context_of(line: &str, link: &LinkRef) -> Arc<str> {
+    let line = line.trim();
+    if line.chars().count() <= CONTEXT_CHARS {
+        return Arc::from(line);
+    }
+
+    // The target is written inside the link, so finding it finds the link.
+    let at = line.find(link.target.as_str()).unwrap_or(0);
+    let lead = line[..at]
+        .char_indices()
+        .rev()
+        .nth(CONTEXT_LEAD)
+        .map_or(0, |(byte, _)| byte);
+    // Begin on a word rather than partway through one.
+    let start = match line[lead..at].find(' ') {
+        Some(space) if lead > 0 => lead + space + 1,
+        _ => lead,
+    };
+
+    let rest = &line[start..];
+    let mut context = String::new();
+    if start > 0 {
+        context.push('…');
+    }
+    let end = rest
+        .char_indices()
+        .nth(CONTEXT_CHARS)
+        .map_or(rest.len(), |(byte, _)| byte);
+    context.push_str(rest[..end].trim_end());
+    if end < rest.len() {
+        context.push('…');
+    }
+    Arc::from(context)
 }
 
 /// Decodes `%20`-style escapes, which editors write for spaces in filenames.
@@ -676,7 +738,49 @@ mod tests {
         let backlinks = index.backlinks(b);
         assert_eq!(backlinks.len(), 1);
         assert_eq!(backlinks[0].source, a);
-        assert_eq!(backlinks[0].context, "Link to [[B]] here.");
+        assert_eq!(&*backlinks[0].context, "Link to [[B]] here.");
+    }
+
+    #[test]
+    fn a_long_line_keeps_only_the_stretch_around_each_link() {
+        // A note written as one long paragraph, linking out twice.
+        let filler = "lorem ipsum dolor sit amet ".repeat(40);
+        let vault = TempVault::new("context");
+        vault.write(
+            "A.md",
+            &format!("{filler}see [[B]] then {filler}and [[C]] too\n"),
+        );
+        vault.write("B.md", "# B\n");
+        vault.write("C.md", "# C\n");
+
+        let index = vault.index();
+        let b = index.id_of_rel("B.md").expect("B");
+        let c = index.id_of_rel("C.md").expect("C");
+        for (id, link) in [(b, "[[B]]"), (c, "[[C]]")] {
+            let context = &index.backlinks(id)[0].context;
+            assert!(context.contains(link), "{context}");
+            assert!(context.starts_with('…'), "cut at the front: {context}");
+            assert!(context.chars().count() <= CONTEXT_CHARS + 2, "{context}");
+        }
+        assert!(
+            index.backlinks(b)[0].context.ends_with('…'),
+            "and at the back"
+        );
+    }
+
+    #[test]
+    fn a_backlink_shares_its_context_with_the_link() {
+        let vault = TempVault::new("shared");
+        vault.write("A.md", "Link to [[B]] here.\n");
+        vault.write("B.md", "# B\n");
+
+        let index = vault.index();
+        let a = index.id_of_rel("A.md").expect("A");
+        let b = index.id_of_rel("B.md").expect("B");
+        assert!(Arc::ptr_eq(
+            &index.note(a).expect("A").links[0].context,
+            &index.backlinks(b)[0].context
+        ));
     }
 
     #[test]

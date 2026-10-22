@@ -77,6 +77,10 @@ pub struct UiConfig {
     /// setting over a typo in this one would be a poor trade. Read it through
     /// [`UiConfig::sort_order`], which falls back to the default.
     pub sort_order: String,
+    /// Whose keyboard shortcuts to follow: `auto` for the machine the app runs
+    /// on, or `mac`, `windows` or `linux`. Worth setting to `mac` when
+    /// reaching a Linux machine from a Mac over SSH.
+    pub keyboard: String,
 }
 
 impl UiConfig {
@@ -102,6 +106,7 @@ impl Default for UiConfig {
             line_numbers: true,
             reading_mode: true,
             sort_order: SortOrder::default().key().to_string(),
+            keyboard: "auto".into(),
         }
     }
 }
@@ -636,6 +641,14 @@ mod tests {
 
         assert!(!new.exists(), "no directory is conjured out of nothing");
         fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn the_keyboard_follows_the_machine_unless_set() {
+        let older: Config = toml::from_str("[ui]\nchat_width = 70\n").expect("parse");
+        assert_eq!(older.ui.keyboard, "auto", "a file from before the setting");
+        let mac: Config = toml::from_str("[ui]\nkeyboard = \"mac\"\n").expect("parse");
+        assert_eq!(mac.ui.keyboard, "mac");
     }
 
     #[test]

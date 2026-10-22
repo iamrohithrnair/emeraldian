@@ -256,6 +256,7 @@ pub enum Action {
 
     // Views
     ToggleMode,
+    ToggleFocusMode,
     ToggleLeftSidebar,
     ToggleRightSidebar,
     ToggleChat,
@@ -278,6 +279,17 @@ pub enum Action {
     OpenPalette,
     OpenSwitcher,
     OpenSearch,
+    /// `Ctrl+F`: the lines of the open note that contain what is typed.
+    OpenFind,
+    /// Jumps to `text`, found at `column` of `line` in the open note, and
+    /// selects it when the note is being edited.
+    GotoLine {
+        line: usize,
+        column: usize,
+        text: String,
+    },
+    /// `Ctrl+Shift+T`, as in a browser.
+    ReopenClosedTab,
     OpenThemePicker,
     OpenVaultPicker,
     OpenHelp,
@@ -342,6 +354,20 @@ pub struct Regions {
     pub chat: Option<Rect>,
     /// The graph canvas with its coordinate bounds, for hit-testing nodes.
     pub graph: Option<(Rect, [f64; 2], [f64; 2])>,
+    /// The whole screen, which overlays are sized against.
+    pub screen: Option<Rect>,
+}
+
+/// Text found in a note, for the reading view to scroll to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reveal {
+    /// The source line it is on.
+    pub line: usize,
+    pub text: String,
+    /// How many times it occurs before this one in the same block. A
+    /// paragraph or a code block can show the same words several times, and
+    /// it is the one picked that should come into view.
+    pub nth: usize,
 }
 
 pub struct App {
@@ -362,6 +388,12 @@ pub struct App {
     /// clears it, because once you have gone somewhere new there is no longer a
     /// forward to return to.
     pub forward: Vec<NoteId>,
+    /// Notes whose tabs were closed, newest last, by path so that a rename or
+    /// a reload in between can't point one at the wrong note.
+    pub closed: Vec<String>,
+    /// Text the reading view should bring into sight on its next frame. Only
+    /// a drawn frame knows which row that is.
+    pub reveal: Option<Reveal>,
 
     pub view: View,
     pub focus: Focus,
@@ -386,6 +418,9 @@ pub struct App {
     pub images: crate::images::Images,
     /// The Excalidraw scene currently on screen, kept parsed between frames.
     pub scenes: crate::ui::drawing::Scenes,
+    /// The note last laid out for reading, reused while nothing it depends on
+    /// has changed.
+    pub reading: crate::ui::note::ReadingCache,
     /// Modal-editing state. Inert unless `config.editor.vim` is on.
     ///
     /// One per app rather than one per tab: only one editor has focus at a
@@ -403,6 +438,12 @@ pub struct App {
     /// exists for, expressed as a field because the crate forbids the `unsafe`
     /// that setting an environment variable now needs.
     pub config_dir: Option<PathBuf>,
+    /// Just the note on screen, the sidebars hidden: `F8`.
+    ///
+    /// Kept apart from the `show_*` settings rather than switching them off,
+    /// so leaving it puts back exactly what was there, and saving settings
+    /// while in it doesn't save an empty layout.
+    pub focus_mode: bool,
     pub quit: bool,
 }
 
@@ -434,6 +475,8 @@ impl App {
             tabs: Vec::new(),
             active_tab: None,
             history: Vec::new(),
+            closed: Vec::new(),
+            reveal: None,
             forward: Vec::new(),
             view: View::Notes,
             focus: Focus::Explorer,
@@ -448,9 +491,11 @@ impl App {
             status: Status::default(),
             images: crate::images::Images::disabled(),
             scenes: crate::ui::drawing::Scenes::default(),
+            reading: crate::ui::note::ReadingCache::default(),
             vim: crate::vim::Vim::default(),
             keymap: crate::keymap::Keymap::new(&config.keys),
             config_dir: None,
+            focus_mode: false,
             quit: false,
             theme: ActiveTheme::new(theme),
             themes,
@@ -667,6 +712,9 @@ impl App {
         }
 
         self.view = View::Notes;
+        // The graph is laid out afresh whenever it opens, so once a note has
+        // replaced it there is nothing to keep it for.
+        self.graph = None;
         self.focus = Focus::Note;
         self.side_selected = 0;
         // A note opens in Normal mode, never mid-insert: arriving in a fresh
@@ -703,7 +751,14 @@ impl App {
         if self.tabs[index].is_modified() && self.config.editor.auto_save {
             self.save_tab(index);
         }
-        self.tabs.remove(index);
+        let closed = self.tabs.remove(index);
+        if let Some(note) = self.index.note(closed.note) {
+            self.closed.push(note.meta.rel.clone());
+            // Enough to undo a run of closes; not a second history.
+            if self.closed.len() > 20 {
+                self.closed.remove(0);
+            }
+        }
         self.active_tab = if self.tabs.is_empty() {
             None
         } else {
@@ -875,7 +930,9 @@ impl App {
             .and_then(|id| self.tabs.iter().position(|t| t.note == id))
             .or(if self.tabs.is_empty() { None } else { Some(0) });
 
+        // Ids are positions, and a rebuilt index can put another note at one.
         self.history.clear();
+        self.forward.clear();
         self.explorer.rebuild(&self.index);
         if self.graph.is_some() {
             self.refresh_graph();
@@ -894,6 +951,9 @@ impl App {
                 self.tabs.clear();
                 self.active_tab = None;
                 self.history.clear();
+                self.forward.clear();
+                // Paths, but of the other vault, where they may name other notes.
+                self.closed.clear();
                 self.graph = None;
                 self.view = View::Notes;
                 self.focus = Focus::Explorer;

@@ -467,10 +467,18 @@ fn insert(app: &mut App, key: KeyEvent) -> bool {
         return true;
     }
 
-    // The two line-editing keys vim defines while typing. Everything else falls
+    // The line-editing keys vim defines while typing. Everything else falls
     // through to the ordinary editor, including every shifted combination.
     if ctrl && !key.modifiers.contains(KeyModifiers::SHIFT) {
         match key.code {
+            // Backspace, as in every terminal program; without vim, the editor
+            // reads it as `Ctrl+Backspace`.
+            KeyCode::Char('h') => {
+                with_editor(app, |editor| {
+                    editor.backspace();
+                });
+                return true;
+            }
             KeyCode::Char('w') => {
                 with_editor(app, |editor| {
                     let at = editor.cursor();
@@ -1439,6 +1447,23 @@ fn jump_to_match(app: &mut App, forward: bool) {
     clamp(app);
 }
 
+/// Puts the cursor on a match found from outside vim, with `Ctrl+F` or `⌘F`,
+/// the way `/` would have: on its first character, in Normal mode unless
+/// typing, and with `n` and `N` going on to the next ones.
+pub fn land_on(app: &mut App, line: usize, column: usize, text: &str) {
+    if app.vim.mode != VimMode::Insert {
+        app.vim.reset();
+    }
+    if !text.is_empty() {
+        app.vim.search = Some(Search {
+            pattern: text.to_string(),
+            forward: true,
+        });
+    }
+    with_editor(app, |editor| editor.goto(line, column));
+    clamp(app);
+}
+
 /// Runs a leader sequence, if it names one.
 ///
 /// Reads the same table the which-key popup draws, so nothing can be bound
@@ -1499,6 +1524,11 @@ fn normal_ctrl(app: &mut App, key: KeyEvent) -> bool {
             with_editor(app, |editor| {
                 editor.redo();
             });
+        }
+        // `Ctrl+H` is Backspace, which moves left, and `Ctrl+Backspace`, as
+        // the Kitty protocol sends it, is Backspace too.
+        KeyCode::Char('h') | KeyCode::Backspace => {
+            return normal(app, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
         }
         KeyCode::Char('d') => move_row(app, half),
         KeyCode::Char('u') => move_row(app, -half),
@@ -2652,6 +2682,34 @@ mod tests {
         assert_eq!(app.vim.mode, VimMode::Insert, "and typing continues");
     }
 
+    #[test]
+    fn ctrl_h_is_backspace_as_in_vim() {
+        // Without vim the editor reads `Ctrl+H` as `Ctrl+Backspace`, which is
+        // what a terminal without the Kitty protocol sends for it. Vim has its
+        // own meaning, and keeps it.
+        let (_v, mut app) = app("");
+        press(&mut app, 'i');
+        type_str(&mut app, "alpha beta");
+        crate::keys::handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(text(&mut app), "alpha bet\n", "one character, in Insert");
+
+        esc(&mut app);
+        let (line, col) = cursor(&mut app);
+        crate::keys::handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(
+            cursor(&mut app),
+            (line, col - 1),
+            "and a step left in Normal"
+        );
+        assert_eq!(text(&mut app), "alpha bet\n");
+    }
+
     // ---- motions ---------------------------------------------------------
 
     #[test]
@@ -3359,6 +3417,7 @@ mod tests {
         showcmd: String,
         view: crate::app::View,
         focus: crate::app::Focus,
+        side_panel: crate::app::SidePanel,
         modal: bool,
         status: String,
         config: String,
@@ -3380,6 +3439,7 @@ mod tests {
                 showcmd: app.vim.showcmd.clone(),
                 view: app.view,
                 focus: app.focus,
+                side_panel: app.side_panel,
                 modal: app.modal.is_some(),
                 status: app.status.text.clone(),
                 config: format!("{:?}", app.config.ui),
