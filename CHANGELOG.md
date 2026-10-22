@@ -8,6 +8,21 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Maths in reading mode.** `$…$` and `$$…$$` are typeset with Unicode
+  instead of being shown as TeX: Greek letters and operators, scripts like `x²`
+  and `aᵢ`, `ℝ` and the other double-struck and script letters, spaced the way
+  TeX spaces them. Inline maths stays on its line, so a fraction reads as
+  `(a + b)/2`. Display maths takes the rows it needs: fractions stack over a
+  rule, sums and limits carry their bounds above and below, roots get a bar,
+  and matrices, `cases` and `aligned` blocks get brackets as tall as they are.
+  `\tag{1}` puts the number at the right margin, and a command it doesn't know
+  is shown as typed rather than dropped.
+
+  A single `$` now follows the same rule as Pandoc and Obsidian, so prices like
+  "$5 and $10" stay text, and an underscore or asterisk inside maths is no
+  longer paired with one in the text around it as emphasis. In the editor, a
+  `$$` block is coloured as maths rather than read as Markdown.
+
 - **`emeraldian .` opens the folder you are in, as `code .` does.** A relative
   path like `.` or `..` used to name the vault "vault" and file its saved state
   under the path as typed, so every folder opened that way shared one set of

@@ -310,6 +310,15 @@ it's on. The line you're editing shows its syntax at full contrast. Because both
 modes lay prose out in the same column at the same width, `Ctrl+E` restyles the
 page instead of reflowing it. Set `editor.wrap = false` to pan sideways instead.
 
+**Maths.** `$…$` and `$$…$$` are typeset in the reading pane rather than shown
+as TeX: Greek letters and operators, `x²` and `aᵢ`, `ℝ` and `𝔼`, all spaced the
+way TeX spaces them. Inline maths stays on its line, so `\frac{a+b}{2}` reads as
+`(a + b)/2`. Display maths takes the rows it needs: fractions stack over a rule,
+sums and limits carry their bounds above and below, roots get a bar, and
+matrices, `cases` and `aligned` blocks get brackets as tall as they are. A
+command it doesn't know is shown as typed. In the editor, a `$$` block is
+coloured as maths instead of being read as Markdown.
+
 **Pictures.** `![[chart.png]]` and `![alt](assets/chart.png)` are drawn in the
 reading pane — real pixels in Kitty, Ghostty, WezTerm, iTerm2 and anything that
 speaks sixel, and half-block mosaics everywhere else. Obsidian's `|400` width

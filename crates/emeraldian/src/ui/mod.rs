@@ -8,6 +8,7 @@
 pub mod chat;
 pub mod drawing;
 pub mod graph;
+pub mod math;
 pub mod modal;
 pub mod note;
 pub mod panes;
