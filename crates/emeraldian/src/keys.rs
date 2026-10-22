@@ -154,6 +154,11 @@ fn handle_global(app: &mut App, key: KeyEvent) -> bool {
         // from inside Normal mode too — a toggle that can be switched on but
         // not off is a trap. F-keys are the only ones vim leaves alone.
         (_, _, KeyCode::F(4)) => Some(Action::ToggleVimMode),
+        // Focus mode: just the note. `F8` because it is Typora's key for the
+        // same idea and reaches the app in every terminal; `F11`, the
+        // full-screen key everywhere else, works too wherever the terminal
+        // doesn't take it for its own full screen first.
+        (_, _, KeyCode::F(8) | KeyCode::F(11)) => Some(Action::ToggleFocusMode),
         _ => None,
     };
 
@@ -216,6 +221,10 @@ pub fn cycle_focus(app: &mut App, delta: isize) {
     }
     if !app.config.ui.show_left_sidebar {
         order.retain(|f| *f != Focus::Explorer);
+    }
+    // Focus mode shows nothing but the note, so there is nowhere to move to.
+    if app.focus_mode {
+        order.retain(|f| matches!(f, Focus::Note | Focus::Graph));
     }
     if order.is_empty() {
         return;

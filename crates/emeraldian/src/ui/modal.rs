@@ -233,6 +233,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
                 "Tab / Shift+Tab",
                 "Move between panes — Esc first while typing",
             ),
+            ("F8", "Focus mode — the note alone, centred"),
             ("hjkl / arrows", "Move within a pane"),
             ("Enter", "Open the selection / follow a link"),
             ("Alt+←", "Back to the previous note"),

@@ -178,6 +178,9 @@ fn draw_tab_bar(
         return;
     }
 
+    // The side panes light their borders up when they have the keyboard. The
+    // note pane has no border, so its active tab carries the same colour.
+    let focused = app.focus == crate::app::Focus::Note;
     let mut spans = Vec::new();
     let mut x = area.x;
     for (index, tab) in app.tabs.iter().enumerate() {
@@ -209,7 +212,12 @@ fn draw_tab_bar(
                 .fg(palette.tab_inactive_fg)
         };
 
-        spans.push(Span::styled(format!(" {title}"), style));
+        if active && focused {
+            spans.push(Span::styled("▎", style.fg(palette.border_focus)));
+            spans.push(Span::styled(title.clone(), style.fg(palette.text_accent)));
+        } else {
+            spans.push(Span::styled(format!(" {title}"), style));
+        }
         // Obsidian marks an unsaved tab with a dot where the close button goes.
         spans.push(Span::styled(
             if tab.is_modified() {

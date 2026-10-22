@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [0.8.0]
 
+### Added
+
+- **Focus mode, on `F8`.** One key hides the explorer, the outline, the
+  assistant and the ribbon, and centres the note at a readable width, for
+  reading or writing with nothing else on screen. `F8` again puts everything
+  back as it was, and so does asking for a sidebar with its own shortcut. The
+  hint bar shows the key wherever you are. `F11` does the same in terminals
+  that don't keep it for their own full screen, and the key can be moved under
+  `[keys]` as `toggle_focus_mode`.
+
 ### Fixed
 
 - **Long headings and long words wrap in reading mode.** A heading longer
@@ -22,6 +32,11 @@ All notable changes to this project are documented here. The format follows
   footnote markers like `[^1_2]` lost their underscores to italics. As in
   CommonMark and Obsidian, an underscore now only emphasises at the edges of
   a word. Asterisks still work anywhere.
+
+- **The note pane shows when it has the keyboard.** The explorer and the
+  outline light up their borders when focused, but the note pane has no
+  border, so pressing `Tab` into it looked as if nothing had happened. Its
+  active tab now takes the same colour, with a bar in front of the title.
 
 ## [0.7.0] — 2026-10-22
 

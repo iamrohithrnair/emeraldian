@@ -34,6 +34,7 @@ pub fn commands() -> Vec<Entry> {
         Entry::new("Open local graph", "Ctrl+Shift+G", Action::OpenLocalGraph),
         Entry::new("Back to notes", "", Action::OpenNotesView),
         Entry::new("Reveal note in explorer", "", Action::RevealInExplorer),
+        Entry::new("Toggle focus mode", "F8", Action::ToggleFocusMode),
         Entry::new("Toggle file explorer", "Ctrl+\\", Action::ToggleLeftSidebar),
         Entry::new(
             "Toggle outline sidebar",
@@ -227,6 +228,11 @@ pub(crate) fn show_models(app: &mut App, models: Vec<String>) {
     app.modal = Some(Modal::Picker(Picker::new(PickerKind::Models, entries)));
 }
 
+/// Leaves focus mode, if it was on. Returns whether it was.
+fn leave_focus_mode(app: &mut App) -> bool {
+    std::mem::take(&mut app.focus_mode)
+}
+
 fn open_in_obsidian(app: &mut App) {
     let Some(id) = app.active_note() else {
         app.error("no note open");
@@ -283,6 +289,9 @@ pub fn dispatch(app: &mut App, action: Action) {
         // Only panes that are actually on screen can take focus; asking for the
         // chat while it is closed would leave the keyboard talking to nothing.
         Action::FocusPane(target) => {
+            if !matches!(target, Focus::Note | Focus::Graph) {
+                leave_focus_mode(app);
+            }
             let available = match target {
                 Focus::Explorer => app.config.ui.show_left_sidebar,
                 Focus::Sidebar => app.config.ui.show_right_sidebar,
@@ -461,19 +470,41 @@ pub fn dispatch(app: &mut App, action: Action) {
                 )),
             }
         }
+        Action::ToggleFocusMode => {
+            app.focus_mode = !app.focus_mode;
+            // The note is all there is to look at, so it takes the keyboard.
+            if app.focus_mode {
+                app.focus = if app.view == View::Graph {
+                    Focus::Graph
+                } else {
+                    Focus::Note
+                };
+            }
+        }
+        // Asking for a sidebar while in focus mode means wanting it back: the
+        // layout returns, with that panel showing whatever its setting was.
         Action::ToggleLeftSidebar => {
+            if leave_focus_mode(app) {
+                app.config.ui.show_left_sidebar = false;
+            }
             app.config.ui.show_left_sidebar = !app.config.ui.show_left_sidebar;
             if !app.config.ui.show_left_sidebar && app.focus == Focus::Explorer {
                 app.focus = Focus::Note;
             }
         }
         Action::ToggleRightSidebar => {
+            if leave_focus_mode(app) {
+                app.config.ui.show_right_sidebar = false;
+            }
             app.config.ui.show_right_sidebar = !app.config.ui.show_right_sidebar;
             if !app.config.ui.show_right_sidebar && app.focus == Focus::Sidebar {
                 app.focus = Focus::Note;
             }
         }
         Action::ToggleChat => {
+            if leave_focus_mode(app) {
+                app.config.ui.show_chat = false;
+            }
             app.config.ui.show_chat = !app.config.ui.show_chat;
             app.focus = if app.config.ui.show_chat {
                 Focus::Chat

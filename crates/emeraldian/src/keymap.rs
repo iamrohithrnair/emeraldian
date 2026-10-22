@@ -40,6 +40,7 @@ const ACTIONS: &[(&str, Action)] = &[
     ("open_theme_picker", Action::OpenThemePicker),
     ("toggle_chat", Action::ToggleChat),
     ("cycle_side_panel", Action::CycleSidePanel),
+    ("toggle_focus_mode", Action::ToggleFocusMode),
     ("toggle_left_sidebar", Action::ToggleLeftSidebar),
     ("toggle_right_sidebar", Action::ToggleRightSidebar),
     ("open_graph", Action::OpenGraph),

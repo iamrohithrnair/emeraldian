@@ -143,6 +143,7 @@ doesn't. `?` shows the full list in the app.
 | `hjkl`, `g`, `G` | Move within a pane |
 | `Enter` | Open / follow a link |
 | `F3` / `F4` | Close the tab / vim mode on / off |
+| `F8` | Focus mode: the note alone, centred, with the sidebars hidden |
 
 In the editor: `↑`/`↓`, `Home` and `End` follow the rows on screen, so a wrapped
 paragraph moves through a line at a time as it looks rather than as it is stored.
@@ -547,8 +548,8 @@ file as it was.
 The names are `open_palette`, `open_switcher`, `open_search`, `new_note`,
 `save`, `daily_note`, `toggle_mode`, `close_tab`, `next_tab`, `previous_tab`,
 `rename_note`, `open_theme_picker`, `toggle_chat`, `cycle_side_panel`,
-`toggle_left_sidebar`, `toggle_right_sidebar`, `open_graph`, `open_local_graph`,
-`refresh`, `back`, `toggle_vim_mode` and `quit`.
+`toggle_focus_mode`, `toggle_left_sidebar`, `toggle_right_sidebar`, `open_graph`,
+`open_local_graph`, `refresh`, `back`, `toggle_vim_mode` and `quit`.
 
 ## Layout
 

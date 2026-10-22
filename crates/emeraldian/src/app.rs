@@ -256,6 +256,7 @@ pub enum Action {
 
     // Views
     ToggleMode,
+    ToggleFocusMode,
     ToggleLeftSidebar,
     ToggleRightSidebar,
     ToggleChat,
@@ -403,6 +404,12 @@ pub struct App {
     /// exists for, expressed as a field because the crate forbids the `unsafe`
     /// that setting an environment variable now needs.
     pub config_dir: Option<PathBuf>,
+    /// Just the note on screen, the sidebars hidden: `F8`.
+    ///
+    /// Kept apart from the `show_*` settings rather than switching them off,
+    /// so leaving it puts back exactly what was there, and saving settings
+    /// while in it doesn't save an empty layout.
+    pub focus_mode: bool,
     pub quit: bool,
 }
 
@@ -451,6 +458,7 @@ impl App {
             vim: crate::vim::Vim::default(),
             keymap: crate::keymap::Keymap::new(&config.keys),
             config_dir: None,
+            focus_mode: false,
             quit: false,
             theme: ActiveTheme::new(theme),
             themes,
