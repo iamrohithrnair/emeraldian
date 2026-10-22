@@ -181,6 +181,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     };
     column += 1;
     regions.main = Some(main);
+    regions.screen = Some(area);
     match app.view {
         View::Notes => note::draw(frame, app, &palette, main, &mut regions),
         View::Graph => graph::draw(frame, app, &palette, main, &mut regions),
@@ -267,6 +268,12 @@ fn hints_for(app: &App) -> &'static [(&'static str, &'static str)] {
             Some(Modal::Confirm(_)) => &[("y/Enter", "confirm"), ("Esc", "cancel")],
             Some(Modal::Help(_)) => &[("j/k", "scroll"), ("Esc", "close")],
             Some(Modal::Prompt(_)) => &[("Enter", "confirm"), ("Esc", "cancel")],
+            Some(Modal::Picker(picker)) if picker.kind == crate::modal::PickerKind::Find => &[
+                ("Enter", "go to"),
+                ("↑↓", "move"),
+                ("^F", "every note"),
+                ("Esc", "cancel"),
+            ],
             _ => &[
                 ("Enter", "select"),
                 ("↑↓", "move"),

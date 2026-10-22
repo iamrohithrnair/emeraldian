@@ -17,6 +17,7 @@ pub enum PickerKind {
     Themes,
     Vaults,
     Search,
+    Find,
     Providers,
     Models,
 }
@@ -30,6 +31,7 @@ impl PickerKind {
             Self::Themes => "Themes",
             Self::Vaults => "Open vault",
             Self::Search => "Search",
+            Self::Find => "Find in note",
             Self::Providers => "Assistant provider",
             Self::Models => "Model",
         }
@@ -43,6 +45,7 @@ impl PickerKind {
             Self::Themes => "Filter themes…",
             Self::Vaults => "Filter vaults…",
             Self::Search => "Search all notes…",
+            Self::Find => "Find in this note…",
             Self::Providers => "Filter providers…",
             Self::Models => "Filter models…",
         }
@@ -96,7 +99,7 @@ impl Picker {
             matches: Vec::new(),
             selected: 0,
             scroll: 0,
-            live: kind == PickerKind::Search,
+            live: matches!(kind, PickerKind::Search | PickerKind::Find),
         };
         picker.refilter();
         picker
@@ -113,6 +116,16 @@ impl Picker {
         } else {
             self.refilter();
         }
+    }
+
+    /// Replaces a live picker's entries, with the byte offsets to underline
+    /// in each label: what matched, when the picker's own fuzzy matching is
+    /// not what found it.
+    pub fn set_marked_entries(&mut self, marked: Vec<(Entry, Vec<usize>)>) {
+        let (entries, positions): (Vec<Entry>, Vec<Vec<usize>>) = marked.into_iter().unzip();
+        self.entries = entries;
+        self.matches = positions.into_iter().enumerate().collect();
+        self.selected = self.selected.min(self.matches.len().saturating_sub(1));
     }
 
     fn refilter(&mut self) {

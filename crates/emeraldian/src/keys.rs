@@ -16,6 +16,31 @@ use crate::ui::panes::{SidebarTarget, sidebar_targets};
 /// Columns moved per keypress when panning a wide table sideways.
 const PAN_STEP: isize = 4;
 
+/// Whose keyboard conventions to follow.
+///
+/// The `Ctrl` shortcuts work everywhere. A Mac adds its own on top: `⌘` for
+/// `Ctrl`, and `⌥` and `⌘` with the arrows and Backspace, as in every Mac text
+/// field. Windows and Linux share theirs. Read from `ui.keyboard`, which
+/// follows the machine the app runs on unless told otherwise, as it has to be
+/// when a Mac reaches a Linux machine over SSH.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Keyboard {
+    Mac,
+    Pc,
+}
+
+impl Keyboard {
+    #[must_use]
+    pub fn of(app: &App) -> Self {
+        match app.config.ui.keyboard.trim().to_ascii_lowercase().as_str() {
+            "mac" | "macos" => Self::Mac,
+            "windows" | "linux" | "pc" => Self::Pc,
+            _ if cfg!(target_os = "macos") => Self::Mac,
+            _ => Self::Pc,
+        }
+    }
+}
+
 /// Handles one key event.
 pub fn handle(app: &mut App, key: KeyEvent) {
     // Terminals that report key releases would otherwise run every binding
@@ -27,27 +52,91 @@ pub fn handle(app: &mut App, key: KeyEvent) {
     // A message from the last action is stale as soon as the user acts again.
     app.status.text.clear();
 
+    // With the Kitty protocol a terminal tells these apart from the keys they
+    // were always sent as, and nothing here wants the difference: `Ctrl+[` is
+    // Escape to everyone who types it, and `Ctrl+M` is Enter.
+    let key = match key.code {
+        KeyCode::Char('[') if key.modifiers == KeyModifiers::CONTROL => {
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+        }
+        KeyCode::Char('m') if key.modifiers == KeyModifiers::CONTROL => {
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+        }
+        _ => key,
+    };
+
+    // `⌘` reaches the app only from a terminal that passes it on, which most
+    // keep for their own menus. When it does, it is an app shortcut, never a
+    // vim command or a letter to type.
+    let command = key.modifiers.contains(KeyModifiers::SUPER) && Keyboard::of(app) == Keyboard::Mac;
+    // Anywhere else the Super key belongs to the desktop, and one that gets
+    // through anyway shouldn't type the letter it came with.
+    if key.modifiers.contains(KeyModifiers::SUPER) && !command {
+        return;
+    }
+    if !command {
+        route(app, key, false);
+        return;
+    }
+
+    // A key moved in `[keys]` is matched first, and `cmd` there is `Ctrl`.
+    let as_ctrl = KeyEvent {
+        modifiers: (key.modifiers - KeyModifiers::SUPER) | KeyModifiers::CONTROL,
+        ..key
+    };
+    if app.modal.is_none()
+        && let Some(action) = app.keymap.action_for(&normalize_legacy_ctrl(as_ctrl))
+    {
+        dispatch(app, action);
+        return;
+    }
+    if app.modal.is_none() && vim_motion(app, key) {
+        return;
+    }
+    if app.modal.is_some() || !mac_command(app, key) {
+        route(app, command_as_control(key), true);
+    }
+    // Moving to the end of a line puts an insertion caret past its last
+    // character, which is somewhere Normal mode's cursor never rests.
+    let normal = app.config.editor.vim && app.vim.mode.is_normal_like();
+    if normal
+        && app.modal.is_none()
+        && app.focus == Focus::Note
+        && app.editing()
+        && let Some(editor) = app.editor_mut()
+    {
+        editor.clamp_normal();
+    }
+}
+
+/// Sends a key on to whatever it means where it was pressed: an overlay, a
+/// shortcut moved in `[keys]`, vim, the app-wide bindings, and then the pane
+/// with the focus. `command` marks a `⌘` shortcut, which vim never sees.
+fn route(app: &mut App, key: KeyEvent, command: bool) {
     // The vim toggle outranks even an overlay. Turning vim on opens its
     // reference the first time, and if that overlay then swallowed F4 the way
     // out would stop working at exactly the moment a new user goes looking for
     // it. Dispatching closes the overlay on the way past.
-    if key.code == KeyCode::F(4) {
+    if key.code == KeyCode::F(4) && !key.modifiers.contains(KeyModifiers::CONTROL) {
         dispatch(app, Action::ToggleVimMode);
         return;
     }
 
+    let typed = altgr_as_text(key);
     if app.modal.is_some() {
-        handle_modal(app, key);
+        handle_modal(app, typed);
         return;
     }
 
     // Keys moved in `[keys]` come before everything but an overlay. The user
     // chose them, and ahead of vim is the only place a chord like `Alt+E` can
-    // stand: Normal mode would otherwise read it as a plain `e`.
+    // stand: Normal mode would otherwise read it as a plain `e`. Matched as
+    // pressed, so a chord chosen with both `Ctrl` and `Alt` still works.
     if let Some(action) = app.keymap.action_for(&normalize_legacy_ctrl(key)) {
         dispatch(app, action);
         return;
     }
+    let key = typed;
 
     // Vim comes in two layers, and keeping them apart is what stops each from
     // leaking into the other's territory.
@@ -69,7 +158,14 @@ pub fn handle(app: &mut App, key: KeyEvent) {
     // in step with the handlers.
     // The graph has its own keys and its own way out; neither layer applies
     // there.
-    if app.config.editor.vim && app.view == View::Notes {
+    // `⌘C`, `⌘X` and `⌘V` do to a visual selection what vim's own `Ctrl` ones
+    // do, rather than what they do to an ordinary one.
+    let visual = matches!(
+        app.vim.mode,
+        crate::vim::VimMode::Visual | crate::vim::VimMode::VisualLine
+    );
+    let clipboard = matches!(key.code, KeyCode::Char('c' | 'C' | 'x' | 'X' | 'v' | 'V'));
+    if app.config.editor.vim && app.view == View::Notes && (!command || (visual && clipboard)) {
         let key = normalize_legacy_ctrl(key);
         if !crate::vim::is_typing(app) && crate::vim::navigation(app, key) {
             return;
@@ -89,6 +185,115 @@ pub fn handle(app: &mut App, key: KeyEvent) {
         Focus::Sidebar => handle_sidebar(app, key),
         Focus::Chat => handle_chat(app, key),
         Focus::Graph => handle_graph(app, key),
+    }
+}
+
+/// In vim's Normal and Visual modes, `⌘` with an arrow is the motion it
+/// stands for, `0`, `$`, `gg` or `G`, so a selection grows the way vim grows
+/// one and the cursor stays on a character. Returns whether it was one.
+fn vim_motion(app: &mut App, key: KeyEvent) -> bool {
+    let normal = app.config.editor.vim && app.vim.mode.is_normal_like();
+    if !normal || app.view != View::Notes || app.focus != Focus::Note || !app.editing() {
+        return false;
+    }
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        return false;
+    }
+    let motion = match key.code {
+        KeyCode::Left => "0",
+        KeyCode::Right => "$",
+        KeyCode::Up => "gg",
+        KeyCode::Down => "G",
+        _ => return false,
+    };
+    for ch in motion.chars() {
+        crate::vim::handle(app, KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+    }
+    true
+}
+
+/// The `⌘` shortcuts a Mac has that aren't `Ctrl` ones in disguise. Returns
+/// whether the key was one.
+fn mac_command(app: &mut App, key: KeyEvent) -> bool {
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let typing = typing_in_note(app);
+    let action = match key.code {
+        // `⌘⇧[` and `⌘⇧]` step through tabs, as in Safari and Terminal.
+        KeyCode::Char('{') => Action::PreviousTab,
+        KeyCode::Char('}') => Action::NextTab,
+        KeyCode::Char('[') if shift => Action::PreviousTab,
+        KeyCode::Char(']') if shift => Action::NextTab,
+        // `⌘[` and `⌘]` indent and outdent the line being edited, as in every
+        // Mac editor, and anywhere else go back and forward, as in Finder.
+        KeyCode::Char(bracket @ ('[' | ']')) if typing => {
+            if let Some(editor) = app.editor_mut() {
+                editor.indent(bracket == ']');
+                editor.commit();
+            }
+            return true;
+        }
+        KeyCode::Char('[') => Action::Back,
+        KeyCode::Char(']') => Action::Forward,
+        // `⌘⌥←` and `⌘⌥→` are Obsidian's own back and forward on a Mac.
+        KeyCode::Left if alt => Action::Back,
+        KeyCode::Right if alt => Action::Forward,
+        _ => return false,
+    };
+    dispatch(app, action);
+    true
+}
+
+/// Reads a `⌘` shortcut as the `Ctrl` one it corresponds to, so `⌘S`, `⌘Z`,
+/// `⌘⇧Z`, `⌘F` and the rest do what they do in every other Mac app.
+///
+/// With an arrow, `⌘` goes to the end of the line or the note, and `⌘⌫`
+/// deletes back to the start of the line, as in any Mac text field.
+fn command_as_control(key: KeyEvent) -> KeyEvent {
+    let mut modifiers = key.modifiers - KeyModifiers::SUPER;
+    let code = match key.code {
+        KeyCode::Left => KeyCode::Home,
+        KeyCode::Right => KeyCode::End,
+        KeyCode::Up => {
+            modifiers |= KeyModifiers::CONTROL;
+            KeyCode::Home
+        }
+        KeyCode::Down => {
+            modifiers |= KeyModifiers::CONTROL;
+            KeyCode::End
+        }
+        KeyCode::Backspace => {
+            modifiers |= KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+            KeyCode::Backspace
+        }
+        code => {
+            modifiers |= KeyModifiers::CONTROL;
+            code
+        }
+    };
+    KeyEvent {
+        code,
+        modifiers,
+        ..key
+    }
+}
+
+/// Reads a character typed with AltGr as that character.
+///
+/// Windows reports AltGr as `Ctrl+Alt`, so on a German keyboard `@` arrives as
+/// `Ctrl+Alt+@` and `]` as `Ctrl+Alt+]`. Taken as shortcuts, the first typed
+/// nothing and the second toggled the sidebar. No binding is a symbol with
+/// both modifiers, so one is typing; a letter or digit still makes a chord.
+fn altgr_as_text(key: KeyEvent) -> KeyEvent {
+    let altgr = KeyModifiers::CONTROL | KeyModifiers::ALT;
+    match key.code {
+        KeyCode::Char(ch) if key.modifiers.contains(altgr) && !ch.is_ascii_alphanumeric() => {
+            KeyEvent {
+                modifiers: key.modifiers - altgr,
+                ..key
+            }
+        }
+        _ => key,
     }
 }
 
@@ -130,9 +335,16 @@ fn handle_global(app: &mut App, key: KeyEvent) -> bool {
         (true, _, KeyCode::Char('d' | 'D')) => Some(Action::DailyNote),
         (true, _, KeyCode::Char('e' | 'E')) => Some(Action::ToggleMode),
         (true, _, KeyCode::Char('w' | 'W')) => Some(Action::CloseTab),
-        (true, _, KeyCode::Char('t' | 'T')) => Some(Action::OpenThemePicker),
+        // A new tab opens on whatever is chosen next, which here is the quick
+        // switcher, and `Ctrl+Shift+T` brings back the last one closed, as in
+        // a browser. Themes are in the palette.
+        (true, true, KeyCode::Char('t' | 'T')) => Some(Action::ReopenClosedTab),
+        (true, false, KeyCode::Char('t' | 'T')) => Some(Action::OpenSwitcher),
+        (true, false, KeyCode::Char('f' | 'F')) => Some(Action::OpenFind),
         (true, _, KeyCode::Char('l' | 'L')) => Some(Action::ToggleChat),
-        (true, _, KeyCode::Char('k' | 'K')) => Some(Action::CycleSidePanel),
+        // While typing, `Ctrl+K` inserts a link and `Ctrl+Shift+K` deletes the
+        // line, as they do in Obsidian; the editor handles both.
+        (true, _, KeyCode::Char('k' | 'K')) if !typing_in_note(app) => Some(Action::CycleSidePanel),
         (true, _, KeyCode::Char('q' | 'Q')) => Some(Action::Quit),
         (true, true, KeyCode::Char('g' | 'G')) => Some(Action::OpenLocalGraph),
         (true, false, KeyCode::Char('g' | 'G')) => Some(Action::OpenGraph),
@@ -141,7 +353,15 @@ fn handle_global(app: &mut App, key: KeyEvent) -> bool {
         (true, _, KeyCode::Char('r' | 'R')) if app.focus != Focus::Chat => Some(Action::Refresh),
         (true, true, KeyCode::Tab | KeyCode::BackTab) => Some(Action::PreviousTab),
         (true, false, KeyCode::Tab) => Some(Action::NextTab),
+        // Browsers' and editors' other tab keys, and the only ones that reach
+        // the app from a terminal that keeps `Ctrl+Tab` for itself.
+        (true, _, KeyCode::PageUp) => Some(Action::PreviousTab),
+        (true, _, KeyCode::PageDown) => Some(Action::NextTab),
+        (_, _, KeyCode::F(5)) => Some(Action::Refresh),
+        (_, _, KeyCode::F(1)) => Some(Action::OpenHelp),
         (_, _, KeyCode::F(2)) => Some(Action::RenameNote),
+        // Windows closes a document with `Ctrl+F4`, as browsers do everywhere.
+        (true, _, KeyCode::F(4)) => Some(Action::CloseTab),
         // Closing a tab needs a key that means the same thing in both modes.
         // `Ctrl+W` cannot: vim spends it on the window prefix, and every plain
         // `Ctrl`+letter is already taken by the app, by vim, or by the terminal
@@ -167,8 +387,35 @@ fn handle_global(app: &mut App, key: KeyEvent) -> bool {
         return true;
     }
 
-    if alt && key.code == KeyCode::Left {
-        dispatch(app, Action::Back);
+    // Back and forward, as in a browser: `Alt+←` and `Alt+→`, or Obsidian's
+    // `Ctrl+Alt+←` and `Ctrl+Alt+→`. On a Mac `⌥` with an arrow moves by word
+    // while typing, as it does in every Mac text field, so there it is left
+    // to the editor.
+    let mac = Keyboard::of(app) == Keyboard::Mac;
+    let mac_typing = mac && typing_in_note(app);
+    if alt && !mac_typing && matches!(key.code, KeyCode::Left | KeyCode::Right) {
+        dispatch(
+            app,
+            if key.code == KeyCode::Left {
+                Action::Back
+            } else {
+                Action::Forward
+            },
+        );
+        return true;
+    }
+    // Many Mac terminals send `⌥←` and `⌥→` as readline's `Esc b` and `Esc f`,
+    // which away from anything being typed are the same back and forward.
+    let typing_anywhere = typing_in_note(app) || app.focus == Focus::Chat;
+    if mac && alt && !ctrl && !typing_anywhere && matches!(key.code, KeyCode::Char('b' | 'f')) {
+        dispatch(
+            app,
+            if key.code == KeyCode::Char('b') {
+                Action::Back
+            } else {
+                Action::Forward
+            },
+        );
         return true;
     }
 
@@ -197,13 +444,17 @@ fn handle_global(app: &mut App, key: KeyEvent) -> bool {
     false
 }
 
-/// Whether keys in the note pane are going into its text.
+/// Whether keys are going into the text of a note: the note pane has the
+/// focus, its note is being edited, and vim, if it is on, is in Insert mode.
 ///
 /// Only then does `Tab` belong to the note. Vim's Normal and Visual modes edit
 /// without typing, and have `>` and `<` for indenting, so like the reading view
-/// they let `Tab` move on to the next pane.
+/// they let `Tab` move on to the next pane. A note left in edit mode while
+/// another pane has the focus isn't being typed in either.
 fn typing_in_note(app: &App) -> bool {
-    app.editing() && (!app.config.editor.vim || app.vim.mode == crate::vim::VimMode::Insert)
+    app.focus == Focus::Note
+        && app.editing()
+        && (!app.config.editor.vim || app.vim.mode == crate::vim::VimMode::Insert)
 }
 
 pub fn cycle_focus(app: &mut App, delta: isize) {
@@ -261,16 +512,32 @@ fn handle_modal(app: &mut App, key: KeyEvent) {
             KeyCode::PageDown => picker.move_selection(10),
             KeyCode::Backspace => {
                 picker.backspace();
-                if picker.kind == PickerKind::Search {
-                    actions::update_search(app);
-                }
+                actions::update_live(app);
             }
-            KeyCode::Char('u') if ctrl => picker.clear(),
-            KeyCode::Char(ch) => {
-                picker.insert(ch);
-                if picker.kind == PickerKind::Search {
-                    actions::update_search(app);
+            KeyCode::Char('u') if ctrl => {
+                picker.clear();
+                actions::update_live(app);
+            }
+            // `Ctrl+F` again widens a find to every note. It is also the way
+            // there from a terminal that sends `Ctrl+Shift+F` as `Ctrl+F`.
+            KeyCode::Char('f' | 'F') if ctrl && picker.kind == PickerKind::Find => {
+                let query = std::mem::take(&mut picker.query);
+                dispatch(app, Action::OpenSearch);
+                if let Some(Modal::Picker(search)) = app.modal.as_mut() {
+                    search.cursor = query.chars().count();
+                    search.query = query;
                 }
+                actions::update_live(app);
+            }
+            KeyCode::Char('v' | 'V') if ctrl => {
+                let text = crate::clipboard::paste();
+                paste(app, &text);
+            }
+            // Any other `Ctrl` key, `⌘` ones included, is a shortcut that
+            // doesn't apply here, not a letter to type.
+            KeyCode::Char(ch) if !ctrl => {
+                picker.insert(ch);
+                actions::update_live(app);
             }
             _ => {}
         },
@@ -286,7 +553,11 @@ fn handle_modal(app: &mut App, key: KeyEvent) {
             KeyCode::Right => {
                 prompt.cursor = (prompt.cursor + 1).min(prompt.value.chars().count());
             }
-            KeyCode::Char(ch) => prompt.insert(ch),
+            KeyCode::Char('v' | 'V') if ctrl => {
+                let text = crate::clipboard::paste();
+                paste(app, &text);
+            }
+            KeyCode::Char(ch) if !ctrl => prompt.insert(ch),
             _ => {}
         },
 
@@ -452,9 +723,15 @@ fn handle_editing(app: &mut App, key: KeyEvent) {
                 }
                 return;
             }
+            // Redo is `Ctrl+Y` on Windows and `Ctrl+Shift+Z` on a Mac and on
+            // Linux; both work everywhere.
             KeyCode::Char('z' | 'Z') => {
                 if let Some(editor) = app.editor_mut() {
-                    editor.undo();
+                    if shift {
+                        editor.redo();
+                    } else {
+                        editor.undo();
+                    }
                 }
                 return;
             }
@@ -508,6 +785,12 @@ fn handle_editing(app: &mut App, key: KeyEvent) {
                 }
                 return;
             }
+            KeyCode::Char('k' | 'K') => {
+                if let Some(editor) = app.editor_mut() {
+                    editor.insert_link();
+                }
+                return;
+            }
             _ => {}
         }
     }
@@ -524,15 +807,44 @@ fn handle_editing(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let mac = Keyboard::of(app) == Keyboard::Mac;
+    // The keys below that move or delete by word or by line are typing keys.
+    // Vim's Normal and Visual modes have their own, and leave these alone.
+    let typing = typing_in_note(app);
+    // `⌘⌫` deletes to where `⌘←` goes, which on a wrapped line is the start
+    // of the row on screen.
+    if typing && ctrl && shift && key.code == KeyCode::Backspace {
+        delete_to_row_start(app);
+        return;
+    }
     let Some(editor) = app.editor_mut() else {
         return;
     };
 
     match key.code {
+        // Readline's word keys, which are also what a Mac terminal sends for
+        // `⌥←`, `⌥→` and `⌥⌦`, over SSH as much as anywhere.
+        KeyCode::Char('b' | 'B') if typing && alt && !ctrl => editor.move_word_left(shift),
+        KeyCode::Char('f' | 'F') if typing && alt && !ctrl => editor.move_word_right(shift),
+        KeyCode::Char('d') if typing && alt && !ctrl => editor.delete_word_forward(),
+        // `Ctrl+Backspace`, as a terminal without the Kitty protocol sends it.
+        // Nothing sends it for a plain Backspace any more.
+        KeyCode::Char('h') if typing && ctrl => editor.delete_word_back(),
+        // Readline's, and vim's while typing.
+        KeyCode::Char('u') if typing && ctrl => editor.delete_to_line_start(),
+        // A Mac moves by word with `⌥` and an arrow, where Windows and Linux
+        // go back and forward through the notes visited.
+        KeyCode::Left if typing && mac && alt => editor.move_word_left(shift),
+        KeyCode::Right if typing && mac && alt => editor.move_word_right(shift),
         KeyCode::Char(ch) if !ctrl => editor.insert_char(ch),
         KeyCode::Enter => editor.newline(),
         KeyCode::Tab => editor.tab(true),
         KeyCode::BackTab => editor.tab(false),
+        // Deleting by word is `Ctrl` with Backspace or Delete on Windows and
+        // Linux, and `⌥` with them on a Mac.
+        KeyCode::Backspace if typing && (ctrl || (mac && alt)) => editor.delete_word_back(),
+        KeyCode::Delete if typing && (ctrl || (mac && alt)) => editor.delete_word_forward(),
         KeyCode::Backspace => editor.backspace(),
         KeyCode::Delete => editor.delete_forward(),
         KeyCode::Left if ctrl => editor.move_word_left(shift),
@@ -562,8 +874,9 @@ pub fn paste(app: &mut App, text: &str) {
         || (app.modal.is_none() && app.focus == Focus::Chat);
     if typing_field {
         // A search, a name or a chat message is one line, so the paste is
-        // typed into it as one.
-        for ch in text.chars() {
+        // typed into it as one. A line copied whole ends in a line break,
+        // which is not part of what was meant.
+        for ch in text.trim_end_matches('\n').chars() {
             let ch = if ch.is_whitespace() { ' ' } else { ch };
             handle(app, KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
         }
@@ -589,6 +902,16 @@ fn paste_into_editor(app: &mut App, text: &str) {
     // Normal mode keeps the cursor on a character, never past the end.
     if vim_normal {
         editor.clamp_normal();
+    }
+}
+
+/// Deletes back to the start of the row on screen, or the selection.
+fn delete_to_row_start(app: &mut App) {
+    let (width, _) = crate::ui::note::edit_viewport(app);
+    let wrap = app.config.editor.wrap;
+    if let Some(editor) = app.editor_mut() {
+        let layout = editor.layout(width, wrap);
+        editor.delete_to_row_start(&layout);
     }
 }
 
@@ -1982,5 +2305,739 @@ mod keymap_tests {
             "# mine\ntheme = \"nord\"\n"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod familiar_tests {
+    //! The shortcuts people already know from other apps, on each platform.
+
+    use super::*;
+    use crate::config::Config;
+    use crate::modal::PickerKind;
+    use emeraldian_core::test_support::TempVault;
+
+    const CMD: KeyModifiers = KeyModifiers::SUPER;
+    const NONE: KeyModifiers = KeyModifiers::NONE;
+
+    fn press(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
+        handle(app, KeyEvent::new(code, modifiers));
+    }
+
+    fn type_str(app: &mut App, text: &str) {
+        for ch in text.chars() {
+            press(app, KeyCode::Char(ch), NONE);
+        }
+    }
+
+    /// A note open for editing with vim off, on the keyboard named, and drawn
+    /// once so the editor knows its rows.
+    fn editing(keyboard: &str, text: &str) -> (TempVault, App) {
+        let vault = TempVault::new("familiar");
+        vault.write("N.md", text);
+        vault.write("Other.md", "# Other\n");
+        let mut app = App::new(vault.vault(), Config::default()).expect("app");
+        app.config.ui.keyboard = keyboard.into();
+        let id = app.index.id_of_rel("N.md").expect("indexed");
+        app.open_note(id);
+        app.active_mut().expect("tab").mode = Mode::Editing;
+        app.focus = Focus::Note;
+        let _ = app.editor_mut();
+        draw(&mut app);
+        (vault, app)
+    }
+
+    fn draw(app: &mut App) {
+        let backend = ratatui::backend::TestBackend::new(100, 30);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| crate::ui::draw(frame, app))
+            .expect("draw");
+    }
+
+    fn text(app: &mut App) -> String {
+        app.editor_mut().expect("editor").text()
+    }
+
+    fn cursor(app: &mut App) -> (usize, usize) {
+        let at = app.editor_mut().expect("editor").cursor();
+        (at.line, at.col)
+    }
+
+    fn goto(app: &mut App, line: usize, col: usize) {
+        app.editor_mut().expect("editor").goto(line, col);
+    }
+
+    fn picker(app: &App) -> &crate::modal::Picker {
+        match &app.modal {
+            Some(Modal::Picker(picker)) => picker,
+            other => panic!("expected a picker, have {other:?}"),
+        }
+    }
+
+    fn other(app: &App) -> emeraldian_core::index::NoteId {
+        app.index.id_of_rel("Other.md").expect("indexed")
+    }
+
+    #[test]
+    fn the_keyboard_follows_the_setting_and_otherwise_the_machine() {
+        let (_v, mut app) = editing("auto", "x\n");
+        let machine = if cfg!(target_os = "macos") {
+            Keyboard::Mac
+        } else {
+            Keyboard::Pc
+        };
+        assert_eq!(Keyboard::of(&app), machine);
+        for (setting, expected) in [
+            ("mac", Keyboard::Mac),
+            ("macOS", Keyboard::Mac),
+            (" Windows ", Keyboard::Pc),
+            ("linux", Keyboard::Pc),
+            ("a typo", machine),
+        ] {
+            app.config.ui.keyboard = setting.into();
+            assert_eq!(Keyboard::of(&app), expected, "{setting:?}");
+        }
+    }
+
+    #[test]
+    fn command_does_what_ctrl_does_on_a_mac() {
+        let (_v, mut app) = editing("mac", "hello\n");
+        goto(&mut app, 0, 5);
+        type_str(&mut app, "!");
+
+        press(&mut app, KeyCode::Char('z'), CMD);
+        assert_eq!(text(&mut app), "hello\n", "⌘Z undoes");
+        press(&mut app, KeyCode::Char('z'), CMD | KeyModifiers::SHIFT);
+        assert_eq!(text(&mut app), "hello!\n", "⌘⇧Z redoes");
+
+        press(&mut app, KeyCode::Char('p'), CMD);
+        assert_eq!(picker(&app).kind, PickerKind::Commands, "⌘P is the palette");
+    }
+
+    #[test]
+    fn command_is_never_a_vim_command() {
+        let (_v, mut app) = editing("mac", "hello\n");
+        app.config.editor.vim = true;
+        app.vim.mode = crate::vim::VimMode::Normal;
+
+        // `Ctrl+F` is a page down in vim's Normal mode; `⌘F` is still find.
+        press(&mut app, KeyCode::Char('f'), CMD);
+        assert_eq!(picker(&app).kind, PickerKind::Find);
+    }
+
+    #[test]
+    fn command_right_in_normal_mode_rests_on_the_last_character() {
+        let (_v, mut app) = editing("mac", "hello\n");
+        app.config.editor.vim = true;
+        app.vim.mode = crate::vim::VimMode::Normal;
+        goto(&mut app, 0, 0);
+        press(&mut app, KeyCode::Right, CMD);
+        assert_eq!(cursor(&mut app), (0, 4), "on the o, as $ would leave it");
+    }
+
+    #[test]
+    fn the_super_key_types_nothing_off_a_mac() {
+        let (_v, mut app) = editing("linux", "hello\n");
+        goto(&mut app, 0, 5);
+        press(&mut app, KeyCode::Char('p'), CMD);
+        assert!(app.modal.is_none(), "not the palette");
+        assert_eq!(text(&mut app), "hello\n", "and not a p either");
+    }
+
+    #[test]
+    fn command_arrows_go_to_the_ends_of_the_line_and_the_note() {
+        let (_v, mut app) = editing("mac", "one two\nthree four");
+        goto(&mut app, 0, 3);
+
+        press(&mut app, KeyCode::Right, CMD);
+        assert_eq!(cursor(&mut app), (0, 7));
+        press(&mut app, KeyCode::Left, CMD);
+        assert_eq!(cursor(&mut app), (0, 0));
+        press(&mut app, KeyCode::Down, CMD);
+        assert_eq!(cursor(&mut app), (1, 10));
+        press(&mut app, KeyCode::Up, CMD);
+        assert_eq!(cursor(&mut app), (0, 0));
+
+        // With Shift, each one selects as it goes.
+        press(&mut app, KeyCode::Right, CMD | KeyModifiers::SHIFT);
+        let selected = app.editor_mut().expect("editor").selected_text();
+        assert_eq!(selected.as_deref(), Some("one two"));
+    }
+
+    #[test]
+    fn option_moves_by_word_while_typing_on_a_mac() {
+        let (_v, mut app) = editing("mac", "one two three");
+        let by_word = {
+            let editor = app.editor_mut().expect("editor");
+            editor.goto(0, 0);
+            editor.move_word_right(false);
+            editor.move_word_right(false);
+            editor.cursor().col
+        };
+        goto(&mut app, 0, 0);
+
+        // `⌥→` as an arrow, and as the `Esc f` Terminal sends for it.
+        press(&mut app, KeyCode::Right, KeyModifiers::ALT);
+        press(&mut app, KeyCode::Char('f'), KeyModifiers::ALT);
+        assert_eq!(cursor(&mut app), (0, by_word));
+        assert_eq!(text(&mut app), "one two three\n", "nothing typed");
+
+        press(&mut app, KeyCode::Char('b'), KeyModifiers::ALT);
+        press(&mut app, KeyCode::Left, KeyModifiers::ALT);
+        assert_eq!(cursor(&mut app), (0, 0));
+    }
+
+    #[test]
+    fn alt_arrows_go_back_and_forward_while_typing_on_windows_and_linux() {
+        let (_v, mut app) = editing("windows", "one two three");
+        let note = app.active_note();
+        let other = other(&app);
+        app.open_note(other);
+
+        press(&mut app, KeyCode::Left, KeyModifiers::ALT);
+        assert_eq!(app.active_note(), note, "Alt+← goes back");
+        assert!(app.editing(), "to the note being edited");
+        press(&mut app, KeyCode::Right, KeyModifiers::ALT);
+        assert_eq!(app.active_note(), Some(other), "and Alt+→ forward again");
+    }
+
+    #[test]
+    fn option_arrows_still_go_back_when_not_typing_on_a_mac() {
+        let (_v, mut app) = editing("mac", "text\n");
+        let note = app.active_note();
+        app.open_note(other(&app));
+        assert!(!app.editing(), "a note opens to be read");
+
+        press(&mut app, KeyCode::Left, KeyModifiers::ALT);
+        assert_eq!(app.active_note(), note);
+    }
+
+    #[test]
+    fn deleting_a_word_is_ctrl_on_windows_and_linux_and_option_on_a_mac() {
+        for (keyboard, modifier) in [("linux", KeyModifiers::CONTROL), ("mac", KeyModifiers::ALT)] {
+            let (_v, mut app) = editing(keyboard, "one two three");
+            goto(&mut app, 0, 7);
+            press(&mut app, KeyCode::Backspace, modifier);
+            assert_eq!(text(&mut app), "one  three\n", "{keyboard}: a word back");
+            press(&mut app, KeyCode::Delete, modifier);
+            assert_eq!(
+                text(&mut app),
+                "one three\n",
+                "{keyboard}: forwards, to the next word"
+            );
+        }
+
+        // Elsewhere `Alt` isn't a word key, so it deletes a character.
+        let (_v, mut app) = editing("windows", "one two");
+        goto(&mut app, 0, 7);
+        press(&mut app, KeyCode::Backspace, KeyModifiers::ALT);
+        assert_eq!(text(&mut app), "one tw\n");
+    }
+
+    #[test]
+    fn ctrl_backspace_works_from_a_terminal_that_sends_ctrl_h() {
+        let (_v, mut app) = editing("linux", "one two");
+        goto(&mut app, 0, 7);
+        press(&mut app, KeyCode::Char('h'), KeyModifiers::CONTROL);
+        assert_eq!(text(&mut app), "one \n");
+    }
+
+    #[test]
+    fn command_backspace_and_ctrl_u_delete_to_the_start_of_the_line() {
+        for (code, modifiers) in [
+            (KeyCode::Backspace, CMD),
+            (KeyCode::Char('u'), KeyModifiers::CONTROL),
+        ] {
+            let (_v, mut app) = editing("mac", "keep\none two\n");
+            goto(&mut app, 1, 4);
+            press(&mut app, code, modifiers);
+            assert_eq!(text(&mut app), "keep\ntwo\n", "{code:?} {modifiers:?}");
+        }
+    }
+
+    #[test]
+    fn redo_is_ctrl_y_or_ctrl_shift_z() {
+        let (_v, mut app) = editing("linux", "a\n");
+        goto(&mut app, 0, 1);
+        type_str(&mut app, "b");
+
+        press(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        assert_eq!(text(&mut app), "a\n");
+        press(
+            &mut app,
+            KeyCode::Char('z'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        assert_eq!(text(&mut app), "ab\n");
+        press(&mut app, KeyCode::Char('z'), KeyModifiers::CONTROL);
+        press(&mut app, KeyCode::Char('y'), KeyModifiers::CONTROL);
+        assert_eq!(text(&mut app), "ab\n");
+    }
+
+    #[test]
+    fn ctrl_k_makes_a_link_while_typing_and_cycles_the_sidebar_otherwise() {
+        let (_v, mut app) = editing("linux", "see docs");
+        {
+            let editor = app.editor_mut().expect("editor");
+            editor.goto(0, 4);
+            editor.begin_selection();
+            editor.goto_extend(0, 8);
+        }
+        press(&mut app, KeyCode::Char('k'), KeyModifiers::CONTROL);
+        assert_eq!(text(&mut app), "see [docs]()\n");
+        assert_eq!(cursor(&mut app), (0, 11), "waiting for the address");
+
+        press(&mut app, KeyCode::Esc, NONE);
+        assert!(!app.editing());
+        let panel = app.side_panel;
+        press(&mut app, KeyCode::Char('k'), KeyModifiers::CONTROL);
+        assert_ne!(app.side_panel, panel, "reading, it moves the sidebar on");
+    }
+
+    #[test]
+    fn ctrl_f_finds_in_the_note_and_enter_selects_the_match() {
+        let (_v, mut app) = editing("linux", "alpha\nNeedle here\nbeta needle\n");
+        press(&mut app, KeyCode::Char('f'), KeyModifiers::CONTROL);
+        assert_eq!(picker(&app).kind, PickerKind::Find);
+
+        // Lowercase ignores case.
+        type_str(&mut app, "needle");
+        assert_eq!(picker(&app).len(), 2);
+        assert_eq!(
+            picker(&app).selected_entry().expect("entry").detail,
+            "line 2"
+        );
+
+        press(&mut app, KeyCode::Enter, NONE);
+        assert!(app.modal.is_none());
+        let selected = app.editor_mut().expect("editor").selected_text();
+        assert_eq!(selected.as_deref(), Some("Needle"));
+
+        // A capital makes it exact.
+        press(&mut app, KeyCode::Char('f'), KeyModifiers::CONTROL);
+        type_str(&mut app, "Needle");
+        assert_eq!(picker(&app).len(), 1);
+    }
+
+    #[test]
+    fn ctrl_f_again_searches_every_note_for_the_same_text() {
+        let (_v, mut app) = editing("linux", "needle\n");
+        press(&mut app, KeyCode::Char('f'), KeyModifiers::CONTROL);
+        type_str(&mut app, "needle");
+        press(&mut app, KeyCode::Char('f'), KeyModifiers::CONTROL);
+
+        let search = picker(&app);
+        assert_eq!(search.kind, PickerKind::Search);
+        assert_eq!(search.query, "needle", "carried over, not typed as an f");
+        assert_eq!(search.len(), 1, "and already searched for");
+    }
+
+    #[test]
+    fn a_search_box_pastes_with_ctrl_v_and_types_no_other_ctrl_key() {
+        let (_v, mut app) = editing("linux", "x\n");
+        crate::clipboard::copy("two\nlines");
+        press(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        press(&mut app, KeyCode::Char('v'), KeyModifiers::CONTROL);
+        press(&mut app, KeyCode::Char('a'), CMD);
+        press(&mut app, KeyCode::Char('j'), KeyModifiers::CONTROL);
+        assert_eq!(picker(&app).query, "two lines");
+    }
+
+    #[test]
+    fn ctrl_f_while_reading_scrolls_to_the_match() {
+        // One paragraph of many rows, as a note written without line breaks
+        // is: the block starts at the top, and the match is far below it.
+        let words: String = (0..400).map(|i| format!("word{i} ")).collect();
+        let (_v, mut app) = editing("linux", &format!("{words}needle at the end\n"));
+        press(&mut app, KeyCode::Esc, NONE);
+        draw(&mut app);
+
+        press(&mut app, KeyCode::Char('f'), KeyModifiers::CONTROL);
+        type_str(&mut app, "needle");
+        press(&mut app, KeyCode::Enter, NONE);
+        assert_eq!(app.focus, Focus::Note);
+        draw(&mut app);
+
+        let screen = screen(&mut app);
+        assert!(screen.contains("needle at the end"), "{screen}");
+        assert!(!screen.contains("word0 "), "scrolled down to it:\n{screen}");
+    }
+
+    fn screen(app: &mut App) -> String {
+        let backend = ratatui::backend::TestBackend::new(100, 30);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| crate::ui::draw(frame, app))
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn ctrl_t_opens_the_switcher_and_ctrl_shift_t_reopens_a_closed_tab() {
+        let (_v, mut app) = editing("linux", "x\n");
+        press(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+        assert_eq!(picker(&app).kind, PickerKind::Notes);
+        press(&mut app, KeyCode::Esc, NONE);
+
+        let other = other(&app);
+        app.open_note(other);
+        press(&mut app, KeyCode::F(3), NONE);
+        assert_eq!(app.tabs.len(), 1);
+
+        let reopen = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+        press(&mut app, KeyCode::Char('t'), reopen);
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(app.active_note(), Some(other));
+
+        press(&mut app, KeyCode::Char('t'), reopen);
+        assert_eq!(app.tabs.len(), 2, "nothing else was closed");
+    }
+
+    #[test]
+    fn the_tab_and_function_keys_other_apps_use() {
+        let (_v, mut app) = editing("windows", "x\n");
+        let first = app.active_note();
+        app.open_note(other(&app));
+
+        press(&mut app, KeyCode::PageUp, KeyModifiers::CONTROL);
+        assert_eq!(app.active_note(), first, "Ctrl+PgUp");
+        press(&mut app, KeyCode::PageDown, KeyModifiers::CONTROL);
+        assert_eq!(app.active_note(), Some(other(&app)), "Ctrl+PgDn");
+
+        press(&mut app, KeyCode::F(5), NONE);
+        assert_eq!(app.status.text, "reloaded from disk");
+
+        let vim = app.config.editor.vim;
+        press(&mut app, KeyCode::F(4), KeyModifiers::CONTROL);
+        assert_eq!(app.tabs.len(), 1, "Ctrl+F4 closes the tab");
+        assert_eq!(app.config.editor.vim, vim, "rather than switching vim");
+
+        press(&mut app, KeyCode::F(1), NONE);
+        assert!(matches!(app.modal, Some(Modal::Help(_))));
+    }
+
+    // ---- found in review ----------------------------------------------------
+
+    /// `Ctrl+[`, as a terminal speaking the Kitty protocol sends it.
+    fn ctrl_bracket() -> KeyEvent {
+        KeyEvent::new(KeyCode::Char('['), KeyModifiers::CONTROL)
+    }
+
+    fn vim(app: &mut App) {
+        app.config.editor.vim = true;
+        app.vim.mode = crate::vim::VimMode::Normal;
+    }
+
+    #[test]
+    fn ctrl_bracket_is_escape_everywhere() {
+        let (_v, mut app) = editing("linux", "hello\n");
+        press(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        handle(&mut app, ctrl_bracket());
+        assert!(app.modal.is_none(), "it closes the palette");
+        handle(&mut app, ctrl_bracket());
+        assert!(!app.editing(), "and leaves the editor");
+
+        let (_v, mut app) = editing("linux", "hello\n");
+        vim(&mut app);
+        goto(&mut app, 0, 0);
+        type_str(&mut app, "r");
+        handle(&mut app, ctrl_bracket());
+        assert_eq!(
+            text(&mut app),
+            "hello\n",
+            "a pending r is cancelled, not given a ["
+        );
+        type_str(&mut app, "vl");
+        handle(&mut app, ctrl_bracket());
+        assert_eq!(app.vim.mode, crate::vim::VimMode::Normal, "Visual ends");
+    }
+
+    #[test]
+    fn typing_keys_stay_out_of_vims_visual_mode() {
+        let (_v, mut app) = editing("linux", "hello world\n");
+        vim(&mut app);
+        goto(&mut app, 0, 0);
+        type_str(&mut app, "vlll");
+        press(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert_eq!(text(&mut app), "hello world\n");
+
+        // And `Ctrl+Backspace` in Normal mode moves, as Backspace does.
+        press(&mut app, KeyCode::Esc, NONE);
+        vim(&mut app);
+        goto(&mut app, 0, 5);
+        press(&mut app, KeyCode::Backspace, KeyModifiers::CONTROL);
+        assert_eq!(text(&mut app), "hello world\n");
+        assert_eq!(cursor(&mut app), (0, 4));
+    }
+
+    #[test]
+    fn a_note_left_in_edit_mode_is_not_typed_in_from_another_pane() {
+        let (_v, mut app) = editing("linux", "x\n");
+        app.focus = Focus::Explorer;
+        let panel = app.side_panel;
+        press(&mut app, KeyCode::Char('k'), KeyModifiers::CONTROL);
+        assert_ne!(app.side_panel, panel, "Ctrl+K cycles the sidebar");
+
+        let (_v, mut app) = editing("mac", "x\n");
+        let first = app.active_note();
+        app.open_note(other(&app));
+        app.active_mut().expect("tab").mode = Mode::Editing;
+        app.focus = Focus::Explorer;
+        press(&mut app, KeyCode::Left, KeyModifiers::ALT);
+        assert_eq!(app.active_note(), first, "and ⌥← goes back");
+    }
+
+    #[test]
+    fn forward_never_opens_a_note_that_was_not_there() {
+        let (vault, mut app) = editing("linux", "x\n");
+        app.open_note(other(&app));
+        press(&mut app, KeyCode::Left, KeyModifiers::ALT);
+        // A note sorted in between shifts every id after it.
+        vault.write("M.md", "# M\n");
+        press(&mut app, KeyCode::F(5), NONE);
+        let before = app.active_note();
+        press(&mut app, KeyCode::Right, KeyModifiers::ALT);
+        assert_eq!(app.active_note(), before);
+    }
+
+    #[test]
+    fn a_closed_tab_is_not_reopened_in_another_vault() {
+        let (_v, mut app) = editing("linux", "x\n");
+        press(&mut app, KeyCode::F(3), NONE);
+        let other = TempVault::new("familiar-other");
+        other.write("N.md", "# Not the one that was closed\n");
+        app.open_vault(other.path().to_path_buf());
+        press(
+            &mut app,
+            KeyCode::Char('t'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        assert!(app.tabs.is_empty());
+    }
+
+    #[test]
+    fn deleting_to_the_start_of_the_line_never_deletes_forwards() {
+        let (_v, mut app) = editing("linux", "    - item\n");
+        goto(&mut app, 0, 2);
+        press(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert_eq!(text(&mut app), "  - item\n");
+        goto(&mut app, 0, 0);
+        press(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert_eq!(text(&mut app), "  - item\n", "nothing behind the cursor");
+    }
+
+    #[test]
+    fn command_backspace_stops_where_command_left_does() {
+        let words: String = (0..40).map(|i| format!("word{i} ")).collect();
+        let (_v, mut app) = editing("mac", &format!("{words}\n"));
+        goto(&mut app, 0, 150);
+        press(&mut app, KeyCode::Left, CMD);
+        let (_, row_start) = cursor(&mut app);
+        assert!(
+            row_start > 0,
+            "the line wraps, so the row starts partway in"
+        );
+
+        goto(&mut app, 0, 150);
+        press(&mut app, KeyCode::Backspace, CMD);
+        let expected: String = words
+            .chars()
+            .take(row_start)
+            .chain(words.chars().skip(150))
+            .collect();
+        assert_eq!(text(&mut app), format!("{expected}\n"));
+    }
+
+    #[test]
+    fn find_while_reading_scrolls_to_the_match_picked_not_the_first() {
+        // One hard-wrapped paragraph, with the same word near each end.
+        let mut lines = vec!["the needle at the top".to_string()];
+        lines.extend((0..300).map(|i| format!("filler line {i}")));
+        lines.push("the needle at the bottom".to_string());
+        let (_v, mut app) = editing("linux", &format!("{}\n", lines.join("\n")));
+        press(&mut app, KeyCode::Esc, NONE);
+        draw(&mut app);
+
+        press(&mut app, KeyCode::Char('f'), KeyModifiers::CONTROL);
+        type_str(&mut app, "needle");
+        press(&mut app, KeyCode::Down, NONE);
+        assert_eq!(
+            picker(&app).selected_entry().expect("entry").detail,
+            "line 302"
+        );
+        press(&mut app, KeyCode::Enter, NONE);
+
+        let screen = screen(&mut app);
+        assert!(screen.contains("needle at the bottom"), "{screen}");
+        assert!(!screen.contains("needle at the top"), "{screen}");
+    }
+
+    #[test]
+    fn find_in_vims_normal_mode_lands_like_a_search() {
+        let (_v, mut app) = editing("linux", "foo bar\nbaz bar\n");
+        vim(&mut app);
+        dispatch(&mut app, Action::OpenFind);
+        type_str(&mut app, "bar");
+        press(&mut app, KeyCode::Enter, NONE);
+        assert_eq!(cursor(&mut app), (0, 4), "on the match");
+        assert!(app.editor_mut().expect("editor").selection().is_none());
+        assert_eq!(app.vim.mode, crate::vim::VimMode::Normal);
+        type_str(&mut app, "n");
+        assert_eq!(cursor(&mut app), (1, 4), "n goes on to the next one");
+    }
+
+    #[test]
+    fn command_keys_in_visual_mode_do_what_vims_ctrl_keys_do() {
+        let (_v, mut app) = editing("mac", "abcdef\n");
+        vim(&mut app);
+        goto(&mut app, 0, 0);
+        type_str(&mut app, "vll");
+        press(&mut app, KeyCode::Char('x'), CMD);
+        assert_eq!(text(&mut app), "def\n", "the selection, cursor and all");
+        assert_eq!(app.vim.mode, crate::vim::VimMode::Normal);
+
+        goto(&mut app, 0, 0);
+        type_str(&mut app, "v");
+        press(&mut app, KeyCode::Right, CMD);
+        assert_eq!(app.vim.mode, crate::vim::VimMode::Visual);
+        assert_eq!(cursor(&mut app), (0, 2), "out to the end, as $ goes");
+        assert!(app.editor_mut().expect("editor").selection().is_some());
+    }
+
+    #[test]
+    fn a_copied_line_pasted_into_find_finds_it() {
+        let (_v, mut app) = editing("linux", "needle here\n");
+        press(&mut app, KeyCode::Char('f'), KeyModifiers::CONTROL);
+        paste(&mut app, "needle here\n");
+        assert_eq!(picker(&app).query, "needle here");
+        assert_eq!(picker(&app).len(), 1);
+    }
+
+    #[test]
+    fn a_cmd_key_in_keys_is_matched_before_the_mac_ones() {
+        let (_v, mut app) = editing("mac", "x\n");
+        let keys = [("back".to_string(), "cmd+left".to_string())]
+            .into_iter()
+            .collect();
+        app.keymap = crate::keymap::Keymap::new(&keys);
+        let first = app.active_note();
+        app.open_note(other(&app));
+        press(&mut app, KeyCode::Left, CMD);
+        assert_eq!(app.active_note(), first);
+    }
+
+    #[test]
+    fn option_b_and_f_go_back_and_forward_away_from_the_text_on_a_mac() {
+        let (_v, mut app) = editing("mac", "x\n");
+        let first = app.active_note();
+        app.open_note(other(&app));
+        app.focus = Focus::Explorer;
+        press(&mut app, KeyCode::Char('b'), KeyModifiers::ALT);
+        assert_eq!(app.active_note(), first, "Esc b is ⌥←");
+        // Going back put the focus on the note, which is being edited.
+        app.focus = Focus::Explorer;
+        press(&mut app, KeyCode::Char('f'), KeyModifiers::ALT);
+        assert_eq!(app.active_note(), Some(other(&app)), "and Esc f is ⌥→");
+    }
+
+    #[test]
+    fn find_results_keep_their_line_number_on_a_small_screen() {
+        let words: String = (0..100).map(|i| format!("word{i} ")).collect();
+        let (_v, mut app) = editing("linux", &format!("{words}needle {words}\n"));
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .expect("draw");
+        press(&mut app, KeyCode::Char('f'), KeyModifiers::CONTROL);
+        type_str(&mut app, "needle");
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let rows: Vec<String> = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect()
+            })
+            .collect();
+        let row = rows
+            .iter()
+            .find(|row| row.contains("needle") && row.contains('…'));
+        let row = row.unwrap_or_else(|| panic!("no result row:\n{}", rows.join("\n")));
+        assert!(row.contains("line 1"), "{row}");
+    }
+
+    #[test]
+    fn command_brackets_indent_while_typing_and_go_back_elsewhere() {
+        let (_v, mut app) = editing("mac", "- item\n");
+        goto(&mut app, 0, 2);
+        press(&mut app, KeyCode::Char(']'), CMD);
+        assert!(text(&mut app).starts_with(|ch: char| ch.is_whitespace()));
+        press(&mut app, KeyCode::Char('['), CMD);
+        assert_eq!(text(&mut app), "- item\n");
+
+        let note = app.active_note();
+        app.open_note(other(&app));
+        press(&mut app, KeyCode::Char('['), CMD);
+        assert_eq!(app.active_note(), note, "⌘[ is back while reading");
+
+        press(&mut app, KeyCode::Char(']'), CMD | KeyModifiers::SHIFT);
+        assert_eq!(app.active_note(), Some(other(&app)), "⌘⇧] is the next tab");
+    }
+}
+
+#[cfg(test)]
+mod altgr_tests {
+    use super::*;
+    use crate::config::Config;
+    use emeraldian_core::test_support::TempVault;
+
+    const ALTGR: KeyModifiers = KeyModifiers::CONTROL.union(KeyModifiers::ALT);
+
+    #[test]
+    fn altgr_types_its_character_as_windows_reports_it() {
+        let vault = TempVault::new("altgr");
+        vault.write("N.md", "mail\n");
+        let mut app = App::new(vault.vault(), Config::default()).expect("app");
+        let id = app.index.id_of_rel("N.md").expect("indexed");
+        app.open_note(id);
+        app.active_mut().expect("tab").mode = Mode::Editing;
+        app.focus = Focus::Note;
+        app.editor_mut().expect("editor").goto(0, 4);
+        let sidebar = app.config.ui.show_right_sidebar;
+
+        for ch in ['@', ']', '€'] {
+            handle(&mut app, KeyEvent::new(KeyCode::Char(ch), ALTGR));
+        }
+        assert_eq!(app.editor_mut().expect("editor").text(), "mail@]€\n");
+        assert_eq!(
+            app.config.ui.show_right_sidebar, sidebar,
+            "] is typed, not Ctrl+]"
+        );
+
+        // In a search box too.
+        dispatch(&mut app, Action::OpenSwitcher);
+        handle(&mut app, KeyEvent::new(KeyCode::Char('@'), ALTGR));
+        match &app.modal {
+            Some(Modal::Picker(picker)) => assert_eq!(picker.query, "@"),
+            other => panic!("expected the switcher, have {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ctrl_alt_with_a_letter_is_still_a_chord() {
+        let key = KeyEvent::new(KeyCode::Char('o'), ALTGR);
+        assert_eq!(altgr_as_text(key), key);
     }
 }

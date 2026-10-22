@@ -124,16 +124,17 @@ carries on; nothing else depends on it.
 
 ## Keys
 
-Obsidian's shortcuts where it has them, the conventions other TUIs use where it
-doesn't. `?` shows the full list in the app.
+Obsidian's shortcuts where it has them, your system's own for moving through
+text, and the conventions other TUIs use for the rest. `?` or `F1` shows the
+full list in the app.
 
 | | |
 |---|---|
-| `?` | Keyboard shortcuts |
+| `?` / `F1` | Keyboard shortcuts |
 | `q` | Quit (asks first; `Ctrl+Q` works while editing too) |
-| `Ctrl+O` | Quick switcher |
+| `Ctrl+O` / `Ctrl+T` | Quick switcher |
 | `Ctrl+P` | Command palette |
-| `Ctrl+Shift+F` | Search all notes |
+| `Ctrl+F` / `Ctrl+Shift+F` | Find in this note / search all notes (`Ctrl+F` twice does too) |
 | `Ctrl+E` | Toggle reading / editing |
 | `Ctrl+N` / `Ctrl+D` | New note / today's daily note |
 | `Ctrl+G` / `Ctrl+Shift+G` | Graph / local graph |
@@ -142,15 +143,23 @@ doesn't. `?` shows the full list in the app.
 | `Tab` / `Shift+Tab` | Move between panes (`Esc` first while typing in a note) |
 | `hjkl`, `g`, `G` | Move within a pane |
 | `Enter` | Open / follow a link |
-| `F3` / `F4` | Close the tab / vim mode on / off |
+| `Alt+←` / `Alt+→` | Back / forward through the notes you've visited |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous tab, as do `Ctrl+PgDn` / `Ctrl+PgUp` |
+| `Ctrl+Shift+T` | Reopen the last tab closed |
+| `F3` / `F4` | Close the tab (`Ctrl+F4` too) / vim mode on / off |
+| `F5` / `Ctrl+R` | Reload the vault from disk |
 | `F8` | Focus mode: the note alone, centred, with the sidebars hidden |
 
 In the editor: `↑`/`↓`, `Home` and `End` follow the rows on screen, so a wrapped
 paragraph moves through a line at a time as it looks rather than as it is stored.
 `Enter` carries a list marker onto the next line and ends the list when you press
 it on an empty item; `Tab`/`Shift+Tab` nest and unnest a list item, and are still
-a tab in prose. `Ctrl+B`/`Ctrl+I` wrap the selection, `Ctrl+Space` starts one
-without holding `Shift`, and `Ctrl+Shift+K` deletes the line.
+a tab in prose. `Ctrl+B`/`Ctrl+I` wrap the selection, `Ctrl+K` makes it a link
+with the cursor where the address goes, `Ctrl+Space` starts a selection without
+holding `Shift`, and `Ctrl+Shift+K` deletes the line. `Ctrl+←`/`Ctrl+→` move by
+word, `Ctrl+Backspace`/`Ctrl+Delete` delete one, and `Ctrl+Z` undoes, with
+`Ctrl+Y` or `Ctrl+Shift+Z` to redo. Readline's `Alt+B`, `Alt+F`, `Alt+D` and
+`Ctrl+U` work as they do in a shell.
 
 `Ctrl+C`, `Ctrl+X` and `Ctrl+V` copy, cut and paste through the system
 clipboard, so text moves between a note and any other app. Your terminal's own
@@ -167,6 +176,19 @@ Ghostty, kitty, WezTerm, iTerm2, Alacritty and Windows Terminal understand;
 inside tmux that needs `set -g set-clipboard on`. Copy and paste within the app
 work either way.
 
+On a Mac the editor also takes the keys every Mac text field does: `⌥←`/`⌥→`
+move by word and `⌥⌫` deletes one, `⌘←`/`⌘→` go to the start and end of the
+line, `⌘↑`/`⌘↓` to the top and bottom of the note, and `⌘⌫` deletes back to the
+start of the line. `⌘[`/`⌘]` outdent and indent the line you are typing on and
+go back and forward anywhere else, and `⌘⇧[`/`⌘⇧]` change tab. Every `Ctrl`
+shortcut above works with `⌘` as well, `⌘S`, `⌘Z`, `⌘⇧Z`, `⌘F` and the rest,
+wherever the terminal passes `⌘` on rather than keeping it for its own menus.
+`Ctrl` works in every terminal.
+
+Which of these apply follows the machine Emeraldian runs on. Reaching a Linux
+machine from a Mac over SSH, set `keyboard = "mac"` under `[ui]` to have the Mac
+keys there too (see [Configuration](#configuration)).
+
 In the file explorer: `/` filters by name, `s` changes the sort order, `Space`
 folds a folder, and `H`/`L` collapse or expand every folder at once.
 
@@ -179,6 +201,15 @@ or a search field it types a `q`, and `Ctrl+Q` is the way out.
 
 A context-sensitive hint bar sits above the status bar showing the keys that
 apply where you are; `Ctrl+P` → "Toggle shortcut hints" turns it off.
+
+Shortcuts with both `Ctrl` and `Shift`, such as `Ctrl+Shift+F`, `Ctrl+Shift+T`,
+`Ctrl+Shift+K` and `Ctrl+Shift+Z`, need a terminal that can tell them apart from
+the same key without `Shift`. Terminals that speak the Kitty keyboard protocol
+can, kitty, Ghostty, foot and Alacritty among them, and Emeraldian asks for it
+where it is on offer. Elsewhere, Terminal.app and GNOME Terminal for instance,
+the `Shift` never arrives and each one does what its plain `Ctrl` key does. For
+those terminals, `Ctrl+F` pressed twice searches every note, `Ctrl+Y` redoes,
+and the palette has the rest.
 
 ## Vim mode
 
@@ -512,6 +543,15 @@ toggled rather than when settings are saved:
 vim = false               # F4, /vim on, or :set vim
 ```
 
+Whose keyboard shortcuts to follow is under `[ui]`. `auto` follows the machine
+Emeraldian runs on, which is right unless you reach it over SSH from a
+different kind of computer:
+
+```toml
+[ui]
+keyboard = "auto"         # auto, mac, windows or linux
+```
+
 Pictures can be turned off, and capped, under `[images]`:
 
 ```toml
@@ -536,8 +576,8 @@ toggle_left_sidebar = "alt+e"
 toggle_right_sidebar = "ctrl+alt+o"
 ```
 
-A key is modifiers and a key joined by `+`: `ctrl`, `alt` (or `option`) and
-`shift`, then a character, `space`, `tab`, `enter`, an arrow, `home`, `end`,
+A key is modifiers and a key joined by `+`: `ctrl` (or `cmd`), `alt` (or
+`option`) and `shift`, then a character, `space`, `tab`, `enter`, an arrow, `home`, `end`,
 `pageup`, `pagedown` or `f1`–`f24`. It needs `Ctrl` or `Alt` unless it is an
 F-key, so typing can never set one off. The default key keeps working
 alongside yours, and the palette shows yours. A name or key that isn't
@@ -545,11 +585,12 @@ understood is reported when the app starts. `Ctrl+P` → "Reset shortcuts to
 defaults" removes the section again, after asking, and leaves the rest of the
 file as it was.
 
-The names are `open_palette`, `open_switcher`, `open_search`, `new_note`,
-`save`, `daily_note`, `toggle_mode`, `close_tab`, `next_tab`, `previous_tab`,
-`rename_note`, `open_theme_picker`, `toggle_chat`, `cycle_side_panel`,
-`toggle_focus_mode`, `toggle_left_sidebar`, `toggle_right_sidebar`, `open_graph`,
-`open_local_graph`, `refresh`, `back`, `toggle_vim_mode` and `quit`.
+The names are `open_palette`, `open_switcher`, `open_search`, `find_in_note`,
+`new_note`, `save`, `daily_note`, `toggle_mode`, `close_tab`,
+`reopen_closed_tab`, `next_tab`, `previous_tab`, `rename_note`,
+`open_theme_picker`, `toggle_chat`, `cycle_side_panel`, `toggle_focus_mode`,
+`toggle_left_sidebar`, `toggle_right_sidebar`, `open_graph`, `open_local_graph`,
+`refresh`, `back`, `forward`, `toggle_vim_mode` and `quit`.
 
 ## Layout
 

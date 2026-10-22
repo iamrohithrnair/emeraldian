@@ -308,7 +308,8 @@ fn run(app: &mut App) -> io::Result<()> {
         let _ = crossterm::execute!(
             std::io::stdout(),
             crossterm::event::DisableMouseCapture,
-            crossterm::event::DisableBracketedPaste
+            crossterm::event::DisableBracketedPaste,
+            crossterm::event::PopKeyboardEnhancementFlags
         );
         // Vim mode leaves a block caret behind, which would otherwise outlive
         // the process and follow the user into their shell.
@@ -393,8 +394,32 @@ fn run(app: &mut App) -> io::Result<()> {
         crossterm::event::EnableMouseCapture,
         crossterm::event::EnableBracketedPaste
     );
+    // The Kitty keyboard protocol, where the terminal speaks it, is what lets
+    // a key arrive as itself: `⌘` on a Mac at all, and `Ctrl+Shift+T`,
+    // `Ctrl+Tab` or `Ctrl+I` instead of the plainer key a legacy terminal
+    // sends in their place. Asked for only where it is understood, so other
+    // terminals see nothing new.
+    let enhanced = matches!(
+        crossterm::terminal::supports_keyboard_enhancement(),
+        Ok(true)
+    );
+    if enhanced {
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::event::PushKeyboardEnhancementFlags(
+                crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+            )
+        );
+    }
 
     let result = event_loop(&mut terminal, app);
+
+    if enhanced {
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::event::PopKeyboardEnhancementFlags
+        );
+    }
 
     // Written here rather than from the quit action, so that driving the app
     // in a test never reaches into the real config directory.

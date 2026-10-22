@@ -15,6 +15,7 @@ use crate::ui::{centered, pane_block, scrollbar, truncate};
 pub fn draw(frame: &mut Frame, app: &mut App, palette: &Palette, area: Rect) {
     // Read before the modal is borrowed mutably below.
     let vim = app.config.editor.vim;
+    let mac = crate::keys::Keyboard::of(app) == crate::keys::Keyboard::Mac;
     let Some(modal) = app.modal.as_mut() else {
         return;
     };
@@ -26,12 +27,25 @@ pub fn draw(frame: &mut Frame, app: &mut App, palette: &Palette, area: Rect) {
         Modal::Prompt(prompt) if is_command_line(prompt) => {}
         Modal::Prompt(prompt) => draw_prompt(frame, prompt, palette, area),
         Modal::Confirm(confirm) => draw_confirm(frame, confirm, palette, area),
-        Modal::Help(scroll) => draw_help(frame, scroll, palette, area, vim),
+        Modal::Help(scroll) => draw_help(frame, scroll, palette, area, vim, mac),
     }
 }
 
+/// How wide a picker is drawn on a screen this wide.
+#[must_use]
+pub fn picker_width(screen: u16) -> u16 {
+    (screen * 3 / 4).clamp(40, 96)
+}
+
+/// The columns a picker row has for its label, beside a detail this long:
+/// less the borders, the scrollbar, the `› ` marker and the gap.
+#[must_use]
+pub fn label_room(screen: u16, detail: usize) -> usize {
+    usize::from(picker_width(screen)).saturating_sub(7 + detail)
+}
+
 fn draw_picker(frame: &mut Frame, picker: &mut Picker, palette: &Palette, area: Rect) {
-    let width = (area.width * 3 / 4).clamp(40, 96);
+    let width = picker_width(area.width);
     let height = (area.height * 2 / 3).clamp(8, 24);
     let rect = centered(area, width, height);
 
@@ -226,8 +240,9 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "Navigation",
         &[
-            ("Ctrl+O", "Quick switcher: open a note by name"),
+            ("Ctrl+O / Ctrl+T", "Quick switcher: open a note by name"),
             ("Ctrl+P", "Command palette"),
+            ("Ctrl+F", "Find in this note; in vim's Normal mode, /"),
             ("Ctrl+Shift+F", "Search all notes"),
             (
                 "Tab / Shift+Tab",
@@ -236,7 +251,10 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("F8", "Focus mode — the note alone, centred"),
             ("hjkl / arrows", "Move within a pane"),
             ("Enter", "Open the selection / follow a link"),
-            ("Alt+←", "Back to the previous note"),
+            (
+                "Alt+← / Alt+→",
+                "Back and forward through the notes visited",
+            ),
             ("Esc", "Close an overlay"),
             ("?", "This help"),
             ("q", "Quit (asks first); Ctrl+Q works while editing"),
@@ -257,9 +275,12 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
                 "F3 / Ctrl+W",
                 "Close the tab — Ctrl+W unless vim mode is on",
             ),
-            ("Ctrl+Tab", "Next tab"),
+            ("Ctrl+Shift+T", "Reopen the last tab closed"),
+            ("Ctrl+Tab", "Next tab; with Shift, the one before"),
+            ("Ctrl+PgUp/PgDn", "Previous / next tab"),
+            ("Ctrl+R / F5", "Reload the vault from disk"),
             ("Ctrl+B / Ctrl+I", "Bold / italic (while editing)"),
-            ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
+            ("Ctrl+Z / Ctrl+Y", "Undo / redo; Ctrl+Shift+Z redoes too"),
         ],
     ),
     (
@@ -279,8 +300,13 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+Space", "Start a selection without holding Shift"),
             ("Ctrl+A", "Select the whole note"),
             ("Ctrl+C / X / V", "Copy, cut, paste — the system clipboard"),
+            ("Ctrl+K", "Make the selection a link, or start one"),
             ("Ctrl+Shift+K", "Delete the line"),
             ("Ctrl+←/→", "By word"),
+            (
+                "Ctrl+Backspace",
+                "Delete a word back; Ctrl+Delete, forwards",
+            ),
             ("Ctrl+Home / End", "Start and end of the note"),
         ],
     ),
@@ -358,8 +384,30 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Ctrl+\\", "Toggle the file explorer"),
             ("Ctrl+]", "Toggle the outline sidebar"),
-            ("Ctrl+K", "Cycle outline / backlinks / tags"),
-            ("Ctrl+T", "Theme picker"),
+            ("Ctrl+K", "Next sidebar panel; makes a link while typing"),
+        ],
+    ),
+    (
+        MAC_SECTION,
+        &[
+            (
+                "⌘ + a Ctrl key",
+                "The same, wherever the terminal passes ⌘ on",
+            ),
+            ("⌘V / Ctrl+C", "Paste / copy — ⌘C is kept by most terminals"),
+            (
+                "⌥← / ⌥→",
+                "By word while typing; back and forward elsewhere",
+            ),
+            ("⌘← / ⌘→", "Start and end of the line"),
+            ("⌘↑ / ⌘↓", "Start and end of the note"),
+            ("⌥⌫ / ⌘⌫", "Delete a word / back to the start of the line"),
+            (
+                "⌘[ / ⌘]",
+                "Outdent / indent while typing; else back / forward",
+            ),
+            ("⌘⇧[ / ⌘⇧]", "Previous / next tab"),
+            ("⌘⌥← / ⌘⌥→", "Back / forward, as in Obsidian"),
         ],
     ),
     (
@@ -474,7 +522,18 @@ pub fn draw_leader(frame: &mut Frame, palette: &Palette, area: Rect) {
 /// Prefix marking the sections that only apply once vim mode is on.
 const VIM_SECTION: &str = "Vim mode";
 
-fn draw_help(frame: &mut Frame, scroll: &mut usize, palette: &Palette, area: Rect, vim: bool) {
+/// The section for a Mac's own keys, shown only on one. Everywhere else they
+/// are keys the keyboard doesn't have.
+const MAC_SECTION: &str = "On a Mac";
+
+fn draw_help(
+    frame: &mut Frame,
+    scroll: &mut usize,
+    palette: &Palette,
+    area: Rect,
+    vim: bool,
+    mac: bool,
+) {
     let rect = centered(
         area,
         72.min(area.width),
@@ -488,7 +547,7 @@ fn draw_help(frame: &mut Frame, scroll: &mut usize, palette: &Palette, area: Rec
 
     let mut lines = Vec::new();
     for (section, bindings) in HELP {
-        if section.starts_with(VIM_SECTION) && !vim {
+        if (section.starts_with(VIM_SECTION) && !vim) || (*section == MAC_SECTION && !mac) {
             continue;
         }
         lines.push(Line::from(Span::styled(

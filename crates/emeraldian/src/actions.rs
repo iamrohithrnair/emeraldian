@@ -18,6 +18,7 @@ pub fn commands() -> Vec<Entry> {
     vec![
         Entry::new("Open quick switcher", "Ctrl+O", Action::OpenSwitcher),
         Entry::new("Search all notes", "Ctrl+Shift+F", Action::OpenSearch),
+        Entry::new("Find in note", "Ctrl+F", Action::OpenFind),
         Entry::new("New note", "Ctrl+N", Action::NewNote),
         Entry::new("New folder", "", Action::NewFolder),
         Entry::new("Insert wikilink", "", Action::InsertWikiLink),
@@ -28,6 +29,7 @@ pub fn commands() -> Vec<Entry> {
         Entry::new("Delete note", "", Action::DeleteNote),
         Entry::new("Toggle reading / editing", "Ctrl+E", Action::ToggleMode),
         Entry::new("Close tab", "Ctrl+W", Action::CloseTab),
+        Entry::new("Reopen closed tab", "Ctrl+Shift+T", Action::ReopenClosedTab),
         Entry::new("Next tab", "Ctrl+Tab", Action::NextTab),
         Entry::new("Previous tab", "Ctrl+Shift+Tab", Action::PreviousTab),
         Entry::new("Open graph view", "Ctrl+G", Action::OpenGraph),
@@ -56,7 +58,7 @@ pub fn commands() -> Vec<Entry> {
         Entry::new("Toggle line numbers", "", Action::ToggleLineNumbers),
         Entry::new("Toggle vim mode", "F4", Action::ToggleVimMode),
         Entry::new("Reset shortcuts to defaults", "", Action::ResetKeys),
-        Entry::new("Change theme", "Ctrl+T", Action::OpenThemePicker),
+        Entry::new("Change theme", "", Action::OpenThemePicker),
         Entry::new("Open another vault", "", Action::OpenVaultPicker),
         Entry::new("Graph: toggle labels", "", Action::ToggleGraphLabels),
         Entry::new(
@@ -567,6 +569,56 @@ pub fn dispatch(app: &mut App, action: Action) {
         Action::OpenSearch => {
             app.modal = Some(Modal::Picker(Picker::new(PickerKind::Search, Vec::new())));
         }
+        Action::OpenFind => {
+            if app.active_note().is_some() {
+                app.modal = Some(Modal::Picker(Picker::new(PickerKind::Find, Vec::new())));
+            } else {
+                app.info("open a note to find in it");
+            }
+        }
+        Action::GotoLine { line, column, text } => {
+            app.view = View::Notes;
+            app.focus = Focus::Note;
+            if app.editing() && app.config.editor.vim {
+                crate::vim::land_on(app, line, column, &text);
+            } else if app.editing() {
+                // Selected, so the match is plain to see and typing replaces it.
+                if let Some(editor) = app.editor_mut() {
+                    editor.goto(line, column);
+                    editor.begin_selection();
+                    editor.goto_extend(line, column + text.chars().count());
+                }
+            } else {
+                // The reading pane scrolls by rendered rows. The last frame
+                // mapped where each block starts, which is close; the next one
+                // finds the row the text is actually on, which a long
+                // paragraph needs. The cursor goes there too, for when the
+                // note is next edited.
+                let row = crate::ui::note::anchor_row(&app.regions.anchors, line);
+                if let Some(tab) = app.active_mut() {
+                    tab.scroll = row;
+                }
+                if let Some(editor) = app.editor_mut() {
+                    editor.goto(line, column);
+                }
+                let nth = occurrences_before(app, line, column, &text);
+                app.reveal = Some(crate::app::Reveal { line, text, nth });
+            }
+        }
+        Action::ReopenClosedTab => {
+            let open: Vec<String> = app
+                .tabs
+                .iter()
+                .filter_map(|tab| app.index.note(tab.note).map(|n| n.meta.rel.clone()))
+                .collect();
+            let reopened = std::iter::from_fn(|| app.closed.pop())
+                .filter(|rel| !open.contains(rel))
+                .find_map(|rel| app.index.id_of_rel(&rel));
+            match reopened {
+                Some(id) => app.open_note(id),
+                None => app.info("no closed tab to reopen"),
+            }
+        }
         Action::OpenThemePicker => {
             let entries = app
                 .themes
@@ -821,6 +873,166 @@ fn store_key(app: &mut App, provider: &str, key: &str) {
     }
 }
 
+/// Refreshes a picker whose entries come from its query rather than a fixed
+/// list, after the query has changed.
+pub fn update_live(app: &mut App) {
+    match app.modal.as_ref() {
+        Some(Modal::Picker(picker)) if picker.kind == PickerKind::Search => update_search(app),
+        Some(Modal::Picker(picker)) if picker.kind == PickerKind::Find => update_find(app),
+        _ => {}
+    }
+}
+
+/// The lines of the open note that contain the query, for `Ctrl+F`.
+///
+/// Read from the editor when there is one, so a note being edited is searched
+/// as it stands rather than as it was last saved. Lowercase queries ignore
+/// case and any capital makes them exact, as in vim and most editors.
+fn update_find(app: &mut App) {
+    let Some(Modal::Picker(picker)) = app.modal.as_ref() else {
+        return;
+    };
+    // Not trimmed: a space can be what tells "fox " from "foxes".
+    let query = picker.query.clone();
+    let text = open_note_text(app);
+    let screen = app.regions.screen.map_or(80, |screen| screen.width);
+
+    let exact = query.chars().any(char::is_uppercase);
+    let needle = if exact { query } else { fold_case(&query) };
+    let length = needle.chars().count();
+    let entries: Vec<(Entry, Vec<usize>)> = if needle.trim().is_empty() {
+        Vec::new()
+    } else {
+        text.lines()
+            .enumerate()
+            .filter_map(|(line, source)| {
+                let haystack = if exact {
+                    source.to_string()
+                } else {
+                    fold_case(source)
+                };
+                let at = haystack.find(&needle)?;
+                let column = haystack[..at].chars().count();
+                let detail = format!("line {}", line + 1);
+                // Room for the `…` either side, inside the label's columns.
+                let width = crate::ui::modal::label_room(screen, detail.len()).saturating_sub(2);
+                let (label, marked) = snippet(source, column, length, width.clamp(16, 120));
+                let entry = Entry::new(
+                    label,
+                    detail,
+                    Action::GotoLine {
+                        line,
+                        column,
+                        text: source.chars().skip(column).take(length).collect(),
+                    },
+                );
+                Some((entry, marked))
+            })
+            .take(500)
+            .collect()
+    };
+
+    if let Some(Modal::Picker(picker)) = app.modal.as_mut() {
+        picker.set_marked_entries(entries);
+    }
+}
+
+/// A line cut down to about `width` characters around a match, with the byte
+/// offsets of the match's characters in what is left, to underline them.
+///
+/// A note written as one long line still shows each match in its own words,
+/// rather than the same opening of the line over and over.
+fn snippet(line: &str, column: usize, length: usize, width: usize) -> (String, Vec<usize>) {
+    let chars: Vec<char> = line.chars().collect();
+    let found = column..column + length;
+    let first = chars
+        .iter()
+        .position(|ch| !ch.is_whitespace())
+        .unwrap_or(0)
+        .min(column);
+    let last = chars
+        .iter()
+        .rposition(|ch| !ch.is_whitespace())
+        .map_or(0, |at| at + 1)
+        .max(found.end)
+        .min(chars.len());
+
+    let (mut start, mut end) = (first, last);
+    if end - start > width {
+        // A little of what leads up to the match, and as much after as fits.
+        start = column.saturating_sub(width / 4).max(first);
+        end = (start + width).max(found.end).min(last);
+        start = start.max(end.saturating_sub(width.max(length)));
+    }
+
+    let mut label = String::new();
+    let mut marked = Vec::new();
+    if start > first {
+        label.push('…');
+    }
+    for (at, ch) in chars.iter().enumerate().take(end).skip(start) {
+        if found.contains(&at) {
+            marked.push(label.len());
+        }
+        label.push(*ch);
+    }
+    if end < last {
+        label.push('…');
+    }
+    (label, marked)
+}
+
+/// How many times `text` occurs, ignoring case, between the start of the
+/// block holding `line` and `column` on it, by the last frame's layout.
+fn occurrences_before(app: &App, line: usize, column: usize, text: &str) -> usize {
+    let needle = text.to_lowercase();
+    if needle.is_empty() {
+        return 0;
+    }
+    let block = app
+        .regions
+        .anchors
+        .iter()
+        .map(|(source, _)| *source)
+        .take_while(|source| *source <= line)
+        .last()
+        .unwrap_or(0);
+    open_note_text(app)
+        .lines()
+        .enumerate()
+        .skip(block)
+        .take(line + 1 - block.min(line + 1))
+        .map(|(at, source)| {
+            let before: String = if at == line {
+                source.chars().take(column).collect()
+            } else {
+                source.to_string()
+            };
+            before.to_lowercase().matches(needle.as_str()).count()
+        })
+        .sum()
+}
+
+/// The open note's text: the editor's when it has one, so a note being edited
+/// is read as it stands rather than as it was last saved.
+fn open_note_text(app: &App) -> String {
+    match app.active() {
+        Some(tab) => match tab.editor.as_ref() {
+            Some(editor) => editor.text(),
+            None => app.index.read(tab.note).unwrap_or_default(),
+        },
+        None => String::new(),
+    }
+}
+
+/// Lowercases one character for one, so a column found in the folded text is
+/// the same column in the original.
+fn fold_case(text: &str) -> String {
+    text.chars()
+        .map(|ch| ch.to_lowercase().next().unwrap_or(ch))
+        .collect()
+}
+
 /// Recomputes a live search picker's entries.
 pub fn update_search(app: &mut App) {
     let Some(Modal::Picker(picker)) = app.modal.as_ref() else {
@@ -861,6 +1073,48 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use emeraldian_core::test_support::TempVault;
+
+    /// The characters `snippet` marked, to compare with what was found.
+    fn marked(label: &str, offsets: &[usize]) -> String {
+        offsets
+            .iter()
+            .filter_map(|at| label[*at..].chars().next())
+            .collect()
+    }
+
+    #[test]
+    fn a_short_line_is_shown_whole_without_its_indent() {
+        let (label, offsets) = snippet("    - find me here", 11, 2, 56);
+        assert_eq!(label, "- find me here");
+        assert_eq!(marked(&label, &offsets), "me");
+    }
+
+    #[test]
+    fn a_long_line_is_shown_around_its_match() {
+        let line = format!("{}the needle{}", "early ".repeat(40), " late".repeat(40));
+        let column = line.find("needle").expect("there");
+        let (label, offsets) = snippet(&line, column, 6, 56);
+
+        assert!(label.starts_with('…') && label.ends_with('…'), "{label}");
+        assert!(label.chars().count() <= 58, "{label}");
+        assert_eq!(marked(&label, &offsets), "needle");
+    }
+
+    #[test]
+    fn a_match_at_the_end_of_a_long_line_keeps_its_last_character() {
+        let line = format!("{}needle", "x ".repeat(100));
+        let column = line.chars().count() - 6;
+        let (label, offsets) = snippet(&line, column, 6, 56);
+        assert!(label.ends_with("needle"), "{label}");
+        assert_eq!(marked(&label, &offsets), "needle");
+    }
+
+    #[test]
+    fn a_match_wider_than_the_snippet_is_shown_whole() {
+        let line = format!("a {} b", "n".repeat(80));
+        let (label, offsets) = snippet(&line, 2, 80, 56);
+        assert_eq!(marked(&label, &offsets), "n".repeat(80));
+    }
 
     fn app() -> (TempVault, App) {
         let vault = TempVault::new("actions");

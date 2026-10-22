@@ -8,6 +8,23 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Shortcuts that follow your system.** Emeraldian now uses the conventions
+  of the machine it runs on, alongside its own. On Windows and Linux,
+  `Ctrl+Backspace` and `Ctrl+Delete` delete a word, `Alt+←` and `Alt+→` go
+  back and forward through the notes you've visited, `Ctrl+Y` or
+  `Ctrl+Shift+Z` redo, `Ctrl+PgUp` and `Ctrl+PgDn` change tab, `Ctrl+F4`
+  closes one, `F5` reloads the vault and `F1` opens the help. On a Mac, `⌥←`
+  and `⌥→` move by word and `⌥⌫` deletes one, `⌘←` and `⌘→` go to the ends of
+  the line, `⌘↑` and `⌘↓` to the ends of the note, `⌘⌫` deletes back to the
+  start of the line, `⌘[` and `⌘]` outdent and indent while you type and go
+  back and forward otherwise, and `⌘⇧[` and `⌘⇧]` change tab. Every other
+  shortcut works with `⌘` in place of `Ctrl`, so `⌘S`, `⌘Z`, `⌘⇧Z`, `⌘F` and
+  the rest do what they do in other Mac apps, wherever the terminal passes `⌘`
+  on to the app rather than keeping it for its own menus. `Ctrl` works in
+  every terminal. Set `keyboard = "mac"`, `"windows"` or `"linux"` under
+  `[ui]` to choose, for instance on a Linux machine you reach from a Mac over
+  SSH; the default, `"auto"`, follows the machine.
+
 - **Focus mode, on `F8`.** One key hides the explorer, the outline, the
   assistant and the ribbon, and centres the note at a readable width, for
   reading or writing with nothing else on screen. `F8` again puts everything
@@ -15,6 +32,41 @@ All notable changes to this project are documented here. The format follows
   hint bar shows the key wherever you are. `F11` does the same in terminals
   that don't keep it for their own full screen, and the key can be moved under
   `[keys]` as `toggle_focus_mode`.
+
+- **Find in the note, on `Ctrl+F`.** The lines of the open note that contain
+  what you type are listed as you type it, ignoring case unless you type a
+  capital. `Enter` goes to the one picked: while editing, the match is
+  selected, so typing replaces it, and while reading it is scrolled into view,
+  even halfway through a long paragraph. `Ctrl+F` again searches every note
+  for the same text, as `Ctrl+Shift+F` does, which helps in terminals that
+  send `Ctrl+Shift+F` as plain `Ctrl+F`. In vim's Normal mode `Ctrl+F` is
+  still a page down and `/` still searches; opened from the palette or with
+  `⌘F` there, the list puts the cursor on the match the way `/` does, so `n`
+  goes on to the next one.
+
+- **`Ctrl+Shift+T` reopens the last tab you closed**, as in a browser. It is
+  in the palette too, for terminals that send `Ctrl+Shift+T` as `Ctrl+T`.
+
+- **`Ctrl+K` makes a link while you type**, as in Obsidian. The selection
+  becomes `[text]()` with the cursor where the address goes. When you aren't
+  typing, `Ctrl+K` still cycles the sidebar's panels.
+
+- In the editor, readline's `Alt+B` and `Alt+F` move by word, `Alt+D`
+  deletes one and `Ctrl+U` deletes back to the start of the line, as in a
+  shell. They are also what a Mac terminal sends for `⌥←`, `⌥→` and `⌥⌦`, so
+  those work over SSH too. `Ctrl+Backspace` works in terminals that send it
+  as `Ctrl+H`, as GNOME Terminal does. In vim mode `Ctrl+H` is Backspace, as
+  in vim.
+
+- `[keys]` can move `find_in_note`, `reopen_closed_tab` and `forward`, and
+  reads `cmd` as `Ctrl`.
+
+### Changed
+
+- **`Ctrl+T` opens the quick switcher, the nearest thing to a new tab.** It
+  used to open the theme picker, which is now in the palette as "Change
+  theme". To keep it on `Ctrl+T`, set `open_theme_picker = "ctrl+t"` under
+  `[keys]`.
 
 ### Fixed
 
@@ -37,6 +89,17 @@ All notable changes to this project are documented here. The format follows
   outline light up their borders when focused, but the note pane has no
   border, so pressing `Tab` into it looked as if nothing had happened. Its
   active tab now takes the same colour, with a bar in front of the title.
+
+- **Characters typed with AltGr are typed.** Windows reports AltGr as
+  `Ctrl+Alt`, so on keyboards like the German one, `@`, `{`, `[` and `€` were
+  read as shortcuts: most of them did nothing, and `]` toggled the outline.
+  A chord you set under `[keys]` with `Ctrl+Alt` still works.
+
+- In a search box or a name prompt, `Ctrl+V` pastes, and other `Ctrl` and
+  `⌘` shortcuts no longer type their letter.
+
+- On Linux, a shortcut with the Super key that gets past the desktop no
+  longer types its letter into the note.
 
 ## [0.7.0] — 2026-10-22
 

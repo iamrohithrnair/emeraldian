@@ -29,11 +29,13 @@ const ACTIONS: &[(&str, Action)] = &[
     ("open_palette", Action::OpenPalette),
     ("open_switcher", Action::OpenSwitcher),
     ("open_search", Action::OpenSearch),
+    ("find_in_note", Action::OpenFind),
     ("new_note", Action::NewNote),
     ("save", Action::Save),
     ("daily_note", Action::DailyNote),
     ("toggle_mode", Action::ToggleMode),
     ("close_tab", Action::CloseTab),
+    ("reopen_closed_tab", Action::ReopenClosedTab),
     ("next_tab", Action::NextTab),
     ("previous_tab", Action::PreviousTab),
     ("rename_note", Action::RenameNote),
@@ -47,6 +49,7 @@ const ACTIONS: &[(&str, Action)] = &[
     ("open_local_graph", Action::OpenLocalGraph),
     ("refresh", Action::Refresh),
     ("back", Action::Back),
+    ("forward", Action::Forward),
     ("toggle_vim_mode", Action::ToggleVimMode),
     ("quit", Action::Quit),
 ];
@@ -62,7 +65,8 @@ pub struct Chord {
 
 impl Chord {
     /// Reads `"ctrl+alt+e"`, `"alt+F5"`, `"ctrl++"` and the like. Case doesn't
-    /// matter, and `option`/`opt`/`meta` are accepted for Alt.
+    /// matter, `option`/`opt`/`meta` are accepted for Alt, and `cmd` for Ctrl,
+    /// since that is what `⌘` stands in for.
     pub fn parse(text: &str) -> Result<Self, String> {
         let text = text.trim();
         // A trailing `+` is the key itself, as in `ctrl++`.
@@ -79,7 +83,7 @@ impl Chord {
         };
         for modifier in mods.split('+').filter(|m| !m.is_empty()) {
             match modifier.to_lowercase().as_str() {
-                "ctrl" | "control" => chord.ctrl = true,
+                "ctrl" | "control" | "cmd" | "command" => chord.ctrl = true,
                 "alt" | "option" | "opt" | "meta" => chord.alt = true,
                 "shift" => chord.shift = true,
                 other => return Err(format!("\"{other}\" is not a modifier")),
@@ -278,6 +282,31 @@ mod tests {
                 KeyModifiers::ALT | KeyModifiers::SHIFT
             )),
             Some(Action::PreviousTab)
+        );
+    }
+
+    #[test]
+    fn cmd_is_read_as_the_ctrl_it_stands_in_for() {
+        // `⌘` reaches the key map already turned into `Ctrl`, so a Mac user
+        // can write the key the way they think of it.
+        assert_eq!(Chord::parse("cmd+e"), Chord::parse("ctrl+e"));
+        assert_eq!(
+            Chord::parse("Command+Shift+O"),
+            Chord::parse("ctrl+shift+o")
+        );
+    }
+
+    #[test]
+    fn the_newer_app_shortcuts_can_be_moved_too() {
+        let keys = keymap(&[
+            ("forward", "alt+shift+l"),
+            ("find_in_note", "ctrl+alt+f"),
+            ("reopen_closed_tab", "f6"),
+        ]);
+        assert!(keys.problems.is_empty(), "{:?}", keys.problems);
+        assert_eq!(
+            keys.action_for(&key(KeyCode::F(6), KeyModifiers::NONE)),
+            Some(Action::ReopenClosedTab)
         );
     }
 

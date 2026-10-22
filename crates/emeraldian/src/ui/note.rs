@@ -282,6 +282,9 @@ fn draw_reading(
     regions: &mut Regions,
 ) {
     let Some(id) = app.active_note() else { return };
+    // Taken whether or not this frame can use it, so it can't go off later on
+    // some other note.
+    let reveal = app.reveal.take();
     let Ok(content) = app.index.read(id) else {
         Paragraph::new("could not read this note").render(area, frame.buffer_mut());
         return;
@@ -334,6 +337,16 @@ fn draw_reading(
     regions.anchors = std::mem::take(&mut ctx.anchors);
 
     let height = area.height as usize;
+    if let Some(reveal) = reveal {
+        let start = anchor_row(&regions.anchors, reveal.line);
+        let row =
+            row_showing(&lines, &regions.anchors, start, &reveal.text, reveal.nth).unwrap_or(start);
+        if let Some(tab) = app.active_mut() {
+            // In the upper part of the pane, with a little of what leads up to
+            // it above.
+            tab.scroll = row.saturating_sub(height / 3);
+        }
+    }
     let max_scroll = lines.len().saturating_sub(height);
     // Content can be wider than the pane — a table laid out at its natural
     // width, a long code line — and panning is the only way to reach the rest.
@@ -454,6 +467,56 @@ pub fn anchor_row(anchors: &[(usize, usize)], line: usize) -> usize {
         .take_while(|(source, _)| *source <= line)
         .last()
         .map_or(line, |(_, row)| *row)
+}
+
+/// The row, from `start` to the end of its block, showing the `nth` time
+/// `text` occurs there, counting from 0 and ignoring case. A row and the one
+/// after it are read together, so text wrapped onto the next row is found as
+/// well. Short of `nth`, the last one found.
+fn row_showing(
+    lines: &[Line],
+    anchors: &[(usize, usize)],
+    start: usize,
+    text: &str,
+    nth: usize,
+) -> Option<usize> {
+    let needle = text.to_lowercase();
+    if needle.trim().is_empty() {
+        return None;
+    }
+    let end = anchors
+        .iter()
+        .map(|(_, row)| *row)
+        .find(|row| *row > start)
+        .unwrap_or(lines.len())
+        .min(lines.len());
+    let row_text = |row: usize| -> String {
+        lines.get(row).map_or_else(String::new, |line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+                .to_lowercase()
+        })
+    };
+    let count = |text: &str| text.matches(needle.as_str()).count();
+    let mut seen = 0;
+    let mut last = None;
+    for row in start..end {
+        let here = row_text(row);
+        let next = row_text(row + 1);
+        let joined = format!("{} {}", here.trim_end(), next.trim_start());
+        // What this row shows, and what only shows across its end.
+        let found = count(&here) + count(&joined).saturating_sub(count(&here) + count(&next));
+        if found > 0 {
+            last = Some(row);
+            if seen + found > nth {
+                return last;
+            }
+            seen += found;
+        }
+    }
+    last
 }
 
 fn render_block(

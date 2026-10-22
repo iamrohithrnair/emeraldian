@@ -1116,6 +1116,80 @@ impl Editor {
         }
     }
 
+    /// `Ctrl+Backspace`, or `⌥⌫` on a Mac: deletes back to the start of the
+    /// word, or the selection if there is one.
+    pub fn delete_word_back(&mut self) {
+        if self.selection().is_none() {
+            self.move_word_left(true);
+        }
+        self.delete_selection();
+        self.selection_anchor = None;
+    }
+
+    /// `Ctrl+Delete`: deletes up to the start of the next word, or the
+    /// selection if there is one.
+    pub fn delete_word_forward(&mut self) {
+        if self.selection().is_none() {
+            self.move_word_right(true);
+        }
+        self.delete_selection();
+        self.selection_anchor = None;
+    }
+
+    /// Deletes back to the start of the line, or the selection if there is
+    /// one: `Ctrl+U`, as in a shell.
+    pub fn delete_to_line_start(&mut self) {
+        if self.selection().is_some() {
+            self.delete_selection();
+        } else {
+            let at = self.cursor;
+            self.delete_range(
+                Cursor {
+                    line: at.line,
+                    col: 0,
+                },
+                at,
+            );
+        }
+        self.selection_anchor = None;
+    }
+
+    /// Deletes back to the start of the row on screen, or the selection if
+    /// there is one: `⌘⌫`, which on a wrapped line stops where `⌘←` does.
+    pub fn delete_to_row_start(&mut self, layout: &Layout) {
+        if self.selection().is_some() {
+            self.delete_selection();
+        } else {
+            let at = self.cursor;
+            let row = layout.rows()[layout.row_of(at)];
+            let col = if row.first { 0 } else { row.start };
+            self.delete_range(Cursor { line: at.line, col }, at);
+        }
+        self.selection_anchor = None;
+    }
+
+    /// `Ctrl+K`: a Markdown link, as Obsidian inserts one.
+    ///
+    /// Selected text becomes the link text, and the cursor waits where the
+    /// address goes. With nothing selected it waits inside the brackets for
+    /// the text instead.
+    pub fn insert_link(&mut self) {
+        self.push_undo(EditKind::Structural);
+        match self.selected_text().filter(|text| !text.contains('\n')) {
+            Some(text) => {
+                self.delete_selection_inner();
+                self.insert_into_line(&format!("[{text}]()"));
+                self.cursor.col -= 1;
+            }
+            None => {
+                self.selection_anchor = None;
+                self.insert_into_line("[]()");
+                self.cursor.col -= 3;
+            }
+        }
+        self.commit();
+    }
+
     /// Wraps the selection (or the word at the cursor) in a marker, or removes
     /// it when already present — how `Ctrl+B` behaves in Obsidian.
     pub fn toggle_wrap(&mut self, marker: &str) {

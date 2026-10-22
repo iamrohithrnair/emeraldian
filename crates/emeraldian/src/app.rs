@@ -279,6 +279,17 @@ pub enum Action {
     OpenPalette,
     OpenSwitcher,
     OpenSearch,
+    /// `Ctrl+F`: the lines of the open note that contain what is typed.
+    OpenFind,
+    /// Jumps to `text`, found at `column` of `line` in the open note, and
+    /// selects it when the note is being edited.
+    GotoLine {
+        line: usize,
+        column: usize,
+        text: String,
+    },
+    /// `Ctrl+Shift+T`, as in a browser.
+    ReopenClosedTab,
     OpenThemePicker,
     OpenVaultPicker,
     OpenHelp,
@@ -343,6 +354,20 @@ pub struct Regions {
     pub chat: Option<Rect>,
     /// The graph canvas with its coordinate bounds, for hit-testing nodes.
     pub graph: Option<(Rect, [f64; 2], [f64; 2])>,
+    /// The whole screen, which overlays are sized against.
+    pub screen: Option<Rect>,
+}
+
+/// Text found in a note, for the reading view to scroll to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reveal {
+    /// The source line it is on.
+    pub line: usize,
+    pub text: String,
+    /// How many times it occurs before this one in the same block. A
+    /// paragraph or a code block can show the same words several times, and
+    /// it is the one picked that should come into view.
+    pub nth: usize,
 }
 
 pub struct App {
@@ -363,6 +388,12 @@ pub struct App {
     /// clears it, because once you have gone somewhere new there is no longer a
     /// forward to return to.
     pub forward: Vec<NoteId>,
+    /// Notes whose tabs were closed, newest last, by path so that a rename or
+    /// a reload in between can't point one at the wrong note.
+    pub closed: Vec<String>,
+    /// Text the reading view should bring into sight on its next frame. Only
+    /// a drawn frame knows which row that is.
+    pub reveal: Option<Reveal>,
 
     pub view: View,
     pub focus: Focus,
@@ -441,6 +472,8 @@ impl App {
             tabs: Vec::new(),
             active_tab: None,
             history: Vec::new(),
+            closed: Vec::new(),
+            reveal: None,
             forward: Vec::new(),
             view: View::Notes,
             focus: Focus::Explorer,
@@ -711,7 +744,14 @@ impl App {
         if self.tabs[index].is_modified() && self.config.editor.auto_save {
             self.save_tab(index);
         }
-        self.tabs.remove(index);
+        let closed = self.tabs.remove(index);
+        if let Some(note) = self.index.note(closed.note) {
+            self.closed.push(note.meta.rel.clone());
+            // Enough to undo a run of closes; not a second history.
+            if self.closed.len() > 20 {
+                self.closed.remove(0);
+            }
+        }
         self.active_tab = if self.tabs.is_empty() {
             None
         } else {
@@ -883,7 +923,9 @@ impl App {
             .and_then(|id| self.tabs.iter().position(|t| t.note == id))
             .or(if self.tabs.is_empty() { None } else { Some(0) });
 
+        // Ids are positions, and a rebuilt index can put another note at one.
         self.history.clear();
+        self.forward.clear();
         self.explorer.rebuild(&self.index);
         if self.graph.is_some() {
             self.refresh_graph();
@@ -902,6 +944,9 @@ impl App {
                 self.tabs.clear();
                 self.active_tab = None;
                 self.history.clear();
+                self.forward.clear();
+                // Paths, but of the other vault, where they may name other notes.
+                self.closed.clear();
                 self.graph = None;
                 self.view = View::Notes;
                 self.focus = Focus::Explorer;
