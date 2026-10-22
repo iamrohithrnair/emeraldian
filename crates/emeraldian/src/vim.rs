@@ -1992,6 +1992,41 @@ mod tests {
     }
 
     #[test]
+    fn tab_moves_between_panes_from_normal_mode() {
+        // Normal mode is not typing, so Tab is the pane key there, as it is
+        // while reading. It used to fall through to the editor and indent the
+        // line under the cursor.
+        let (_v, mut app) = app("- item\n");
+        let tab = |app: &mut App, code| {
+            crate::keys::handle(app, KeyEvent::new(code, KeyModifiers::empty()));
+        };
+
+        tab(&mut app, KeyCode::Tab);
+        assert_eq!(app.focus, Focus::Sidebar);
+        tab(&mut app, KeyCode::BackTab);
+        tab(&mut app, KeyCode::BackTab);
+        assert_eq!(app.focus, Focus::Explorer);
+        assert_eq!(text(&mut app), "- item\n", "nothing was typed");
+
+        // Visual mode is not typing either; `>` is how it indents.
+        tab(&mut app, KeyCode::Tab);
+        press(&mut app, 'V');
+        tab(&mut app, KeyCode::Tab);
+        assert_eq!(app.focus, Focus::Sidebar);
+        assert_eq!(text(&mut app), "- item\n");
+    }
+
+    #[test]
+    fn tab_nests_a_list_item_while_inserting() {
+        let (_v, mut app) = app("- item\n");
+        press(&mut app, 'A');
+        crate::keys::handle(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()));
+
+        assert_eq!(app.focus, Focus::Note, "typing keeps the key");
+        assert_eq!(text(&mut app), "    - item\n");
+    }
+
+    #[test]
     fn escape_clears_a_half_typed_command_before_leaving() {
         let (_v, mut app) = app("text\n");
         press(&mut app, '2');

@@ -133,7 +133,7 @@ doesn't. `?` shows the full list in the app.
 | `Ctrl+G` / `Ctrl+Shift+G` | Graph / local graph |
 | `Ctrl+L` | Assistant panel |
 | `Ctrl+\` / `Ctrl+]` | Toggle the sidebars (hard to type on some layouts — [remap them](#configuration)) |
-| `Tab` | Move between panes |
+| `Tab` / `Shift+Tab` | Move between panes (`Esc` first while typing in a note) |
 | `hjkl`, `g`, `G` | Move within a pane |
 | `Enter` | Open / follow a link |
 | `F3` / `F4` | Close the tab / vim mode on / off |
