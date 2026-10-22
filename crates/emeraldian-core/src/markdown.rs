@@ -666,6 +666,7 @@ fn match_inline(rest: &str, tag_boundary: bool) -> Option<(usize, Vec<Span>)> {
 
     for (delim, apply) in DOUBLE_DELIMITERS {
         if rest.starts_with(delim)
+            && (tag_boundary || !delim.starts_with('_'))
             && let Some((consumed, inner)) = emphasis_text(rest, delim)
         {
             // The inside is parsed too, so `**bold `code`**` keeps both.
@@ -682,10 +683,14 @@ fn match_inline(rest: &str, tag_boundary: bool) -> Option<(usize, Vec<Span>)> {
 
     // Single-character emphasis is tried after the doubles so `**` is never
     // read as two nested italics.
+    // An underscore inside a word is part of it, as CommonMark has it, so
+    // `snake_case` and a footnote such as `[^1_2]` keep theirs. Asterisks may
+    // still emphasise part of a word.
     for delim in ["*", "_"] {
         let doubled = rest.starts_with(&delim.repeat(2));
         if rest.starts_with(delim)
             && !doubled
+            && (tag_boundary || delim != "_")
             && let Some((consumed, inner)) = emphasis_text(rest, delim)
         {
             let spans = parse_inline(inner)
@@ -796,13 +801,17 @@ fn delimited_text<'a>(rest: &'a str, delim: &str) -> Option<(usize, &'a str)> {
 
 /// Like [`delimited_text`] for emphasis, whose closing delimiter can't be
 /// inside code or maths: those claim their own `*` and `_`, so `snake_case
-/// and $x_1$` has no italics in it. An escaped delimiter doesn't close either.
+/// and $x_1$` has no italics in it. An escaped delimiter doesn't close
+/// either, and nor does an underscore with more of a word straight after it.
 fn emphasis_text<'a>(rest: &'a str, delim: &str) -> Option<(usize, &'a str)> {
     let after = &rest[delim.len()..];
     let mut at = 0;
     while at < after.len() {
         let here = &after[at..];
-        if here.starts_with(delim) {
+        let closes = here.strip_prefix(delim).is_some_and(|next| {
+            !(delim.starts_with('_') && next.chars().next().is_some_and(char::is_alphanumeric))
+        });
+        if closes {
             if at == 0 {
                 return None; // `**` with nothing between is literal
             }
@@ -1327,6 +1336,37 @@ mod tests {
             spans_to_text(&parse_inline("costs $5, or $3 off")),
             "costs $5, or $3 off"
         );
+    }
+
+    #[test]
+    fn an_underscore_inside_a_word_is_part_of_it() {
+        // As in CommonMark. A footnote like `[^1_1]` used to pair its
+        // underscore with the next one and lose both.
+        for text in ["snake_case_name", "see [^1_1] and [^1_2]", "a_b_c"] {
+            let spans = parse_inline(text);
+            assert_eq!(spans_to_text(&spans), text);
+            assert!(
+                !spans.iter().any(|s| s.style.italic || s.style.bold),
+                "{text:?}"
+            );
+        }
+        assert!(parse_inline("_italic_ word").iter().any(|s| s.style.italic));
+        assert!(parse_inline("__bold__ word").iter().any(|s| s.style.bold));
+        assert!(
+            parse_inline("un*frigging*believable")
+                .iter()
+                .any(|s| s.style.italic),
+            "an asterisk still works inside a word"
+        );
+        let spans = parse_inline("_one_two_");
+        assert_eq!(
+            spans_to_text(&spans),
+            "one_two",
+            "closes at the end of the word"
+        );
+        // Multi-byte letters either side of the underscore.
+        assert_eq!(spans_to_text(&parse_inline("é_ü_é")), "é_ü_é");
+        assert!(parse_inline("_ü_ é").iter().any(|s| s.style.italic));
     }
 
     #[test]

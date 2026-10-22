@@ -464,16 +464,17 @@ fn render_block(
 
         BlockKind::Frontmatter(entries) => {
             for (key, value) in entries {
-                out.push(Line::from(vec![
-                    Span::styled(
-                        format!("{pad}{key}: "),
+                let entry = [
+                    (
+                        format!("{key}: "),
                         Style::default().fg(palette.frontmatter_key),
                     ),
-                    Span::styled(
+                    (
                         value.clone(),
                         Style::default().fg(palette.frontmatter_value),
                     ),
-                ]));
+                ];
+                out.extend(wrap_spans(&entry, width, &pad, &format!("{pad}  ")));
             }
             out.push(Line::from(Span::styled(
                 "─".repeat(width.min(60)),
@@ -486,16 +487,22 @@ fn render_block(
             let style = Style::default()
                 .fg(palette.heading(*level))
                 .add_modifier(Modifier::BOLD);
-            let text = shown_text(spans);
-            out.push(Line::from(Span::styled(format!("{pad}{text}"), style)));
+            // Wrapped like a paragraph is. A heading can be longer than the
+            // pane, and one pasted in from elsewhere can carry a whole page of
+            // text and maths on its single line.
+            let start = out.len();
+            render_styled_spans(spans, ctx, inner_width, indent, &pad, &pad, style, out);
             // Obsidian underlines H1 and H2; a rule is the terminal equivalent
             // of the larger type it uses to separate sections.
             if *level <= 2 {
+                let widest = out[start..]
+                    .iter()
+                    .map(Line::width)
+                    .max()
+                    .unwrap_or(0)
+                    .saturating_sub(indent);
                 out.push(Line::from(Span::styled(
-                    format!(
-                        "{pad}{}",
-                        "─".repeat(inner_width.min(text.chars().count() + 8))
-                    ),
+                    format!("{pad}{}", "─".repeat(inner_width.min(widest + 8))),
                     Style::default().fg(palette.border),
                 )));
             }
@@ -598,20 +605,32 @@ fn render_block(
 
         BlockKind::Callout { kind, title, body } => {
             let color = palette.callout(kind);
-            let label = if title.is_empty() {
-                capitalize(kind)
-            } else {
-                shown_text(title)
-            };
+            let fallback = [markdown::Span::plain(capitalize(kind))];
+            let title: &[markdown::Span] = if title.is_empty() { &fallback } else { title };
 
-            out.push(Line::from(vec![
-                Span::raw(pad.clone()),
-                Span::styled(format!("{} ", icons::QUOTE_BAR), Style::default().fg(color)),
-                Span::styled(
-                    label,
-                    Style::default().fg(color).add_modifier(Modifier::BOLD),
-                ),
-            ]));
+            // The title wraps under its bar, like the body below it.
+            let mark = ctx.pictures.len();
+            let mut heading = Vec::new();
+            let style = Style::default().fg(color).add_modifier(Modifier::BOLD);
+            render_styled_spans(
+                title,
+                ctx,
+                width.saturating_sub(2),
+                0,
+                "",
+                "",
+                style,
+                &mut heading,
+            );
+            shift(&mut ctx.pictures[mark..], out.len(), indent as u16 + 2);
+            for line in heading {
+                let mut spans = vec![
+                    Span::raw(pad.clone()),
+                    Span::styled(format!("{} ", icons::QUOTE_BAR), Style::default().fg(color)),
+                ];
+                spans.extend(line.spans);
+                out.push(Line::from(spans));
+            }
 
             let mark = ctx.pictures.len();
             let mut inner = Vec::new();
@@ -676,6 +695,24 @@ fn render_spans(
     rest_pad: &str,
     out: &mut Vec<Line<'static>>,
 ) {
+    let base = Style::default().fg(ctx.palette.text_normal);
+    render_styled_spans(spans, ctx, width, indent, first_pad, rest_pad, base, out);
+}
+
+/// [`render_spans`] for text whose plain parts take `base` rather than the
+/// body colour, such as a heading or a callout title. Links, tags and maths
+/// inside it are still coloured as they are anywhere else.
+#[allow(clippy::too_many_arguments)]
+fn render_styled_spans(
+    spans: &[markdown::Span],
+    ctx: &mut Ctx,
+    width: usize,
+    indent: usize,
+    first_pad: &str,
+    rest_pad: &str,
+    base: Style,
+    out: &mut Vec<Line<'static>>,
+) {
     let mut run: Vec<markdown::Span> = Vec::new();
     // Text resuming after something lifted out starts a line of its own, and
     // shouldn't start it with the space that separated them.
@@ -703,7 +740,7 @@ fn render_spans(
 
         if !run.is_empty() {
             let pad = if out.is_empty() { first_pad } else { rest_pad };
-            let styled = style_spans(&run, ctx.palette, ctx.index);
+            let styled = style_spans(&run, ctx.palette, ctx.index, base);
             out.extend(wrap_spans(&styled, width, pad, rest_pad));
             run.clear();
         }
@@ -727,7 +764,7 @@ fn render_spans(
 
     if !run.is_empty() || out.is_empty() {
         let pad = if out.is_empty() { first_pad } else { rest_pad };
-        let styled = style_spans(&run, ctx.palette, ctx.index);
+        let styled = style_spans(&run, ctx.palette, ctx.index, base);
         out.extend(wrap_spans(&styled, width, pad, rest_pad));
     }
 }
@@ -777,16 +814,17 @@ fn shift(pictures: &mut [Picture], lines: usize, indent: u16) {
     }
 }
 
-/// Applies theme colors to parsed inline spans.
+/// Applies theme colors to parsed inline spans, starting from `base`.
 fn style_spans(
     spans: &[markdown::Span],
     palette: &Palette,
     index: &emeraldian_core::index::VaultIndex,
+    base: Style,
 ) -> Vec<(String, Style)> {
     spans
         .iter()
         .map(|span| {
-            let mut style = Style::default().fg(palette.text_normal);
+            let mut style = base;
 
             match &span.kind {
                 SpanKind::WikiLink { target, .. } => {
@@ -882,6 +920,10 @@ fn display_math(
 }
 
 /// Wraps styled spans to `width`, breaking on spaces and keeping styles intact.
+///
+/// Widths are display columns, so wide characters wrap where they are drawn.
+/// A word wider than a whole line, such as a long URL, is broken at the edge
+/// of the pane rather than left running off it.
 #[must_use]
 pub fn wrap_spans(
     spans: &[(String, Style)],
@@ -893,38 +935,63 @@ pub fn wrap_spans(
         return Vec::new();
     }
 
+    let indent_width = indent.width();
     let mut lines: Vec<Line> = Vec::new();
     let mut current: Vec<Span> = vec![Span::raw(first_indent.to_string())];
-    let mut used = first_indent.chars().count();
+    let mut used = first_indent.width();
+    let mut break_line = |current: &mut Vec<Span<'static>>, used: &mut usize| {
+        lines.push(Line::from(std::mem::take(current)));
+        current.push(Span::raw(indent.to_string()));
+        *used = indent_width;
+    };
 
     for (text, style) in spans {
         // Splitting inclusively keeps the space attached to the preceding word,
         // so styles don't fragment on every gap.
         for word in text.split_inclusive(' ') {
-            let word_width = word.chars().count();
-
-            if used + word_width > width && used > indent.chars().count() {
-                lines.push(Line::from(std::mem::take(&mut current)));
-                current.push(Span::raw(indent.to_string()));
-                used = indent.chars().count();
+            let mut word = word;
+            if used + word.width() > width && used > indent_width {
+                break_line(&mut current, &mut used);
                 // A wrapped line shouldn't start with the space that ended the
                 // previous one.
-                let trimmed = word.trim_start();
-                if trimmed.is_empty() {
+                word = word.trim_start();
+                if word.is_empty() {
                     continue;
                 }
-                current.push(Span::styled(trimmed.to_string(), *style));
-                used += trimmed.chars().count();
-                continue;
             }
-
-            current.push(Span::styled(word.to_string(), *style));
-            used += word_width;
+            // Checked for emptiness as well as width: with an indent as wide as
+            // the pane, even the last character of a word is too wide.
+            while !word.trim_end().is_empty() && used + word.trim_end().width() > width {
+                let (head, rest) = split_at_column(word, width.saturating_sub(used));
+                current.push(Span::styled(head.to_string(), *style));
+                break_line(&mut current, &mut used);
+                word = rest;
+            }
+            if !word.is_empty() {
+                current.push(Span::styled(word.to_string(), *style));
+                used += word.width();
+            }
         }
     }
 
     lines.push(Line::from(current));
     lines
+}
+
+/// Splits `text` after as many characters as fit in `columns`, and after one
+/// at the least, so that breaking a word always makes progress.
+fn split_at_column(text: &str, columns: usize) -> (&str, &str) {
+    use unicode_width::UnicodeWidthChar;
+
+    let mut used = 0;
+    for (at, ch) in text.char_indices() {
+        let width = ch.width().unwrap_or(0);
+        if at > 0 && used + width > columns {
+            return text.split_at(at);
+        }
+        used += width;
+    }
+    (text, "")
 }
 
 fn render_table(table: &Table, palette: &Palette, pad: &str, out: &mut Vec<Line<'static>>) {
@@ -2243,6 +2310,93 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The widest rendered row, in display columns, ignoring trailing space.
+    fn widest(lines: &[String]) -> usize {
+        lines
+            .iter()
+            .map(|line| line.trim_end().width())
+            .max()
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn a_long_heading_wraps_instead_of_running_off_the_pane() {
+        // One line of an exported chat, pasted as a single heading. It used to
+        // be drawn as one row, so everything past the first few words — maths
+        // included — was off the edge of the pane.
+        let rows = shown(&format!("# {}\n", "a long heading ".repeat(20)), 40);
+        assert!(rows.len() > 5, "{rows:?}");
+        assert!(widest(&rows) <= 40, "{rows:?}");
+        let rule = rows.iter().position(|row| row.starts_with('─'));
+        assert_eq!(
+            rule,
+            Some(rows.len() - 1),
+            "the rule goes under the last row"
+        );
+    }
+
+    #[test]
+    fn maths_in_a_heading_is_typeset_and_display_maths_set_apart() {
+        let rows = shown(
+            "# Such as $\\pi$, and $$ \\pi = 4\\arctan(1) $$ which takes a few symbols\n",
+            40,
+        );
+        assert!(rows[0].starts_with("Such as π,"), "{rows:?}");
+        assert!(
+            rows.iter().any(|row| row.trim() == "π = 4 arctan(1)"),
+            "the display maths has a row of its own: {rows:?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.starts_with("which takes")),
+            "{rows:?}"
+        );
+    }
+
+    #[test]
+    fn a_word_longer_than_the_pane_is_broken_at_its_edge() {
+        let url =
+            "https://docs.example.com/r/en-US/a-very-long-path/Floating-Point-Numerical-Formats";
+        let rows = shown(&format!("See {url} for more.\n"), 30);
+        assert!(widest(&rows) <= 30, "{rows:?}");
+        let joined: String = rows.concat().split_whitespace().collect();
+        assert_eq!(
+            joined,
+            format!("See{url}formore."),
+            "nothing is lost along the way"
+        );
+    }
+
+    #[test]
+    fn wide_characters_wrap_by_the_columns_they_take() {
+        let rows = shown(&format!("{}\n", "日本語のテキスト ".repeat(6)), 20);
+        assert!(widest(&rows) <= 20, "{rows:?}");
+    }
+
+    #[test]
+    fn a_callout_title_and_a_frontmatter_value_wrap() {
+        let title = "a callout title that is far too long for the pane ";
+        let rows = shown(&format!("> [!note] {title}\n> body\n"), 24);
+        assert!(widest(&rows) <= 24, "{rows:?}");
+        assert!(rows.len() > 3, "the title takes several rows: {rows:?}");
+
+        let rows = shown(
+            &format!("---\nsummary: {}\n---\nbody\n", "words ".repeat(20)),
+            30,
+        );
+        assert!(widest(&rows) <= 30, "{rows:?}");
+        assert!(
+            rows[1].starts_with("  "),
+            "continued under the value: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn wrapping_inside_an_indent_wider_than_the_pane_still_ends() {
+        let spans = [("abcdef".to_string(), Style::default())];
+        let lines = wrap_spans(&spans, 2, "", "    ");
+        assert!(lines.len() >= 6, "one character a row, without looping");
     }
 
     /// Rendered rows with trailing space trimmed and non-breaking spaces shown

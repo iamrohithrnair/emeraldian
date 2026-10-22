@@ -4,6 +4,25 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0]
+
+### Fixed
+
+- **Long headings and long words wrap in reading mode.** A heading longer
+  than the pane was drawn on one row and cut off at its edge, maths and all.
+  That is how a chat export pasted in as a single line looked: one heading,
+  with every equation in it past the edge of the pane. Headings, callout
+  titles and frontmatter values now wrap like paragraphs do, with their maths
+  typeset and any `$$` equation set on rows of its own. A word wider than the
+  pane, such as a long URL, is broken at the edge instead of running off it,
+  and wrapping counts the columns text actually takes, so CJK text and emoji
+  wrap where they are drawn.
+
+- **An underscore inside a word stays part of it.** `snake_case_names` and
+  footnote markers like `[^1_2]` lost their underscores to italics. As in
+  CommonMark and Obsidian, an underscore now only emphasises at the edges of
+  a word. Asterisks still work anywhere.
+
 ## [0.7.0] — 2026-10-22
 
 Maths typeset in reading mode, `Tab` that moves between panes from an open
@@ -644,6 +663,7 @@ First release.
 - Unreadable vaults are reported clearly, including the macOS privacy
   permission that usually causes it.
 
+[0.8.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.8.0
 [0.7.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.7.0
 [0.6.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.6.0
 [0.5.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.5.0
