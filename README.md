@@ -77,9 +77,15 @@ cargo build --release                             # or just build it
 
 ```sh
 emeraldian ~/Notes           # a specific vault
+emeraldian .                 # the folder you are in, the way `code .` works
+emeraldian ~/Notes/Plan.md   # a note, opened in the vault it belongs to
 emeraldian                   # the vault Obsidian last had open
 emeraldian --list-vaults     # what Obsidian knows about
 ```
+
+Any folder of Markdown files opens this way, whether or not Obsidian has seen
+it. A note opens in the nearest folder above it that Obsidian uses as a vault,
+so its links still resolve, or in its own folder if there is none.
 
 Emeraldian accepts ordinary flags and the `obsidian://` URIs the desktop app
 registers, so a link or script that opens Obsidian also opens this:

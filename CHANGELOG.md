@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [0.7.0]
 
+### Added
+
+- **`emeraldian .` opens the folder you are in, as `code .` does.** A relative
+  path like `.` or `..` used to name the vault "vault" and file its saved state
+  under the path as typed, so every folder opened that way shared one set of
+  expanded folders, and "Open this note in Obsidian" asked for a vault called
+  "vault". The path is now made absolute first. A note works too:
+  `emeraldian ~/Notes/Projects/Plan.md` opens the vault the note belongs to,
+  with the note open, and a path that doesn't exist says so.
+
 ### Fixed
 
 - **`Tab` moves between panes from an open note.** Opening a note from the

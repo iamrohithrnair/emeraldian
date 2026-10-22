@@ -28,7 +28,7 @@ mod ui;
 mod vim;
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event};
@@ -46,7 +46,7 @@ const TICK: Duration = Duration::from_millis(33);
 
 fn main() -> io::Result<()> {
     let raw: Vec<String> = std::env::args().skip(1).collect();
-    let args = match cli::parse(&raw) {
+    let mut args = match cli::parse(&raw) {
         Ok(args) => args,
         Err(err) => {
             eprintln!("emeraldian: {}", err.0);
@@ -82,19 +82,27 @@ fn main() -> io::Result<()> {
         config.theme = theme;
     }
 
-    let Some(vault_path) = resolve_vault(&args, &config) else {
+    let Some(target) = resolve_vault(&args, &config) else {
         eprintln!(
             "emeraldian: no vault found.\n\n\
-             Pass one on the command line:\n    emeraldian ~/Notes\n\n\
+             Pass one on the command line:\n    emeraldian ~/Notes\n    \
+             emeraldian .           # the folder you are in\n\n\
              Or set it in the config:\n    vault = \"~/Notes\"\n\n\
              Registered Obsidian vaults can be listed with --list-vaults."
         );
         std::process::exit(1);
     };
 
-    if !vault_path.is_dir() {
-        eprintln!("emeraldian: {} is not a directory", vault_path.display());
-        std::process::exit(1);
+    let (vault_path, note) = match locate(&target) {
+        Ok(found) => found,
+        Err(message) => {
+            eprintln!("emeraldian: {message}");
+            std::process::exit(1);
+        }
+    };
+    // A note given by `--note` as well is the one that was asked for by name.
+    if args.note.is_none() {
+        args.note = note;
     }
 
     let vault = emeraldian_core::vault::Vault::from_path(&vault_path);
@@ -168,6 +176,61 @@ fn resolve_vault(args: &Args, config: &Config) -> Option<PathBuf> {
         .find(|v| v.open)
         .or_else(|| vaults.first())
         .map(|v| v.path.clone())
+}
+
+/// What a path on the command line opens, read the way `code` reads one.
+///
+/// A folder is the vault itself, Obsidian's or not. A note opens in the vault
+/// it belongs to, at that note: the nearest folder above it that Obsidian has
+/// opened as a vault, so its links resolve against the rest of the vault, or
+/// its own folder when there is none.
+fn locate(path: &Path) -> Result<(PathBuf, Option<String>), String> {
+    if path.is_dir() {
+        return Ok((absolute(path), None));
+    }
+    if !path.exists() {
+        return Err(format!("{} does not exist", path.display()));
+    }
+    if !emeraldian_core::vault::is_markdown(path) {
+        return Err(format!(
+            "{} is not a folder or a Markdown note",
+            path.display()
+        ));
+    }
+
+    let file = absolute(path);
+    let folder = file
+        .parent()
+        .map_or_else(|| file.clone(), Path::to_path_buf);
+    let vault = folder
+        .ancestors()
+        .find(|dir| dir.join(emeraldian_core::vault::OBSIDIAN_DIR).is_dir())
+        .map_or_else(|| folder.clone(), Path::to_path_buf);
+    let note = emeraldian_core::note::relative_path(&vault, &file);
+    Ok((vault, note))
+}
+
+/// A path made absolute, with `.`, `..` and links resolved.
+///
+/// So that `emeraldian .` is named after the folder it stands for, rather than
+/// after `.`, and what is remembered about a vault is filed under where it
+/// really is, not under whichever relative path reached it this time.
+fn absolute(path: &Path) -> PathBuf {
+    let Ok(resolved) = std::fs::canonicalize(path) else {
+        return path.to_path_buf();
+    };
+    // Windows resolves to a `\\?\C:\…` path, which is correct but is not how
+    // anything else on the system shows a folder. A plain drive path loses
+    // nothing without the prefix.
+    #[cfg(windows)]
+    if let Some(plain) = resolved
+        .to_str()
+        .and_then(|text| text.strip_prefix(r"\\?\"))
+        .filter(|plain| !plain.starts_with("UNC\\"))
+    {
+        return PathBuf::from(plain);
+    }
+    resolved
 }
 
 /// Expands a leading `~`, which a config file or an unexpanded shell arg has.
@@ -1320,6 +1383,90 @@ mod tests {
         assert_eq!(
             resolve_vault(&Args::default(), &config),
             Some(PathBuf::from("/from/config"))
+        );
+    }
+
+    #[test]
+    fn a_folder_on_the_command_line_is_the_vault() {
+        let vault = TempVault::new("locate-folder");
+        let (path, note) = locate(vault.path()).expect("a folder opens");
+        assert_eq!(path, absolute(vault.path()));
+        assert_eq!(note, None);
+    }
+
+    #[test]
+    fn a_relative_folder_is_named_after_the_folder_it_stands_for() {
+        // `emeraldian .` used to be a vault called "vault", remembered under
+        // ".", which every folder opened that way then shared.
+        let (path, _) = locate(Path::new(".")).expect("the current folder opens");
+        let here = absolute(&std::env::current_dir().expect("cwd"));
+        assert!(path.is_absolute(), "{}", path.display());
+        assert_eq!(path, here);
+        assert_eq!(
+            emeraldian_core::vault::Vault::from_path(&path).name,
+            here.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+        );
+
+        let vault = TempVault::new("locate-dots");
+        std::fs::create_dir_all(vault.path().join("sub")).expect("mkdir");
+        let (path, _) = locate(&vault.path().join("sub").join("..")).expect("opens");
+        assert_eq!(path, absolute(vault.path()));
+    }
+
+    #[test]
+    fn a_note_on_the_command_line_opens_in_its_vault() {
+        let vault = TempVault::new("locate-note");
+        std::fs::create_dir_all(vault.path().join(".obsidian")).expect("mkdir");
+        let plan = vault.write("Projects/Plan.md", "# Plan\n\n[[Other]]\n");
+        vault.write("Other.md", "# Other\n");
+
+        let (path, note) = locate(&plan).expect("a note opens");
+        assert_eq!(
+            path,
+            absolute(vault.path()),
+            "the vault it belongs to, not just its folder"
+        );
+        assert_eq!(note.as_deref(), Some("Projects/Plan.md"));
+
+        let mut app = App::new(
+            emeraldian_core::vault::Vault::from_path(&path),
+            Config::default(),
+        )
+        .expect("app");
+        let args = Args {
+            note,
+            ..Default::default()
+        };
+        apply_startup_args(&mut app, &args);
+        assert_eq!(
+            app.active_note(),
+            app.index.id_of_rel("Projects/Plan.md"),
+            "and the note is what opens"
+        );
+    }
+
+    #[test]
+    fn a_note_in_no_vault_opens_in_its_own_folder() {
+        let vault = TempVault::new("locate-loose");
+        let loose = vault.write("Loose/Note.md", "# Note\n");
+        let (path, note) = locate(&loose).expect("a note opens");
+        assert_eq!(path, absolute(&vault.path().join("Loose")));
+        assert_eq!(note.as_deref(), Some("Note.md"));
+    }
+
+    #[test]
+    fn a_missing_path_or_a_file_that_is_not_a_note_is_reported() {
+        let vault = TempVault::new("locate-errors");
+        let missing = locate(&vault.path().join("Nope")).expect_err("nothing there");
+        assert!(missing.contains("does not exist"), "{missing}");
+
+        let picture = vault.write("chart.png", "not really a png");
+        let not_a_note = locate(&picture).expect_err("not a note");
+        assert!(
+            not_a_note.contains("not a folder or a Markdown note"),
+            "{not_a_note}"
         );
     }
 }
