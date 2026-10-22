@@ -4,7 +4,11 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.7.0]
+## [0.7.0] — 2026-10-22
+
+Maths typeset in reading mode, `Tab` that moves between panes from an open
+note, and `emeraldian .` for the folder you are in, the way `code .` works.
+Notes and a `config.toml` from an earlier version work unchanged.
 
 ### Added
 
