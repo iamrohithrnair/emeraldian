@@ -305,6 +305,20 @@ impl Graph {
     /// reading, which is usually far more legible than the whole vault.
     #[must_use]
     pub fn neighborhood(&self, origin: usize, depth: usize) -> Vec<usize> {
+        self.hops(origin, depth)
+            .into_iter()
+            .map(|(node, _)| node)
+            .collect()
+    }
+
+    /// Every node within `depth` hops of `origin`, with how many hops away it
+    /// is, nearest first. `origin` itself leads, at 0.
+    ///
+    /// The distance is what a list of the neighbourhood needs and a picture of
+    /// it doesn't: on screen, how far out a note sits is visible, and in text
+    /// it has to be said.
+    #[must_use]
+    pub fn hops(&self, origin: usize, depth: usize) -> Vec<(usize, usize)> {
         if origin >= self.nodes.len() {
             return Vec::new();
         }
@@ -316,7 +330,7 @@ impl Graph {
         queue.push_back((origin, 0usize));
 
         while let Some((node, d)) = queue.pop_front() {
-            out.push(node);
+            out.push((node, d));
             if d == depth {
                 continue;
             }
@@ -329,6 +343,76 @@ impl Graph {
         }
 
         out
+    }
+
+    /// The fewest links between two nodes, as the nodes along the way with both
+    /// ends included, or `None` when no chain of links joins them.
+    ///
+    /// Breadth-first, so the chain is a shortest one; among several of the same
+    /// length, the one through the earliest-built nodes wins, which keeps the
+    /// answer the same from one run to the next.
+    #[must_use]
+    pub fn shortest_path(&self, from: usize, to: usize) -> Option<Vec<usize>> {
+        if from >= self.nodes.len() || to >= self.nodes.len() {
+            return None;
+        }
+        let mut came_from = vec![usize::MAX; self.nodes.len()];
+        came_from[from] = from;
+        let mut queue = VecDeque::from([from]);
+
+        while let Some(node) = queue.pop_front() {
+            if node == to {
+                let mut path = vec![to];
+                let mut at = to;
+                while at != from {
+                    at = came_from[at];
+                    path.push(at);
+                }
+                path.reverse();
+                return Some(path);
+            }
+            for &next in self.neighbors(node) {
+                if came_from[next] == usize::MAX {
+                    came_from[next] = node;
+                    queue.push_back(next);
+                }
+            }
+        }
+        None
+    }
+
+    /// The graph's islands: groups of nodes joined to each other by links and
+    /// to nothing outside the group. Largest first; each group is in node
+    /// order.
+    #[must_use]
+    pub fn components(&self) -> Vec<Vec<usize>> {
+        let mut component = vec![usize::MAX; self.nodes.len()];
+        let mut groups: Vec<Vec<usize>> = Vec::new();
+
+        for start in 0..self.nodes.len() {
+            if component[start] != usize::MAX {
+                continue;
+            }
+            let id = groups.len();
+            let mut members = Vec::new();
+            let mut stack = vec![start];
+            component[start] = id;
+            while let Some(node) = stack.pop() {
+                members.push(node);
+                for &next in self.neighbors(node) {
+                    if component[next] == usize::MAX {
+                        component[next] = id;
+                        stack.push(next);
+                    }
+                }
+            }
+            members.sort_unstable();
+            groups.push(members);
+        }
+
+        // Stable, so equal-sized groups keep the order of their first node.
+        groups.sort_by_key(|group| std::cmp::Reverse(group.len()));
+        groups
     }
 
     /// A graph holding only `indices` and the edges that run between them.
@@ -1039,6 +1123,75 @@ mod tests {
         assert_eq!(graph.neighborhood(a, 0).len(), 1);
         assert_eq!(graph.neighborhood(a, 1).len(), 2);
         assert_eq!(graph.neighborhood(a, 2).len(), 3);
+    }
+
+    #[test]
+    fn hops_say_how_far_out_each_node_is() {
+        let vault = TempVault::new("hops");
+        vault.write("A.md", "[[B]]\n");
+        vault.write("B.md", "[[C]]\n");
+        vault.write("C.md", "end\n");
+
+        let index = vault.index();
+        let graph = Graph::build(&index, &GraphOptions::default());
+        let at = |rel: &str| graph.node_of_note(index.id_of_rel(rel).unwrap()).unwrap();
+
+        assert_eq!(
+            graph.hops(at("A.md"), 2),
+            vec![(at("A.md"), 0), (at("B.md"), 1), (at("C.md"), 2)]
+        );
+        assert_eq!(graph.hops(usize::MAX, 2), vec![]);
+    }
+
+    #[test]
+    fn the_shortest_path_follows_links_either_way() {
+        let vault = TempVault::new("path");
+        // A → B → C, and D → C: D is reached from A against the direction
+        // of its link, which is still a connection.
+        vault.write("A.md", "[[B]]\n");
+        vault.write("B.md", "[[C]]\n");
+        vault.write("C.md", "end\n");
+        vault.write("D.md", "[[C]]\n");
+        vault.write("Island.md", "alone\n");
+
+        let index = vault.index();
+        let graph = Graph::build(&index, &GraphOptions::default());
+        let at = |rel: &str| graph.node_of_note(index.id_of_rel(rel).unwrap()).unwrap();
+
+        assert_eq!(
+            graph.shortest_path(at("A.md"), at("D.md")),
+            Some(vec![at("A.md"), at("B.md"), at("C.md"), at("D.md")])
+        );
+        assert_eq!(
+            graph.shortest_path(at("C.md"), at("C.md")),
+            Some(vec![at("C.md")])
+        );
+        assert_eq!(graph.shortest_path(at("A.md"), at("Island.md")), None);
+        assert_eq!(graph.shortest_path(at("A.md"), usize::MAX), None);
+    }
+
+    #[test]
+    fn components_are_the_islands_largest_first() {
+        let vault = linked_vault();
+        let index = vault.index();
+        let graph = Graph::build(&index, &GraphOptions::default());
+
+        let groups = graph.components();
+        let labels: Vec<Vec<&str>> = groups
+            .iter()
+            .map(|group| {
+                group
+                    .iter()
+                    .map(|&n| graph.nodes[n].label.as_str())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(labels, vec![vec!["A", "B", "Ghost"], vec!["Lonely"]]);
+        assert_eq!(
+            groups.iter().map(Vec::len).sum::<usize>(),
+            graph.nodes.len(),
+            "every node is in exactly one"
+        );
     }
 
     #[test]

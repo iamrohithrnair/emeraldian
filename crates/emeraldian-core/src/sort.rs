@@ -137,6 +137,7 @@ mod tests {
             modified,
             created,
             size: 0,
+            stamp: crate::note::Stamp::default(),
         }
     }
 

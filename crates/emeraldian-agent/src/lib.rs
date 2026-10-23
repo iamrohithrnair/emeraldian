@@ -29,6 +29,7 @@
 #![forbid(unsafe_code)]
 
 pub mod catalog;
+pub mod embed;
 pub mod error;
 pub mod http;
 pub mod provider;

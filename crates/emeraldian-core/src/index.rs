@@ -8,7 +8,7 @@
 //! The index holds metadata only — never note bodies. A vault of ten thousand
 //! notes indexes into a few megabytes, and bodies are read on demand.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -223,12 +223,16 @@ impl VaultIndex {
                 self.lookup.entry(alias.to_lowercase()).or_insert(id);
             }
         }
+        // A filename replaces an alias of the same name, as a stronger key
+        // must; but among notes sharing a filename, the first keeps it,
+        // matching the sorted scan order so the result is deterministic rather
+        // than filesystem-dependent.
+        let mut named: HashSet<String> = HashSet::new();
         for (id, note) in self.notes.iter().enumerate() {
-            // First note wins a contested filename, matching the sorted scan
-            // order so the result is deterministic rather than filesystem-dependent.
-            self.lookup
-                .entry(note.meta.stem.to_lowercase())
-                .or_insert(id);
+            let stem = note.meta.stem.to_lowercase();
+            if named.insert(stem.clone()) {
+                self.lookup.insert(stem, id);
+            }
         }
         for (id, note) in self.notes.iter().enumerate() {
             let rel = note.meta.rel.to_lowercase();
@@ -806,6 +810,24 @@ mod tests {
             "path with folder"
         );
         assert_eq!(index.resolve("Nope"), None);
+    }
+
+    #[test]
+    fn a_filename_beats_an_alias_of_the_same_name() {
+        // An alias used to keep a name a file already had, so `[[Plan]]` went
+        // to the note merely called Plan rather than the note that is Plan.
+        let vault = TempVault::new("resolve-alias");
+        vault.write("Roadmap.md", "---\naliases: [Plan]\n---\n");
+        vault.write("Projects/Plan.md", "x");
+        vault.write("Other/Plan.md", "x");
+
+        let index = vault.index();
+        assert_eq!(
+            index.resolve("Plan"),
+            index.id_of_rel("Other/Plan.md"),
+            "the file, and of two files the first by path"
+        );
+        assert_eq!(index.resolve("Roadmap"), index.id_of_rel("Roadmap.md"));
     }
 
     #[test]

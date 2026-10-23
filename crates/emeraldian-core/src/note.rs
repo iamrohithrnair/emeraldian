@@ -235,6 +235,60 @@ pub struct NoteMeta {
     /// rather than collapsing every note onto the epoch.
     pub created: u64,
     pub size: u64,
+    /// The file's times to the nanosecond, and its identity: what tells the
+    /// retrieval index one edit from the next, as `modified` can't.
+    pub stamp: Stamp,
+}
+
+/// When a file was last written and last changed, as precisely as the
+/// filesystem keeps them, and which file it is: with its size, what says a
+/// note may have changed since it was indexed, without reading it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Stamp {
+    /// When its content was last written, in nanoseconds since the epoch.
+    pub written: u64,
+    /// When anything about it last changed, in nanoseconds since the epoch:
+    /// a tool that rewrites a file and puts its time back can't put this
+    /// back. The time written, where the system keeps no such time.
+    pub changed: u64,
+    /// Its number on its filesystem, which a file saved by replacing it
+    /// with another changes; 0 where the system gives none.
+    pub inode: u64,
+}
+
+impl Stamp {
+    #[must_use]
+    pub fn of(metadata: &std::fs::Metadata) -> Self {
+        let written = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |since| {
+                u64::try_from(since.as_nanos()).unwrap_or(u64::MAX)
+            });
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let changed = u64::try_from(metadata.ctime())
+                .ok()
+                .and_then(|seconds| seconds.checked_mul(1_000_000_000))
+                .and_then(|nanos| nanos.checked_add(u64::try_from(metadata.ctime_nsec()).ok()?))
+                .unwrap_or(written);
+            Self {
+                written,
+                changed,
+                inode: metadata.ino(),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            Self {
+                written,
+                changed: written,
+                inode: 0,
+            }
+        }
+    }
 }
 
 impl NoteMeta {
@@ -348,6 +402,7 @@ mod tests {
             modified: 0,
             created: 0,
             size: 0,
+            stamp: Stamp::default(),
         };
         assert_eq!(meta.folder(), "");
     }

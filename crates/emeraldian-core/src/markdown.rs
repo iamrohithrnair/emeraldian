@@ -432,7 +432,7 @@ fn heading(trimmed: &str) -> Option<(u8, &str)> {
     let rest = &trimmed[level..];
     // Without a space it's a tag, not a heading.
     let text = rest.strip_prefix(' ')?;
-    Some((level as u8, text.trim().trim_end_matches('#').trim()))
+    Some((level as u8, crate::links::heading_text(text)))
 }
 
 fn list_item(line: &str) -> Option<(usize, Marker, &str)> {

@@ -1,5 +1,6 @@
 //! Core engine for emeraldian.
 #![forbid(unsafe_code)]
+pub mod edit;
 pub mod error;
 pub mod excalidraw;
 pub mod graph;
@@ -8,6 +9,7 @@ pub mod links;
 pub mod markdown;
 pub mod note;
 pub mod ops;
+pub mod retrieval;
 pub mod search;
 pub mod sort;
 pub mod vault;

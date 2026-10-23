@@ -982,45 +982,8 @@ impl App {
 
     /// Today's daily note, created if needed.
     pub fn daily_note_name(&self) -> String {
-        let name = format_date(&self.config.editor.daily_format);
-        let folder = self.config.editor.daily_folder.trim_matches('/');
-        if folder.is_empty() {
-            name
-        } else {
-            format!("{folder}/{name}")
-        }
+        self.config.editor.daily_note_name()
     }
-}
-
-/// Formats today's date, supporting the `%Y`/`%m`/`%d` placeholders that cover
-/// every daily-note format in practice.
-///
-/// Computed from the system clock with a plain civil-date conversion rather
-/// than pulling in a date library for three substitutions.
-fn format_date(format: &str) -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let (year, month, day) = civil_from_days((secs / 86_400) as i64);
-    format
-        .replace("%Y", &format!("{year:04}"))
-        .replace("%m", &format!("{month:02}"))
-        .replace("%d", &format!("{day:02}"))
-}
-
-/// Days since the Unix epoch to a civil date (Howard Hinnant's algorithm).
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
 #[cfg(test)]
@@ -1443,13 +1406,5 @@ mod tests {
         assert!(name.starts_with("Daily/"));
         // `Daily/YYYY-MM-DD`
         assert_eq!(name.len(), "Daily/".len() + 10, "got {name}");
-    }
-
-    #[test]
-    fn civil_dates_match_known_values() {
-        assert_eq!(civil_from_days(0), (1970, 1, 1));
-        assert_eq!(civil_from_days(19_723), (2024, 1, 1));
-        // A leap day, which is where naive date math usually breaks.
-        assert_eq!(civil_from_days(19_782), (2024, 2, 29));
     }
 }

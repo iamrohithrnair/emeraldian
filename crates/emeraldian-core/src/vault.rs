@@ -8,12 +8,14 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::UNIX_EPOCH;
 
 use serde::Deserialize;
 
-use crate::note::{self, NoteMeta};
+use crate::error::Error;
+use crate::note::{NoteMeta, Stamp};
 
 /// Directory Obsidian uses for its own per-vault settings. It contains no
 /// notes, so scanning skips it entirely.
@@ -61,6 +63,70 @@ impl Vault {
         self.path.join(OBSIDIAN_DIR).is_dir()
     }
 
+    /// Resolves a vault-relative path to an absolute one inside the vault.
+    ///
+    /// Rejects absolute paths and any `..` that would escape the root — the
+    /// check is on the *lexical* path, before touching the filesystem, so a
+    /// traversal attempt never becomes a real file operation.
+    ///
+    /// A question about the vault's root rather than its contents, so it needs
+    /// no index: the command line checks a path this way without reading every
+    /// note first.
+    pub fn resolve_path(&self, rel: &str) -> crate::error::Result<PathBuf> {
+        let rel = rel.trim().trim_start_matches('/');
+        if rel.is_empty() {
+            return Err(Error::InvalidName(rel.to_string()));
+        }
+
+        let candidate = Path::new(rel);
+        let mut depth = 0i32;
+        for component in candidate.components() {
+            match component {
+                Component::Normal(_) => depth += 1,
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    depth -= 1;
+                    if depth < 0 {
+                        return Err(Error::OutsideVault(candidate.to_path_buf()));
+                    }
+                }
+                Component::RootDir | Component::Prefix(_) => {
+                    return Err(Error::OutsideVault(candidate.to_path_buf()));
+                }
+            }
+        }
+
+        Ok(self.path.join(candidate))
+    }
+
+    /// Normalizes a note name into a vault-relative `.md` path.
+    ///
+    /// Accepts `Note`, `Note.md`, `Folder/Note` and `Folder/Note.md` alike,
+    /// because that's what a user types and what a model emits.
+    pub fn note_rel(&self, name: &str) -> crate::error::Result<String> {
+        let name = name.trim().trim_start_matches('/');
+        if name.is_empty() {
+            return Err(Error::InvalidName(name.to_string()));
+        }
+
+        let (folder, file) = match name.rsplit_once('/') {
+            Some((folder, file)) => (folder, file),
+            None => ("", name),
+        };
+        let stem = file.strip_suffix(".md").unwrap_or(file);
+        crate::ops::validate_name(stem)?;
+
+        let rel = if folder.is_empty() {
+            format!("{stem}.md")
+        } else {
+            format!("{folder}/{stem}.md")
+        };
+
+        // Run the traversal guard over the assembled path.
+        self.resolve_path(&rel)?;
+        Ok(rel)
+    }
+
     /// Walks the vault and returns every note, sorted by relative path.
     ///
     /// Sorting here rather than at each call site means the explorer, the quick
@@ -79,11 +145,10 @@ impl Vault {
             )
         })?;
 
-        let mut scan = Scan::default();
-        walk(&self.path, &self.path, options, &mut scan, 0)?;
-        scan.notes.sort_by(|a, b| a.rel.cmp(&b.rel));
-        scan.folders.sort();
-        scan.attachments.sort();
+        let mut scan = walk(&self.path, options)?;
+        // Every path is there once, so an unstable sort is as good as any.
+        scan.folders.sort_unstable();
+        scan.attachments.sort_unstable();
         Ok(scan)
     }
 }
@@ -124,92 +189,268 @@ pub struct Scan {
     pub attachments: Vec<String>,
 }
 
-fn walk(
-    root: &Path,
-    dir: &Path,
-    options: &ScanOptions,
-    out: &mut Scan,
-    depth: usize,
-) -> Result<(), std::io::Error> {
-    if depth > options.max_depth {
-        return Ok(());
+impl Scan {
+    /// Finds the note a link target names, from file names and paths alone.
+    ///
+    /// The same answer [`crate::index::VaultIndex::resolve`] gives — a path
+    /// before a file name, the first note in path order when two share a name,
+    /// case ignored — for every target but an alias. Aliases live in each
+    /// note's frontmatter, and not having to read every note to find them is
+    /// the point: a scan lists a large vault in a fraction of the time an index
+    /// takes to read it. `None` means no file answers to the name, and only an
+    /// index can say whether an alias does.
+    #[must_use]
+    pub fn resolve(&self, target: &str) -> Option<&NoteMeta> {
+        let key = target.trim().trim_end_matches('/').to_lowercase();
+        if key.is_empty() {
+            return None;
+        }
+        // `[[folder/Note]]` written with a leading `./` or `/`.
+        let bare = key.trim_start_matches(['.', '/']);
+        for key in [key.as_str(), bare] {
+            let by_path = self.notes.iter().find(|note| {
+                let rel = note.rel.to_lowercase();
+                rel == key || rel.strip_suffix(".md") == Some(key)
+            });
+            if by_path.is_some() {
+                return by_path;
+            }
+            let by_name = self
+                .notes
+                .iter()
+                .find(|note| note.stem.to_lowercase() == key);
+            if by_name.is_some() {
+                return by_name;
+            }
+        }
+        None
     }
+}
 
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        // A directory we can't read (permissions, a broken mount) shouldn't
-        // abort the whole scan — the rest of the vault is still usable.
-        Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => return Ok(()),
-        Err(err) => return Err(err),
-    };
+/// How many of a directory's notes one worker stats at a time: enough that
+/// handing them over costs little, few enough that a folder of thousands is
+/// shared out.
+const STAT_BATCH: usize = 128;
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
+/// The most threads that stat notes alongside the one reading directories.
+/// Asking for a file's times scales with threads where reading a directory
+/// doesn't, and stops scaling at about this many.
+const STAT_WORKERS: usize = 5;
 
-        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+/// Notes found in one directory, to be statted: its path in the vault, and
+/// their entries.
+type Batch = (Arc<str>, Vec<fs::DirEntry>);
 
-        if name == OBSIDIAN_DIR || name == TRASH_DIR {
+/// The batches waiting for a worker, and whether more will come.
+struct Batches {
+    waiting: Vec<Batch>,
+    done: bool,
+}
+
+/// Walks the vault: this thread reads the directories, one after another,
+/// while workers ask for the times and sizes of the notes it finds, which is
+/// most of a walk's cost and, unlike reading directories, is done no faster
+/// by one thread than by several. Each worker sorts what it found, and the
+/// sorted runs are merged.
+fn walk(root: &Path, options: &ScanOptions) -> Result<Scan, std::io::Error> {
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |n| n.get().saturating_sub(1))
+        .clamp(1, STAT_WORKERS);
+    let queue = Mutex::new(Batches {
+        waiting: Vec::new(),
+        done: false,
+    });
+    let ready = Condvar::new();
+    let mut scan = Scan::default();
+    let runs = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| scope.spawn(|| stat_notes(&queue, &ready)))
+            .collect();
+        let read = read_directories(root, options, &mut scan, &mut |batch| {
+            lock(&queue).waiting.push(batch);
+            ready.notify_one();
+        });
+        lock(&queue).done = true;
+        ready.notify_all();
+        let runs: Vec<Vec<NoteMeta>> = handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
+            .collect();
+        read.map(|()| runs)
+    })?;
+    scan.notes = merge_runs(runs);
+    Ok(scan)
+}
+
+/// The queue, even if a worker panicked holding it: what is in it is still
+/// whole, and the panic is passed on when the worker is joined.
+fn lock(queue: &Mutex<Batches>) -> std::sync::MutexGuard<'_, Batches> {
+    queue
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Reads every directory under `root` in turn, recording folders and
+/// attachments, and handing the notes found to `found` a batch at a time.
+fn read_directories(
+    root: &Path,
+    options: &ScanOptions,
+    scan: &mut Scan,
+    found: &mut dyn FnMut(Batch),
+) -> Result<(), std::io::Error> {
+    let mut stack: Vec<(PathBuf, Arc<str>, usize)> = vec![(root.to_path_buf(), Arc::from(""), 0)];
+    while let Some((dir, prefix, depth)) = stack.pop() {
+        if depth > options.max_depth {
             continue;
         }
-        if name.starts_with('.') && !options.include_hidden {
-            continue;
-        }
-
-        let Some(rel) = note::relative_path(root, &path) else {
-            continue;
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            // A directory we can't read (permissions, a broken mount) shouldn't
+            // abort the whole scan — the rest of the vault is still usable.
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => continue,
+            Err(err) => return Err(err),
         };
-
-        if is_dir {
-            if options.excluded_folders.iter().any(|f| f == &rel) {
+        let mut notes: Vec<fs::DirEntry> = Vec::new();
+        for entry in entries.flatten() {
+            let file_name = entry.file_name();
+            let Some(name) = file_name.to_str() else {
+                continue;
+            };
+            if name == OBSIDIAN_DIR || name == TRASH_DIR {
                 continue;
             }
-            out.folders.push(rel);
-            walk(root, &path, options, out, depth + 1)?;
-        } else if is_markdown(&path) {
-            let metadata = entry.metadata().ok();
-            let stamp = |t: std::io::Result<std::time::SystemTime>| {
-                t.ok()
-                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs())
-            };
-            let modified = metadata
-                .as_ref()
-                .and_then(|m| stamp(m.modified()))
-                .unwrap_or(0);
-            // Windows and most Linux filesystems report a birth time; older
-            // ext4 and some network mounts don't. Falling back to `modified`
-            // keeps created-order sorting sane instead of piling every note
-            // at the epoch.
-            let created = metadata
-                .as_ref()
-                .and_then(|m| stamp(m.created()))
-                .unwrap_or(modified);
-            let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
-
-            let stem = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or(name)
-                .to_string();
-
-            out.notes.push(NoteMeta {
-                path,
-                rel,
-                title: stem.clone(),
-                stem,
-                modified,
-                created,
-                size,
-            });
-        } else if options.include_attachments {
-            out.attachments.push(rel);
+            if name.starts_with('.') && !options.include_hidden {
+                continue;
+            }
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            if is_dir {
+                let rel = join(&prefix, name);
+                if options.excluded_folders.iter().any(|f| f == &rel) {
+                    continue;
+                }
+                scan.folders.push(rel.clone());
+                stack.push((entry.path(), Arc::from(rel), depth + 1));
+            } else if is_markdown(Path::new(name)) {
+                notes.push(entry);
+                if notes.len() == STAT_BATCH {
+                    found((Arc::clone(&prefix), std::mem::take(&mut notes)));
+                }
+            } else if options.include_attachments {
+                scan.attachments.push(join(&prefix, name));
+            }
+        }
+        if !notes.is_empty() {
+            found((prefix, notes));
         }
     }
-
     Ok(())
+}
+
+/// A worker: takes batches of notes until there are no more, and gives back
+/// what it made of them, sorted by path.
+fn stat_notes(queue: &Mutex<Batches>, ready: &Condvar) -> Vec<NoteMeta> {
+    let mut made = Vec::new();
+    loop {
+        let batch = {
+            let mut batches = lock(queue);
+            loop {
+                if let Some(batch) = batches.waiting.pop() {
+                    break Some(batch);
+                }
+                if batches.done {
+                    break None;
+                }
+                batches = ready
+                    .wait(batches)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+        };
+        let Some((prefix, entries)) = batch else {
+            break;
+        };
+        made.extend(entries.into_iter().map(|entry| note_of(&prefix, &entry)));
+    }
+    made.sort_unstable_by(|a, b| a.rel.cmp(&b.rel));
+    made
+}
+
+/// A note as a scan lists it, from its directory entry.
+fn note_of(prefix: &str, entry: &fs::DirEntry) -> NoteMeta {
+    let file_name = entry.file_name();
+    let name = file_name.to_str().unwrap_or_default();
+    let metadata = entry.metadata().ok();
+    let stamp = |t: std::io::Result<std::time::SystemTime>| {
+        t.ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+    };
+    let modified = metadata
+        .as_ref()
+        .and_then(|m| stamp(m.modified()))
+        .unwrap_or(0);
+    // Windows and most Linux filesystems report a birth time; older
+    // ext4 and some network mounts don't. Falling back to `modified`
+    // keeps created-order sorting sane instead of piling every note
+    // at the epoch.
+    let created = metadata
+        .as_ref()
+        .and_then(|m| stamp(m.created()))
+        .unwrap_or(modified);
+    let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+    let stem = Path::new(name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(name)
+        .to_string();
+    NoteMeta {
+        path: entry.path(),
+        rel: join(prefix, name),
+        title: stem.clone(),
+        stem,
+        modified,
+        created,
+        size,
+        stamp: metadata.as_ref().map(Stamp::of).unwrap_or_default(),
+    }
+}
+
+/// Merges runs each sorted by path into one.
+fn merge_runs(runs: Vec<Vec<NoteMeta>>) -> Vec<NoteMeta> {
+    let total = runs.iter().map(Vec::len).sum();
+    let mut out = Vec::with_capacity(total);
+    let mut runs: Vec<std::vec::IntoIter<NoteMeta>> =
+        runs.into_iter().map(Vec::into_iter).collect();
+    let mut heads: Vec<Option<NoteMeta>> = runs.iter_mut().map(Iterator::next).collect();
+    loop {
+        let mut least: Option<usize> = None;
+        for (i, head) in heads.iter().enumerate() {
+            let Some(head) = head else {
+                continue;
+            };
+            if least.is_none_or(|l| heads[l].as_ref().is_some_and(|other| head.rel < other.rel)) {
+                least = Some(i);
+            }
+        }
+        let Some(least) = least else {
+            break;
+        };
+        out.extend(heads[least].take());
+        heads[least] = runs[least].next();
+    }
+    out
+}
+
+/// A vault-relative path: a name in the folder at `prefix`.
+fn join(prefix: &str, name: &str) -> String {
+    if prefix.is_empty() {
+        name.to_string()
+    } else {
+        format!("{prefix}/{name}")
+    }
 }
 
 /// Whether a path is a note. Obsidian only treats `.md` as notes.
@@ -459,6 +700,179 @@ mod tests {
         );
         assert_eq!(vaults[0].name, "Live");
         assert!(vaults[0].open);
+    }
+
+    #[test]
+    fn a_scan_resolves_names_as_the_index_does_short_of_aliases() {
+        let dir = TempDir::new("scan-resolve");
+        dir.write("Target.md", "---\naliases: [Nickname]\n---\n");
+        dir.write("A/Same.md", "a");
+        dir.write("B/Same.md", "b");
+        dir.write("B/Target.md", "deeper");
+
+        let vault = Vault::from_path(dir.path());
+        let scan = vault.scan(&ScanOptions::default()).expect("scan");
+        let index = crate::index::VaultIndex::build(vault, ScanOptions::default()).expect("index");
+
+        for target in [
+            "Target",
+            "target.md",
+            "B/Target",
+            "./B/Target",
+            "/b/target.md",
+            "Same",
+            "B/Same",
+            "Nowhere",
+        ] {
+            let from_index = index
+                .resolve(target)
+                .and_then(|id| index.note(id))
+                .map(|note| note.meta.rel.as_str());
+            assert_eq!(
+                scan.resolve(target).map(|note| note.rel.as_str()),
+                from_index,
+                "{target}"
+            );
+        }
+        assert_eq!(
+            scan.resolve("Nickname"),
+            None,
+            "an alias takes the index to find"
+        );
+    }
+
+    /// The walk as it was before it was shared out among threads: one
+    /// directory after another, every note statted where it was found, the
+    /// lists sorted at the end. What the new walk must give, exactly.
+    fn reference_scan(root: &Path, options: &ScanOptions) -> Scan {
+        fn walk(root: &Path, dir: &Path, options: &ScanOptions, out: &mut Scan, depth: usize) {
+            if depth > options.max_depth {
+                return;
+            }
+            let Ok(entries) = fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                if name == OBSIDIAN_DIR || name == TRASH_DIR {
+                    continue;
+                }
+                if name.starts_with('.') && !options.include_hidden {
+                    continue;
+                }
+                let Some(rel) = crate::note::relative_path(root, &path) else {
+                    continue;
+                };
+                if is_dir {
+                    if options.excluded_folders.iter().any(|f| f == &rel) {
+                        continue;
+                    }
+                    out.folders.push(rel);
+                    walk(root, &path, options, out, depth + 1);
+                } else if is_markdown(&path) {
+                    let metadata = entry.metadata().ok();
+                    let stamp = |t: std::io::Result<std::time::SystemTime>| {
+                        t.ok()
+                            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                            .map(|d| d.as_secs())
+                    };
+                    let modified = metadata
+                        .as_ref()
+                        .and_then(|m| stamp(m.modified()))
+                        .unwrap_or(0);
+                    let created = metadata
+                        .as_ref()
+                        .and_then(|m| stamp(m.created()))
+                        .unwrap_or(modified);
+                    let stem = path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or(name)
+                        .to_string();
+                    out.notes.push(NoteMeta {
+                        path: path.clone(),
+                        rel,
+                        title: stem.clone(),
+                        stem,
+                        modified,
+                        created,
+                        size: metadata.as_ref().map(|m| m.len()).unwrap_or(0),
+                        stamp: metadata.as_ref().map(Stamp::of).unwrap_or_default(),
+                    });
+                } else if options.include_attachments {
+                    out.attachments.push(rel);
+                }
+            }
+        }
+        let mut scan = Scan::default();
+        walk(root, root, options, &mut scan, 0);
+        scan.notes.sort_by(|a, b| a.rel.cmp(&b.rel));
+        scan.folders.sort();
+        scan.attachments.sort();
+        scan
+    }
+
+    #[test]
+    fn the_shared_walk_finds_what_the_plain_one_did() {
+        let dir = TempDir::new("walk-same");
+        // Enough notes in one folder to be shared out in batches, and names
+        // whose order as paths isn't their order as names.
+        for i in 0..700 {
+            dir.write(&format!("Big/n{i:04}.md"), "x");
+        }
+        for rel in [
+            "a.md",
+            "a-b.md",
+            "a/inner.md",
+            "a/deeper/most.MD",
+            "a b/space.md",
+            "Zed.md",
+            "é/accent.md",
+            "folder.md/not-a-note.txt",
+            ".md",
+            "notes.markdown",
+            "image.png",
+            "Excluded/hidden.md",
+            "Kept/Excluded/shown.md",
+            ".hidden/secret.md",
+            ".obsidian/workspace.md",
+            ".trash/gone.md",
+            "d1/d2/d3/d4/deep.md",
+        ] {
+            dir.write(rel, "y");
+        }
+        fs::create_dir_all(dir.path().join("Empty")).expect("empty folder");
+
+        let options = [
+            ScanOptions::default(),
+            ScanOptions {
+                include_hidden: true,
+                include_attachments: false,
+                excluded_folders: vec!["Excluded".into()],
+                max_depth: 2,
+            },
+            ScanOptions {
+                max_depth: 0,
+                ..ScanOptions::default()
+            },
+        ];
+        for options in &options {
+            let scan = Vault::from_path(dir.path()).scan(options).expect("scan");
+            let reference = reference_scan(dir.path(), options);
+            assert_eq!(scan.notes, reference.notes, "{options:?}");
+            assert_eq!(scan.folders, reference.folders, "{options:?}");
+            assert_eq!(scan.attachments, reference.attachments, "{options:?}");
+        }
+        let scan = Vault::from_path(dir.path())
+            .scan(&ScanOptions::default())
+            .expect("scan");
+        assert_eq!(scan.notes.len(), 700 + 10);
+        assert!(scan.notes.windows(2).all(|pair| pair[0].rel < pair[1].rel));
+        assert!(scan.notes.iter().all(|note| note.stamp.written > 0));
     }
 
     #[test]

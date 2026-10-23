@@ -181,6 +181,7 @@ emeraldian — a terminal UI for your Obsidian vault
 USAGE:
     emeraldian [PATH] [OPTIONS]
     emeraldian 'obsidian://open?vault=Notes&file=Ideas'
+    emeraldian <COMMAND> [ARGS]     work on the vault without the app; see COMMANDS
 
 ARGS:
     PATH                   A vault folder, `.` for the one you are in, or a note
@@ -282,5 +283,6 @@ mod tests {
     fn help_mentions_the_uri_form() {
         assert!(HELP.contains("obsidian://"));
         assert!(HELP.contains("--prompt"));
+        assert!(HELP.contains("<COMMAND>"));
     }
 }

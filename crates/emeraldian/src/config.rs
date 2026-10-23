@@ -24,6 +24,8 @@ pub struct Config {
     pub graph: GraphConfig,
     pub images: ImageConfig,
     pub agent: AgentConfig,
+    pub memory: MemoryConfig,
+    pub embeddings: EmbeddingsConfig,
     /// Shortcuts moved to other keys, by name: `toggle_left_sidebar =
     /// "alt+e"`. Left out of the file while empty, so a config the app writes
     /// back doesn't grow a section nobody asked for.
@@ -43,6 +45,8 @@ impl Default for Config {
             graph: GraphConfig::default(),
             images: ImageConfig::default(),
             agent: AgentConfig::default(),
+            memory: MemoryConfig::default(),
+            embeddings: EmbeddingsConfig::default(),
             keys: BTreeMap::new(),
         }
     }
@@ -134,6 +138,20 @@ pub struct EditorConfig {
     pub daily_folder: String,
     /// `chrono`-free date format for daily notes: `%Y`, `%m`, `%d` only.
     pub daily_format: String,
+}
+
+impl EditorConfig {
+    /// Today's daily note, as a vault-relative name without `.md`.
+    #[must_use]
+    pub fn daily_note_name(&self) -> String {
+        let name = crate::clock::Utc::now().format(&self.daily_format);
+        let folder = self.daily_folder.trim_matches('/');
+        if folder.is_empty() {
+            name
+        } else {
+            format!("{folder}/{name}")
+        }
+    }
 }
 
 impl Default for EditorConfig {
@@ -293,6 +311,73 @@ impl AgentConfig {
             effort: self.effort(),
             show_reasoning: self.show_reasoning,
             max_tool_rounds: self.max_tool_rounds,
+        }
+    }
+}
+
+/// Where `emeraldian mem` keeps what agents write down.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MemoryConfig {
+    /// Vault-relative folder holding one folder per project, each with its
+    /// sessions and memories. Empty for the vault's root, for a vault kept for
+    /// nothing else.
+    pub folder: String,
+}
+
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        Self {
+            folder: "Agents".into(),
+        }
+    }
+}
+
+/// Semantic search: the model that turns notes into vectors, and where it runs.
+///
+/// Nothing here is used until `emeraldian index` is run, which downloads the
+/// model, through Ollama, and indexes the vault.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EmbeddingsConfig {
+    /// `ollama`, or `openai` for any server with OpenAI's embeddings API: LM
+    /// Studio, llama.cpp's server, vLLM, OpenAI itself.
+    pub provider: String,
+    pub base_url: String,
+    pub model: String,
+    /// How long a vector to keep. EmbeddingGemma gives 768, and 512, 256 or
+    /// 128 are its shorter forms: a smaller index, for a little accuracy. 0
+    /// keeps whatever the model gives. A search reads the first 128 of each
+    /// either way, and the rest only for its shortlist.
+    pub dimensions: usize,
+    /// How long Ollama keeps the model in memory after a question: `30s`,
+    /// `5m`, `0`. Empty to judge by use: half an hour while questions keep
+    /// coming, as an agent's do, minutes apart, since loading the model
+    /// again costs about a second; Ollama's own five minutes after one on
+    /// its own, so a loaded model doesn't sit in a few hundred megabytes of
+    /// memory for nothing.
+    pub keep_alive: String,
+    /// Put before a question.
+    pub query_prompt: String,
+    /// Put before each passage, with `{title}` replaced by the note's title.
+    /// Both prompts are what the model was trained with; another model may
+    /// want others, or none.
+    pub document_prompt: String,
+}
+
+impl Default for EmbeddingsConfig {
+    fn default() -> Self {
+        let prompts = emeraldian_core::retrieval::Prompts::default();
+        Self {
+            provider: "ollama".into(),
+            base_url: "http://localhost:11434".into(),
+            // The text-only build: a 300 MB download, and all a vault of
+            // notes needs.
+            model: "embeddinggemma-2:270m".into(),
+            dimensions: 0,
+            keep_alive: String::new(),
+            query_prompt: prompts.query,
+            document_prompt: prompts.document,
         }
     }
 }

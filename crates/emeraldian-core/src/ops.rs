@@ -10,7 +10,7 @@
 //! trusted to stay inside the vault.
 
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use crate::error::{Error, Result};
@@ -26,63 +26,15 @@ const FORBIDDEN: &[char] = &['/', '\\', ':', '*', '?', '"', '<', '>', '|', '\0']
 
 impl VaultIndex {
     /// Resolves a vault-relative path to an absolute one inside the vault.
-    ///
-    /// Rejects absolute paths and any `..` that would escape the root — the
-    /// check is on the *lexical* path, before touching the filesystem, so a
-    /// traversal attempt never becomes a real file operation.
+    /// See [`crate::vault::Vault::resolve_path`].
     pub fn resolve_path(&self, rel: &str) -> Result<PathBuf> {
-        let rel = rel.trim().trim_start_matches('/');
-        if rel.is_empty() {
-            return Err(Error::InvalidName(rel.to_string()));
-        }
-
-        let candidate = Path::new(rel);
-        let mut depth = 0i32;
-        for component in candidate.components() {
-            match component {
-                Component::Normal(_) => depth += 1,
-                Component::CurDir => {}
-                Component::ParentDir => {
-                    depth -= 1;
-                    if depth < 0 {
-                        return Err(Error::OutsideVault(candidate.to_path_buf()));
-                    }
-                }
-                Component::RootDir | Component::Prefix(_) => {
-                    return Err(Error::OutsideVault(candidate.to_path_buf()));
-                }
-            }
-        }
-
-        Ok(self.vault.path.join(candidate))
+        self.vault.resolve_path(rel)
     }
 
-    /// Normalizes a note name into a vault-relative `.md` path.
-    ///
-    /// Accepts `Note`, `Note.md`, `Folder/Note` and `Folder/Note.md` alike,
-    /// because that's what a user types and what a model emits.
+    /// Normalizes a note name into a vault-relative `.md` path. See
+    /// [`crate::vault::Vault::note_rel`].
     pub fn note_rel(&self, name: &str) -> Result<String> {
-        let name = name.trim().trim_start_matches('/');
-        if name.is_empty() {
-            return Err(Error::InvalidName(name.to_string()));
-        }
-
-        let (folder, file) = match name.rsplit_once('/') {
-            Some((folder, file)) => (folder, file),
-            None => ("", name),
-        };
-        let stem = file.strip_suffix(".md").unwrap_or(file);
-        validate_name(stem)?;
-
-        let rel = if folder.is_empty() {
-            format!("{stem}.md")
-        } else {
-            format!("{folder}/{stem}.md")
-        };
-
-        // Run the traversal guard over the assembled path.
-        self.resolve_path(&rel)?;
-        Ok(rel)
+        self.vault.note_rel(name)
     }
 
     /// Returns `rel` if free, else appends ` 1`, ` 2`, … as Obsidian does.
@@ -348,7 +300,9 @@ impl VaultIndex {
     }
 }
 
-fn validate_name(name: &str) -> Result<()> {
+/// Checks that a note or folder name can be written on every platform: not
+/// empty, not `.` or `..`, and free of the characters some platform refuses.
+pub fn validate_name(name: &str) -> Result<()> {
     let trimmed = name.trim();
     if trimmed.is_empty()
         || trimmed == "."
@@ -359,6 +313,48 @@ fn validate_name(name: &str) -> Result<()> {
         return Err(Error::InvalidName(name.to_string()));
     }
     Ok(())
+}
+
+/// The longest name [`sanitize_name`] produces, in characters.
+///
+/// A filename is limited to 255 bytes on every common filesystem, and a title
+/// someone pasted in whole is usually a sentence that was never meant to be
+/// one. A hundred characters reads as a title and leaves room for a folder.
+const MAX_NAME_CHARS: usize = 100;
+
+/// Turns arbitrary text into a name a note can have.
+///
+/// Where [`validate_name`] refuses, this repairs: each character no platform
+/// accepts becomes `-`, runs of whitespace become one space, and the result is
+/// cut to a sensible length. For names that arrive as prose, such as a title an
+/// agent gives what it wants to remember, where refusing would only cost it a
+/// second attempt at the same thing.
+#[must_use]
+pub fn sanitize_name(text: &str) -> String {
+    let replaced: String = text
+        .chars()
+        .map(|c| {
+            if c.is_whitespace() {
+                ' '
+            } else if FORBIDDEN.contains(&c) || (c as u32) < 0x20 {
+                '-'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let mut name = replaced.split_whitespace().collect::<Vec<_>>().join(" ");
+    if let Some((cut, _)) = name.char_indices().nth(MAX_NAME_CHARS) {
+        name.truncate(cut);
+    }
+    // Windows refuses a name ending in a dot or a space, and a leading dot
+    // would hide the note from the scan.
+    let name = name.trim_matches([' ', '.']);
+    if name.is_empty() {
+        "Untitled".to_string()
+    } else {
+        name.to_string()
+    }
 }
 
 fn note_meta(root: &Path, path: &Path, rel: &str) -> Result<NoteMeta> {
@@ -387,6 +383,7 @@ fn note_meta(root: &Path, path: &Path, rel: &str) -> Result<NoteMeta> {
         modified,
         created,
         size: metadata.len(),
+        stamp: note::Stamp::of(&metadata),
     })
 }
 
@@ -571,6 +568,33 @@ mod tests {
         index.write_note(a, "now [[B]]\n").expect("write");
         assert_eq!(index.note(a).unwrap().outgoing(), vec![b]);
         assert_eq!(index.backlinks(b).len(), 1);
+    }
+
+    #[test]
+    fn sanitized_names_are_names_a_note_can_have() {
+        assert_eq!(sanitize_name("Fix: the build"), "Fix- the build");
+        assert_eq!(sanitize_name("a/b\\c"), "a-b-c");
+        assert_eq!(sanitize_name("  spaced \n out  "), "spaced out");
+        assert_eq!(sanitize_name("...hidden"), "hidden", "a leading dot hides");
+        assert_eq!(sanitize_name("trailing. "), "trailing");
+        assert_eq!(sanitize_name("???"), "---");
+        assert_eq!(sanitize_name("   "), "Untitled");
+        assert_eq!(sanitize_name(&"é".repeat(300)).chars().count(), 100);
+        for name in ["Fix: the build", "a/b\\c", "日本語のノート", "x\0y"] {
+            assert!(validate_name(&sanitize_name(name)).is_ok(), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn paths_are_checked_without_building_an_index() {
+        let vault = TempVault::new("vault-paths");
+        let vault = vault.vault();
+        assert_eq!(vault.note_rel("f/A").unwrap(), "f/A.md");
+        assert!(matches!(
+            vault.resolve_path("../x"),
+            Err(Error::OutsideVault(_))
+        ));
+        assert!(matches!(vault.note_rel("a:b"), Err(Error::InvalidName(_))));
     }
 
     #[test]

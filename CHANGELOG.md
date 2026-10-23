@@ -4,6 +4,94 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0]
+
+### Added
+
+- **A command line for everything the app does to a vault.** `read`, `info`,
+  `outline`, `path`, `new`, `write`, `append`, `edit`, `props`, `rename`,
+  `move`, `delete`, `link`, `task`, `daily` and `mkdir` work on notes.
+  `list`, `find`, `search`, `tags`, `tasks`, `links` and `stats` find them,
+  and `vaults` lists the vaults Obsidian knows about. `graph`, `graph local`,
+  `graph path`, `graph hubs`, `graph orphans` and `graph unresolved` answer
+  questions about the graph, and `graph export` hands it to Graphviz, Mermaid
+  or anything that reads JSON. Output is plain lines, every list says how much
+  it left out, and `--json` gives the same results to a program. No interface
+  starts, and a note named by its path is read or written in a few
+  milliseconds whatever the size of the vault. A write never leaves a
+  half-written note behind, so it is safe while the app or Obsidian has the
+  vault open. `emeraldian help` lists every command.
+
+- **Recall: ask the vault a question.** `emeraldian recall <question>` finds
+  what the vault knows about something, whatever words the notes use. It
+  looks by meaning, with EmbeddingGemma 2, which finds what was said in other
+  words or another language; by words, with BM25, which finds names,
+  identifiers and error text exactly; and through links, with a walk over the
+  vault's wikilinks that lifts the notes the best answers link to. A question
+  nothing in the vault answers gets an empty answer rather than noise, and
+  each answer comes with its best line, the answers it links to and the notes
+  that bridge them. `--budget N` returns the passages themselves, in full, in
+  about N tokens, the best of each answer first, ready for an agent's
+  context, and `--folder` and `--limit` narrow it down. `search` is still a
+  plain text search.
+
+- **`emeraldian similar <note>`** lists the notes closest to a note and says
+  which of them it is already linked to, so a link worth adding stands out.
+
+- **Meaning comes from EmbeddingGemma 2, run by Ollama on your own machine.**
+  `emeraldian index` sets it up. The first run checks for Ollama, downloads
+  EmbeddingGemma 2 (`embeddinggemma-2:270m`, about 300 MB) through it once
+  and indexes the vault, and later runs bring the index up to date.
+  `--status` says what is indexed and whether the model is ready, and
+  `--rebuild` indexes every note again. Without Ollama, recall works by words
+  and links and `index` says how to add meaning; if Ollama is too old for the
+  model, it says that instead. Each `recall` brings the index up to date
+  first: words and links for every changed note, and vectors for up to 25 of
+  them, sending the model only the passages whose text changed. The index
+  lives in the cache directory, not the vault, and is read
+  from disk as a question needs it rather than loaded into memory. Ollama
+  keeps the model loaded for half an hour while questions keep coming, and
+  for its own five minutes after one on its own.
+
+- **`[embeddings]` in the config** chooses the server and the model:
+  `provider` (`ollama`, or `openai` for LM Studio, llama.cpp's server, vLLM,
+  OpenAI or anything else with OpenAI's embeddings API), `base_url`, `model`,
+  `dimensions`, `keep_alive`, `query_prompt` and `document_prompt`. Passages
+  and questions go to that server and nowhere else, and by default it is
+  Ollama on your own machine. A key for a remote server comes from
+  `EMERALDIAN_EMBEDDINGS_KEY`. After a change of `model`, `dimensions` or
+  `document_prompt`, recall says to run `emeraldian index` to embed the notes
+  again, and answers by words and links until then.
+
+- **Memory for coding agents.** `emeraldian mem` lets Claude Code, Codex or
+  any other agent keep what it knows between sessions, as notes in the vault,
+  under `Agents/` unless `folder` under `[memory]` says otherwise.
+  `mem start` opens a session and prints where the last one left off: the
+  project note, its handoff and log, the tasks it left open and what has been
+  remembered. `mem log`, `mem remember`, `mem done` and `mem end` keep it up to
+  date as the work goes on, and `mem end` records the branch, the commit and
+  any uncommitted files by itself. `mem recall <question>` finds what was
+  kept and logged by words and links, and by meaning once the vault is
+  indexed. It ranks what was kept above the logs it came from, and takes
+  `--budget N` as `recall` does. Each session links to its project and to the
+  session before it, so a project's history shows in the graph.
+
+- **`emeraldian config`** prints the settings, or changes one of them and
+  leaves the rest of `config.toml`, comments included, as it was.
+
+### Changed
+
+- The assistant now suggests the note it thinks you meant when a name is
+  misspelt, not only when it is incomplete.
+
+### Fixed
+
+- A link to a name goes to the note with that file name, not to a note that
+  has the name as an alias. It used to be the other way round whenever both
+  existed, so a link could open a different note from the one Obsidian opens.
+- A heading that ends in `#`, such as `## C#`, keeps its `#`. It used to be
+  shown, and listed in the outline, as `C`.
+
 ## [0.8.0] — 2026-10-22
 
 Shortcuts that follow your system, on Windows, Linux and the Mac alike, find
@@ -773,6 +861,7 @@ First release.
 - Unreadable vaults are reported clearly, including the macOS privacy
   permission that usually causes it.
 
+[0.9.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.9.0
 [0.8.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.8.0
 [0.7.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.7.0
 [0.6.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.6.0

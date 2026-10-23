@@ -122,6 +122,141 @@ which is handing a note to the GUI:
 If the CLI isn't enabled, or Obsidian isn't running, Emeraldian says so and
 carries on; nothing else depends on it.
 
+## Command line
+
+Everything the app does to a vault can be done from the command line as well,
+with no interface at all: reading and writing notes, following links,
+searching, and asking the graph questions. It is written for scripts and for
+coding agents as much as for people, so it prints plain lines, caps every list
+with a count of what it left out, and starts nothing it doesn't need.
+
+```sh
+emeraldian read "Project Ideas"             # by name, alias or path
+emeraldian read Plan --section Next         # one section of it
+emeraldian search "quarterly review"        # with the line each match is on
+emeraldian links Plan                       # out, in (with where), broken
+emeraldian append Plan "- [ ] book the room"
+emeraldian props Plan --set status=done
+emeraldian tasks Projects                   # open tasks, by note and line
+emeraldian graph local Plan --depth 2       # the neighbourhood, nearest first
+emeraldian graph path Plan Retro            # how two notes are connected
+emeraldian graph export --format dot | dot -Tsvg > vault.svg
+```
+
+`emeraldian help` lists every command and `emeraldian help <command>` its
+options. Any command takes `--json` for output a program can parse. The vault
+is `--vault <PATH>`, else `$EMERALDIAN_VAULT`, else `vault` in the config,
+else the one Obsidian has open. A folder named like a command opens in the app
+as `emeraldian ./graph`.
+
+Writing while the app or Obsidian has the vault open is safe. A note is
+replaced by renaming a finished copy over it and appended to in a single
+write, so nothing reading it sees half a change. The app shows the change the
+next time it reloads the vault.
+
+It is quick, too. A note named by its path is read or appended to in a few
+milliseconds however large the vault is, and a bare name only needs the
+folders listed. The commands that look across every note's links (`links`,
+`graph`, `find`, `stats`) read the whole vault, which takes under a second at
+20,000 notes.
+
+### Recall
+
+`search` finds the text you type, exactly. `recall` takes a question and finds
+what the vault knows about it, whatever words the notes happen to use:
+
+```sh
+emeraldian recall "how do we cut a release?"     # notes, best first, with the best line of each
+emeraldian recall "release steps" --budget 800   # the passages themselves, in about 800 tokens
+emeraldian recall "flaky tests" --folder Projects --limit 5
+emeraldian similar "Release process"             # the closest notes, and which are linked to it
+```
+
+It looks three ways at once. Meaning, from EmbeddingGemma 2, finds what was
+said in other words or in another language. Words, ranked by BM25, find names,
+identifiers and error text exactly, and lift the note that names what you
+asked about above ones that only talk around it. Links lift the notes the best
+answers link to, through a walk over your wikilinks, so the second half of a
+two-step question comes up with the first. A question nothing in the vault
+answers gets an empty answer, not the nearest noise. Each answer says which of
+the others it links to, a note lifted by its links is marked `(via links)`,
+and the notes that join several answers are named as bridges. `--budget N`
+gives the passages themselves, in full, up to about N tokens: the best passage
+of each answer first, then the next best of each, which is the form an agent
+wants in its context. `similar` does the same for a note rather than a
+question, and says which of the notes it finds are `linked` to it already. A
+close note that isn't linked yet is often a link worth adding with
+`emeraldian link`.
+
+Recall answers by words and links from the first question. Meaning needs
+[Ollama](https://ollama.com/download) to run the model, and one command:
+
+```sh
+brew install --cask ollama-app   # on macOS; on Linux and Windows, from ollama.com/download
+emeraldian index
+```
+
+The first `emeraldian index` checks that Ollama is there, downloads
+EmbeddingGemma 2 (`embeddinggemma-2:270m`, about 300 MB) through it once, and
+indexes the vault. Later runs bring the index up to date. Without Ollama it
+indexes words and links anyway and says how to add meaning, and if Ollama is
+too old for the model, it says that instead. `index --status` shows what is
+indexed, where it is kept and whether the model is ready, and `index --rebuild`
+indexes every note again.
+
+Each question brings the index up to date first: words and links for every
+changed note, and vectors for up to 25 of them. Only the passages whose text
+changed go back to the model, so adding a line to a long note costs one
+passage, not the whole note. After a bigger batch of changes, recall says how
+many notes it is matching by words alone until `emeraldian index` embeds the
+rest.
+
+The model runs inside Ollama, not inside Emeraldian. Ollama keeps it loaded for
+half an hour while questions keep coming, and for its own five minutes after one
+on its own, unless `keep_alive` says otherwise (see
+[Configuration](#configuration)).
+Emeraldian reads its index from disk as a question needs it, rather than
+loading it into memory.
+
+The index is kept in the cache directory, not the vault, so the vault stays a
+plain folder of Markdown: `~/Library/Caches/emeraldian/retrieval/` on macOS,
+`~/.cache/emeraldian/retrieval/` on Linux (or under `$XDG_CACHE_HOME`), and
+`%LOCALAPPDATA%\emeraldian\retrieval\` on Windows, with a folder for each
+vault. Deleting it loses nothing but the time it takes to build again.
+
+### Memory for coding agents
+
+`emeraldian mem` gives coding agents, such as Claude Code and Codex, a place to
+keep what they know between sessions, as ordinary notes in your vault, so the
+next agent carries on where the last one stopped:
+
+```sh
+export EMERALDIAN_AGENT=claude      # or pass --agent claude
+emeraldian mem start "Add the login form"
+emeraldian mem recall "how do we hash passwords?" --budget 800
+emeraldian mem log "argon2 for hashing: bcrypt caps passwords at 72 bytes"
+emeraldian mem remember "Password hashing" "argon2id, default params" --tag decision
+emeraldian mem end "Form works; remember-me is left" --next "add remember-me"
+```
+
+`mem start` opens a session and prints where things stand, in a few hundred
+tokens: the project note, the last session's handoff and log, the tasks it
+left open and the titles of what has been remembered. `mem resume` prints the
+same without starting anything, and `mem done <words>` ticks a task off.
+`mem recall <question>` asks what has been remembered and logged, the way
+[`recall`](#recall) asks the whole vault: by words and links, and by meaning
+once `emeraldian index` has been run. `--budget N` gives the passages
+themselves, and what was kept ranks above the logs it came from.
+
+It all lives under `Agents/<project>/` (set by `folder` under `[memory]` in the
+config), where you can read it, edit it and see it in the graph like any other
+note: each session links to its project and to the session before it. The
+project is the git repository's folder name, so a worktree shares its
+repository's memory, and `mem end` records the branch, the commit and any
+uncommitted files without being asked. Each agent's `log` and `end` reach the
+session it started in its own working tree, so agents can work side by side.
+`emeraldian help mem` has the rest.
+
 ## Keys
 
 Obsidian's shortcuts where it has them, your system's own for moving through
@@ -456,10 +591,10 @@ vault stays a plain folder of Markdown.
 
 ## Privacy
 
-**Emeraldian makes no network connections unless you use the assistant.**
-There is no telemetry, no analytics and no update check. Only the `emeraldian-agent`
-crate has an HTTP dependency at all; the vault, editor and graph cannot reach
-the network.
+**Emeraldian makes no network connections unless you use the assistant or
+recall by meaning.** There is no telemetry, no analytics and no update check.
+Only the `emeraldian-agent` crate has an HTTP dependency at all; the vault,
+editor and graph cannot reach the network.
 
 When you do send a message, what leaves your machine is:
 
@@ -490,6 +625,14 @@ and so on) or, if you'd rather type it once, from `auth.json` beside the config
 file — written mode `0600`, never in `config.toml`, never logged, and never
 included in an error message. The environment wins when both are set, so a key
 exported for one run takes effect without editing anything.
+
+Recall by meaning sends passages of your notes, and the questions you ask, to
+the embeddings server set under `[embeddings]`, and nowhere else. By default
+that is Ollama on your own machine, so nothing leaves it; the one thing fetched
+from outside is the model, which Ollama downloads the first time
+`emeraldian index` runs. Point `base_url` at a remote OpenAI-compatible server
+and the passages go there instead, under that server's terms, with its key
+taken from `EMERALDIAN_EMBEDDINGS_KEY`.
 
 ## Behind a corporate proxy
 
@@ -592,13 +735,45 @@ The names are `open_palette`, `open_switcher`, `open_search`, `find_in_note`,
 `toggle_left_sidebar`, `toggle_right_sidebar`, `open_graph`, `open_local_graph`,
 `refresh`, `back`, `forward`, `toggle_vim_mode` and `quit`.
 
+Where `emeraldian mem` keeps agents' notes is under `[memory]`:
+
+```toml
+[memory]
+folder = "Agents"         # inside the vault; "" for the vault's root
+```
+
+Recall by meaning is set up under `[embeddings]`. Nothing here is used until
+you run `emeraldian index`:
+
+```toml
+[embeddings]
+provider = "ollama"                   # or "openai", for any server with OpenAI's embeddings API
+base_url = "http://localhost:11434"   # without /v1, whichever the provider
+model = "embeddinggemma-2:270m"
+dimensions = 0                        # 0 keeps the model's full size
+keep_alive = ""                       # "30s", "5m" or "0"; empty judges by use
+query_prompt = "task: search result | query: "
+document_prompt = "title: {title} | text: "
+```
+
+`openai` covers LM Studio, llama.cpp's server, vLLM and OpenAI itself, and a
+key for one goes in `EMERALDIAN_EMBEDDINGS_KEY`. `dimensions` can shorten
+EmbeddingGemma's vectors to 512, 256 or 128, for a smaller index at a little
+cost in accuracy. `keep_alive` is how long Ollama keeps the model loaded after
+a question; left empty, that is half an hour while questions keep coming, and
+Ollama's own five minutes after one on its own. The two prompts are the ones EmbeddingGemma was
+trained with, and `{title}` stands for the note's title; another model may want
+others, or none. Changing `model`, `dimensions` or `document_prompt` means
+embedding the notes again with `emeraldian index`. Until then recall answers by
+words and links, and says so.
+
 ## Layout
 
 ```
 crates/
-  emeraldian-core    vault discovery, indexing, markdown, search, graph engine
+  emeraldian-core    vault discovery, indexing, markdown, search, retrieval, graph engine
   emeraldian-theme   the theme model and presets
-  emeraldian-agent   provider connectors, streaming, and the tool-calling loop
+  emeraldian-agent   provider connectors, embeddings, streaming, and the tool-calling loop
   emeraldian         the terminal application
 ```
 

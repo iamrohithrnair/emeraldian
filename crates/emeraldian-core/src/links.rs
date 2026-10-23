@@ -40,14 +40,20 @@ pub struct Heading {
 /// block containing a shorter fence, or a `~~~` block containing backticks,
 /// stays open — the same rule CommonMark uses.
 #[derive(Default)]
-struct FenceState {
+pub(crate) struct FenceState {
     open: Option<(char, usize)>,
 }
 
 impl FenceState {
+    /// The line that would close the block left open, if one is.
+    pub(crate) fn closing(&self) -> Option<String> {
+        self.open
+            .map(|(ch, len)| std::iter::repeat_n(ch, len).collect())
+    }
+
     /// Feeds one line and reports whether that line's *content* should be
     /// scanned. Fence delimiter lines themselves are never scanned.
-    fn accept(&mut self, line: &str) -> bool {
+    pub(crate) fn accept(&mut self, line: &str) -> bool {
         let trimmed = line.trim_start();
         let fence = trimmed
             .strip_prefix("```")
@@ -312,7 +318,7 @@ pub fn extract_headings(body: &str) -> Vec<Heading> {
         if !rest.starts_with(' ') {
             continue;
         }
-        let text = rest.trim().trim_end_matches('#').trim().to_string();
+        let text = heading_text(rest).to_string();
         if text.is_empty() {
             continue;
         }
@@ -324,6 +330,106 @@ pub fn extract_headings(body: &str) -> Vec<Heading> {
     }
 
     headings
+}
+
+/// A heading's text, without the closing `#`s it may end with.
+///
+/// CommonMark counts a closing run of `#`s only when a space separates it from
+/// the text, so `## Middle ##` is "Middle" but `## C#` is "C#", a language
+/// rather than a heading with a stray mark.
+pub(crate) fn heading_text(text: &str) -> &str {
+    let text = text.trim();
+    let without = text.trim_end_matches('#');
+    if without.is_empty() || without.ends_with([' ', '\t']) {
+        without.trim_end()
+    } else {
+        text
+    }
+}
+
+/// A `- [ ]` task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Task {
+    /// 0-based line within the text that was scanned.
+    pub line: usize,
+    /// Anything other than a space between the brackets counts as ticked, as
+    /// it does in Obsidian, where `[-]` and `[>]` are themes' ways of saying
+    /// cancelled or deferred: in either case, not still to do.
+    pub done: bool,
+    pub text: String,
+}
+
+/// Finds a task's checkbox on a line: the byte offset of the character
+/// between the brackets, and whether the task is ticked.
+///
+/// A bulleted (`-`, `*`, `+`) or numbered (`1.`, `1)`) list item whose text
+/// opens with `[ ]`, at any indent. The offset is what lets a task be ticked by
+/// changing one character and nothing else on the line.
+#[must_use]
+pub fn task_marker(line: &str) -> Option<(usize, bool)> {
+    let trimmed = line.trim_start();
+    let indent = line.len() - trimmed.len();
+
+    let after_marker = if let Some(rest) = trimmed
+        .strip_prefix(['-', '*', '+'])
+        .and_then(|rest| rest.strip_prefix(' '))
+    {
+        rest
+    } else {
+        let digits = trimmed.bytes().take_while(u8::is_ascii_digit).count();
+        if digits == 0 || digits > 9 {
+            return None;
+        }
+        trimmed[digits..]
+            .strip_prefix(". ")
+            .or_else(|| trimmed[digits..].strip_prefix(") "))?
+    };
+    let rest = after_marker.trim_start_matches(' ');
+
+    let mut chars = rest.chars();
+    if chars.next() != Some('[') {
+        return None;
+    }
+    let state = chars.next()?;
+    if chars.next() != Some(']') {
+        return None;
+    }
+    // `- [x]` must be followed by a space or nothing: `- [x]y` is a link-ish
+    // run of text, not a task.
+    if !matches!(chars.next(), None | Some(' ' | '\t')) {
+        return None;
+    }
+
+    let offset = indent + (trimmed.len() - rest.len()) + 1;
+    Some((offset, state != ' '))
+}
+
+/// Extracts every `- [ ]` and `- [x]` task, in document order, skipping fenced
+/// code.
+#[must_use]
+pub fn extract_tasks(body: &str) -> Vec<Task> {
+    let mut tasks = Vec::new();
+    let mut fence = FenceState::default();
+
+    for (line_no, raw) in body.lines().enumerate() {
+        if !fence.accept(raw) {
+            continue;
+        }
+        let Some((offset, done)) = task_marker(raw) else {
+            continue;
+        };
+        // The checkbox is three bytes, `[`, its state and `]`, and the state
+        // may itself be wider than a byte.
+        let state_len = raw[offset..].chars().next().map_or(1, char::len_utf8);
+        let text = raw[offset + state_len + 1..].trim().to_string();
+        tasks.push(Task {
+            line: line_no,
+            done,
+            text,
+        });
+    }
+
+    tasks
 }
 
 /// Counts words in a note body the way Obsidian's status bar does: runs of
@@ -457,7 +563,57 @@ mod tests {
     }
 
     #[test]
+    fn a_hash_that_belongs_to_a_word_stays_in_the_heading() {
+        assert_eq!(extract_headings("## C#")[0].text, "C#");
+        assert_eq!(extract_headings("## F# and C# ##")[0].text, "F# and C#");
+        assert!(extract_headings("## ##").is_empty());
+    }
+
+    #[test]
     fn self_anchor_links_are_ignored() {
         assert!(extract_links("jump to [[#Section]]").is_empty());
+    }
+
+    #[test]
+    fn tasks_are_found_in_every_list_style() {
+        let body =
+            "- [ ] open\n* [x] done\n  + [-] cancelled\n1. [ ] numbered\n2) [X] closed\n- [ ]\n";
+        let tasks = extract_tasks(body);
+        let summary: Vec<(usize, bool, &str)> = tasks
+            .iter()
+            .map(|t| (t.line, t.done, t.text.as_str()))
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                (0, false, "open"),
+                (1, true, "done"),
+                (2, true, "cancelled"),
+                (3, false, "numbered"),
+                (4, true, "closed"),
+                (5, false, ""),
+            ]
+        );
+    }
+
+    #[test]
+    fn things_that_only_look_like_tasks_are_not() {
+        let body = "- [[Link]] here\n- [x](https://example.com)\n[ ] no bullet\n- plain\n-[ ] no space\n```\n- [ ] in code\n```\n";
+        assert!(extract_tasks(body).is_empty(), "{:?}", extract_tasks(body));
+    }
+
+    #[test]
+    fn the_task_marker_points_at_the_checkbox() {
+        let line = "    - [ ] indented";
+        let (offset, done) = task_marker(line).expect("a task");
+        assert!(!done);
+        assert_eq!(&line[offset..=offset], " ");
+        assert_eq!(&line[offset - 1..offset], "[");
+
+        let wide = "- [✓] ticked with a wide character";
+        let (offset, done) = task_marker(wide).expect("a task");
+        assert!(done);
+        assert!(wide[offset..].starts_with('✓'));
+        assert_eq!(extract_tasks(wide)[0].text, "ticked with a wide character");
     }
 }

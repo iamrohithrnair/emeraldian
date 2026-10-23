@@ -215,6 +215,41 @@ pub(crate) fn get_json(url: &str, headers: &[(&str, &str)], bearer: Option<&str>
     serde_json::from_str(&text).map_err(|err| Error::Protocol(err.to_string()))
 }
 
+/// Issues a POST and parses the JSON body, waiting at most `timeout_secs`.
+///
+/// For requests answered in one piece rather than streamed, such as a batch
+/// of embeddings. Error statuses carry the body, as [`post_stream`]'s do.
+pub(crate) fn post_json(
+    url: &str,
+    bearer: Option<&str>,
+    body: &Value,
+    timeout_secs: u64,
+) -> Result<Value> {
+    let mut request = crate::http::agent()
+        .post(url)
+        .config()
+        .http_status_as_error(false)
+        .timeout_global(Some(std::time::Duration::from_secs(timeout_secs)))
+        .build();
+    if let Some(token) = bearer {
+        request = request.header("authorization", &format!("Bearer {token}"));
+    }
+
+    let response = request
+        .send_json(body)
+        .map_err(|err| Error::Transport(err.to_string()))?;
+    let status = response.status().as_u16();
+    let text = response
+        .into_body()
+        .read_to_string()
+        .map_err(|err| Error::Transport(err.to_string()))?;
+
+    if !(200..300).contains(&status) {
+        return Err(Error::Http { status, body: text });
+    }
+    serde_json::from_str(&text).map_err(|err| Error::Protocol(err.to_string()))
+}
+
 /// Reads an environment variable, treating blank as absent.
 ///
 /// An exported-but-empty key is a common shell accident, and failing with

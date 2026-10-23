@@ -18,6 +18,13 @@ anyhow.workspace = true
 unicode-width.workspace = true
 # Excalidraw's Obsidian format stores its scene as LZ-String compressed base64.
 lz-str.workspace = true
+rust-stemmers.workspace = true
+
+# A plain fsync, where the standard library offers only F_FULLFSYNC, which
+# costs a hundred times as much: see `retrieval::segment::settle`. Already
+# built for the terminal, through crossterm.
+[target.'cfg(target_vendor = "apple")'.dependencies]
+rustix = { version = "1.1", default-features = false, features = ["fs", "std"] }
 
 [features]
 test-support = []

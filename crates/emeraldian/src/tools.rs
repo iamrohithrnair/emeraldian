@@ -252,33 +252,11 @@ fn resolve(app: &App, name: &str) -> Result<NoteId, ToolOutcome> {
 }
 
 /// Names close to `name`, for a "did you mean" hint.
-///
-/// Fuzzy matching handles a query that's a subsequence of a real name
-/// (`prj` → `Projects`), but not a guess that's *longer* than the real name
-/// (`Bee` → `B`), which is exactly what a model does when it invents a
-/// plausible title. Both directions are checked.
 fn suggest(app: &App, name: &str) -> Vec<String> {
-    let mut names: Vec<String> = search::search_notes(&app.index, name, 3)
+    search::suggest(&app.index, name, 3)
         .into_iter()
-        .filter_map(|m| app.index.note(m.id).map(|n| n.meta.rel.clone()))
-        .collect();
-
-    if names.is_empty() {
-        let needle = name.to_lowercase();
-        names = app
-            .index
-            .notes()
-            .iter()
-            .filter(|note| {
-                let stem = note.meta.stem.to_lowercase();
-                needle.starts_with(&stem) || stem.starts_with(&needle) || stem.contains(&needle)
-            })
-            .take(3)
-            .map(|note| note.meta.rel.clone())
-            .collect();
-    }
-
-    names
+        .filter_map(|id| app.index.note(id).map(|n| n.meta.rel.clone()))
+        .collect()
 }
 
 macro_rules! arg {

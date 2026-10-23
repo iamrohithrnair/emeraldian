@@ -10,7 +10,8 @@
 //!   uses substring matching and reads files on demand rather than holding
 //!   every body in memory.
 
-use crate::index::{NoteId, VaultIndex};
+use crate::index::{IndexedNote, NoteId, VaultIndex};
+use crate::note::NoteMeta;
 
 /// A fuzzy match: how good it is, and which characters matched.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -216,6 +217,48 @@ impl Default for SearchLimits {
 /// by another program.
 #[must_use]
 pub fn search_content(index: &VaultIndex, query: &str, limits: SearchLimits) -> Vec<ContentMatch> {
+    search_content_where(index, query, limits, |_| true)
+}
+
+/// [`search_content`] over only the notes `keep` accepts.
+///
+/// Notes it turns down are never read, so narrowing a search to one folder
+/// costs only that folder's notes, not the whole vault's.
+#[must_use]
+pub fn search_content_where(
+    index: &VaultIndex,
+    query: &str,
+    limits: SearchLimits,
+    keep: impl Fn(&IndexedNote) -> bool,
+) -> Vec<ContentMatch> {
+    search_in(
+        index
+            .notes()
+            .iter()
+            .enumerate()
+            .filter(|(_, note)| keep(note))
+            .map(|(id, note)| (id, &note.meta)),
+        query,
+        limits,
+    )
+}
+
+/// [`search_content`] over notes known only by their files: a scan of the
+/// vault rather than an index of it. Each match's `id` is the note's position
+/// in `notes`.
+///
+/// Searching reads every note anyway, so for a caller that wants only the
+/// text, indexing the vault first would read every note twice.
+#[must_use]
+pub fn search_files(notes: &[NoteMeta], query: &str, limits: SearchLimits) -> Vec<ContentMatch> {
+    search_in(notes.iter().enumerate(), query, limits)
+}
+
+fn search_in<'a>(
+    notes: impl Iterator<Item = (NoteId, &'a NoteMeta)>,
+    query: &str,
+    limits: SearchLimits,
+) -> Vec<ContentMatch> {
     let query = query.trim();
     if query.is_empty() {
         return Vec::new();
@@ -228,10 +271,10 @@ pub fn search_content(index: &VaultIndex, query: &str, limits: SearchLimits) -> 
         query.to_lowercase()
     };
 
-    let mut results = Vec::new();
+    let mut results: Vec<(ContentMatch, &str)> = Vec::new();
 
-    for (id, note) in index.notes().iter().enumerate() {
-        let Ok(content) = std::fs::read_to_string(&note.meta.path) else {
+    for (id, meta) in notes {
+        let Ok(content) = std::fs::read_to_string(&meta.path) else {
             continue;
         };
 
@@ -255,7 +298,7 @@ pub fn search_content(index: &VaultIndex, query: &str, limits: SearchLimits) -> 
         }
 
         if !hits.is_empty() {
-            results.push(ContentMatch { id, hits });
+            results.push((ContentMatch { id, hits }, &meta.rel));
             if results.len() >= limits.max_notes {
                 break;
             }
@@ -264,15 +307,98 @@ pub fn search_content(index: &VaultIndex, query: &str, limits: SearchLimits) -> 
 
     // Notes with more hits first — a note mentioning the phrase five times is
     // more likely what the user wants than one mentioning it once.
-    results.sort_by(|a, b| {
-        b.hits.len().cmp(&a.hits.len()).then_with(|| {
-            index.notes()[a.id]
-                .meta
-                .rel
-                .cmp(&index.notes()[b.id].meta.rel)
-        })
+    results.sort_by(|(a, a_rel), (b, b_rel)| {
+        b.hits
+            .len()
+            .cmp(&a.hits.len())
+            .then_with(|| a_rel.cmp(b_rel))
     });
-    results
+    results.into_iter().map(|(found, _)| found).collect()
+}
+
+/// Notes whose names are close to `name`, best first, for a "did you mean"
+/// hint when it names nothing.
+///
+/// Fuzzy matching handles a query that's a subsequence of a real name
+/// (`prj` → `Projects`), but not a guess that's *longer* than the real name
+/// (`Bee` → `B`), which is exactly what a model does when it invents a
+/// plausible title, nor a typo (`Alpah` → `Alpha`). All three are checked.
+#[must_use]
+pub fn suggest(index: &VaultIndex, name: &str, limit: usize) -> Vec<NoteId> {
+    let ids: Vec<NoteId> = search_notes(index, name, limit)
+        .into_iter()
+        .map(|m| m.id)
+        .collect();
+    if !ids.is_empty() {
+        return ids;
+    }
+
+    let needle = name.trim().trim_end_matches(".md").to_lowercase();
+    let ids: Vec<NoteId> = index
+        .notes()
+        .iter()
+        .enumerate()
+        .filter(|(_, note)| {
+            let stem = note.meta.stem.to_lowercase();
+            needle.starts_with(&stem) || stem.starts_with(&needle) || stem.contains(&needle)
+        })
+        .take(limit)
+        .map(|(id, _)| id)
+        .collect();
+    if !ids.is_empty() {
+        return ids;
+    }
+
+    // A typo: about one slip in every four letters, counting two letters
+    // typed the wrong way round as one slip.
+    let allowed = (needle.chars().count() / 4).max(1);
+    let mut close: Vec<(usize, NoteId)> = index
+        .notes()
+        .iter()
+        .enumerate()
+        .filter_map(|(id, note)| {
+            let path = note.meta.rel.strip_suffix(".md").unwrap_or(&note.meta.rel);
+            let distance = [note.meta.stem.as_str(), path]
+                .iter()
+                .map(|candidate| edit_distance(&needle, &candidate.to_lowercase(), allowed))
+                .min()?;
+            (distance <= allowed).then_some((distance, id))
+        })
+        .collect();
+    close.sort_unstable();
+    close.into_iter().take(limit).map(|(_, id)| id).collect()
+}
+
+/// How many single-letter edits turn `a` into `b`: insertions, deletions,
+/// substitutions, and two neighbours swapped. Anything over `ceiling` is
+/// reported as `ceiling + 1`, since a name that far off is no suggestion and
+/// most of a vault can be ruled out by length alone.
+fn edit_distance(a: &str, b: &str, ceiling: usize) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    if a.len().abs_diff(b.len()) > ceiling {
+        return ceiling + 1;
+    }
+
+    let width = b.len() + 1;
+    let mut rows = vec![0usize; (a.len() + 1) * width];
+    for (j, cell) in rows.iter_mut().enumerate().take(width) {
+        *cell = j;
+    }
+    for i in 1..=a.len() {
+        rows[i * width] = i;
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            let mut best = (rows[(i - 1) * width + j] + 1)
+                .min(rows[i * width + j - 1] + 1)
+                .min(rows[(i - 1) * width + j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                best = best.min(rows[(i - 2) * width + j - 2] + 1);
+            }
+            rows[i * width + j] = best;
+        }
+    }
+    rows[a.len() * width + b.len()].min(ceiling + 1)
 }
 
 /// Ranks arbitrary strings, for the command palette and theme picker.
@@ -443,6 +569,102 @@ mod tests {
         vault.write("A.md", "text\n");
         let index = vault.index();
         assert!(search_content(&index, "   ", SearchLimits::default()).is_empty());
+    }
+
+    #[test]
+    fn a_narrowed_search_only_looks_where_it_was_told() {
+        let vault = TempVault::new("search-where");
+        vault.write("Inside/A.md", "needle\n");
+        vault.write("Outside.md", "needle\n");
+
+        let index = vault.index();
+        let results = search_content_where(&index, "needle", SearchLimits::default(), |note| {
+            note.meta.rel.starts_with("Inside/")
+        });
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, index.id_of_rel("Inside/A.md").unwrap());
+    }
+
+    #[test]
+    fn a_scan_is_searched_as_the_index_is() {
+        let vault = TempVault::new("search-files");
+        vault.write("A.md", "needle\n");
+        vault.write("B.md", "needle\nneedle\n");
+        vault.write("C.md", "nothing\n");
+
+        let scan = vault
+            .vault()
+            .scan(&crate::vault::ScanOptions::default())
+            .expect("scan");
+        let found = search_files(&scan.notes, "needle", SearchLimits::default());
+        let names: Vec<&str> = found
+            .iter()
+            .map(|m| scan.notes[m.id].rel.as_str())
+            .collect();
+        assert_eq!(names, vec!["B.md", "A.md"], "more hits first, as ever");
+    }
+
+    #[test]
+    fn suggestions_cover_guesses_longer_than_the_real_name() {
+        let vault = TempVault::new("suggest");
+        vault.write("B.md", "x");
+        vault.write("Projects/Ideas.md", "x");
+        let index = vault.index();
+
+        assert_eq!(
+            suggest(&index, "prj/ide", 3),
+            vec![index.id_of_rel("Projects/Ideas.md").unwrap()]
+        );
+        assert_eq!(
+            suggest(&index, "Bee", 3),
+            vec![index.id_of_rel("B.md").unwrap()],
+            "a fuzzy match can't find a name shorter than the query"
+        );
+        assert!(suggest(&index, "zzz", 3).is_empty());
+    }
+
+    #[test]
+    fn a_typo_still_finds_the_note_it_meant() {
+        let vault = TempVault::new("suggest-typo");
+        vault.write("Alpha.md", "x");
+        vault.write("Projects/Roadmap.md", "x");
+        let index = vault.index();
+
+        let alpha = index.id_of_rel("Alpha.md").unwrap();
+        let roadmap = index.id_of_rel("Projects/Roadmap.md").unwrap();
+        assert_eq!(
+            suggest(&index, "Alpah", 3),
+            vec![alpha],
+            "two letters swapped"
+        );
+        assert_eq!(suggest(&index, "Roadmpa", 3), vec![roadmap]);
+        assert_eq!(
+            suggest(&index, "projects/roadmep", 3),
+            vec![roadmap],
+            "by path"
+        );
+        assert!(
+            suggest(&index, "Omega", 3).is_empty(),
+            "too far off to suggest"
+        );
+    }
+
+    #[test]
+    fn edit_distance_counts_single_letter_slips() {
+        assert_eq!(edit_distance("alpha", "alpha", 3), 0);
+        assert_eq!(edit_distance("alpah", "alpha", 3), 1, "a swap is one slip");
+        assert_eq!(edit_distance("alph", "alpha", 3), 1);
+        assert_eq!(edit_distance("kitten", "sitting", 5), 3);
+        assert_eq!(
+            edit_distance("a", "abcdefgh", 2),
+            3,
+            "capped once past the ceiling"
+        );
+        assert_eq!(
+            edit_distance("日本語", "日本", 2),
+            1,
+            "by character, not byte"
+        );
     }
 
     #[test]

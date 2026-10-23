@@ -12,6 +12,8 @@ mod app;
 mod auth;
 mod cli;
 mod clipboard;
+mod clock;
+mod cmd;
 mod config;
 mod editor;
 mod explorer;
@@ -46,6 +48,11 @@ const TICK: Duration = Duration::from_millis(33);
 
 fn main() -> io::Result<()> {
     let raw: Vec<String> = std::env::args().skip(1).collect();
+    // `emeraldian read …`, `emeraldian graph …` and the rest: work on the
+    // vault and exit, without taking the terminal.
+    if let Some(code) = cmd::run(&raw) {
+        std::process::exit(code);
+    }
     let mut args = match cli::parse(&raw) {
         Ok(args) => args,
         Err(err) => {
@@ -57,7 +64,7 @@ fn main() -> io::Result<()> {
 
     match args.command {
         Command::Help => {
-            println!("{}", cli::HELP);
+            println!("{}", cmd::help_text());
             return Ok(());
         }
         Command::Version => {
@@ -377,9 +384,10 @@ fn run(app: &mut App) -> io::Result<()> {
             let _ = std::panic::take_hook();
             eprintln!(
                 "emeraldian: this needs an interactive terminal ({err}).\n\n\
-                 For scripting, use:\n    \
-                 emeraldian --list-vaults\n    \
-                 emeraldian <vault> --prompt \"your question\""
+                 For scripting, use a command instead:\n    \
+                 emeraldian search \"quarterly\"\n    \
+                 emeraldian read \"Project Ideas\"\n    \
+                 emeraldian help"
             );
             std::process::exit(1);
         }
