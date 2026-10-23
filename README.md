@@ -50,6 +50,14 @@ worse than one that is plainly missing.
 cargo install emeraldian
 ```
 
+**X-CMD** (macOS and Linux):
+
+Alternatively, install it with [x-cmd](https://www.x-cmd.com/mod/eget), which downloads the pre-built binary from GitHub Releases:
+
+```bash
+x eget use iamrohithrnair/emeraldian
+```
+
 **Manual download.** Grab an archive from the
 [latest release](https://github.com/iamrohithrnair/emeraldian/releases/latest):
 
