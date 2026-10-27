@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.9.0]
+## [0.10.0]
 
 ### Added
 
@@ -89,13 +89,6 @@ All notable changes to this project are documented here. The format follows
   misspelt, not only when it is incomplete.
 
 ### Fixed
-
-- **A note in a big folder that isn't a vault opens in a second or two.**
-  Opening a note there takes its folder as the vault, and a code project
-  with `node_modules` holds a hundred thousand files besides its notes.
-  Every link that pointed nowhere was checked against each of them in turn,
-  so a design doc in a web app's repository took over a minute to open, and
-  looked stuck. Links to files are now looked up by name in one step.
 
 - A link to a name goes to the note with that file name, not to a note that
   has the name as an alias. It used to be the other way round whenever both
@@ -872,6 +865,7 @@ First release.
 - Unreadable vaults are reported clearly, including the macOS privacy
   permission that usually causes it.
 
+[0.10.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.10.0
 [0.9.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.9.0
 [0.8.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.8.0
 [0.7.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.7.0
