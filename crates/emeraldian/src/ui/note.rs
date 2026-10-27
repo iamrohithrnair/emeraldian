@@ -23,7 +23,7 @@ use emeraldian_theme::Palette;
 use crate::app::{App, Mode, Regions};
 use crate::editor::{Cursor, Row};
 use crate::images::{self, Images};
-use crate::ui::{drawing, icons, math, scrollbar, truncate};
+use crate::ui::{drawing, icons, math, mermaid, scrollbar, truncate};
 
 /// Left padding inside the note pane, matching Obsidian's generous margins.
 const PADDING: u16 = 2;
@@ -806,6 +806,14 @@ fn render_block(
         }
 
         BlockKind::Code { lang, lines: code } => {
+            // A Mermaid block is drawn as its diagram when it can be, and
+            // shown as code otherwise.
+            if lang.eq_ignore_ascii_case("mermaid")
+                && let Some(diagram) = mermaid::render(code, inner_width)
+            {
+                diagram_lines(&diagram, palette, &pad, out);
+                return;
+            }
             let background = Style::default().bg(palette.code_bg);
             if !lang.is_empty() {
                 out.push(Line::from(Span::styled(
@@ -833,6 +841,35 @@ fn render_block(
             format!("{pad}{}", "─".repeat(inner_width)),
             Style::default().fg(palette.hr),
         ))),
+    }
+}
+
+/// A drawn diagram as styled lines. It keeps its own width: one wider than the
+/// pane is panned across like a wide table, never squeezed.
+fn diagram_lines(
+    diagram: &mermaid::Diagram,
+    palette: &Palette,
+    pad: &str,
+    out: &mut Vec<Line<'static>>,
+) {
+    let style = |role: mermaid::Role| {
+        Style::default().fg(match role {
+            mermaid::Role::Text => palette.text_normal,
+            mermaid::Role::Border | mermaid::Role::Arrow => palette.accent,
+            mermaid::Role::Line | mermaid::Role::Label => palette.text_muted,
+            mermaid::Role::Note => palette.callout_note,
+        })
+    };
+    for row in &diagram.rows {
+        let mut spans = Vec::with_capacity(row.len() + 1);
+        if !pad.is_empty() {
+            spans.push(Span::raw(pad.to_string()));
+        }
+        spans.extend(
+            row.iter()
+                .map(|(text, role)| Span::styled(text.clone(), style(*role))),
+        );
+        out.push(Line::from(spans));
     }
 }
 
@@ -2340,6 +2377,53 @@ mod tests {
         assert!(rendered[0].contains(icons::QUOTE_BAR));
         assert!(rendered[0].contains("Careful"));
         assert!(rendered.len() > 1, "the body renders too");
+    }
+
+    #[test]
+    fn mermaid_blocks_render_as_diagrams_and_bad_ones_as_code() {
+        let vault = TempVault::new("render-mermaid");
+        let index = vault.index();
+        let palette = palette();
+        let document = markdown::parse(
+            "```mermaid\ngraph LR\n  A[Start] --> B[End]\n```\n\n```mermaid\npie title Pets\n  \"Dogs\" : 3\n```\n",
+        );
+        let lines = render_document(&document, &mut Ctx::text(&palette, &index), 60);
+        let rendered = text_of(&lines);
+
+        let start = rendered.iter().position(|l| l.contains("Start")).unwrap();
+        assert!(rendered[start].contains("End"), "drawn side by side");
+        assert!(rendered[start].contains('▶'));
+        assert!(
+            !rendered.iter().any(|l| l.contains("graph LR")),
+            "the source is not shown"
+        );
+        let arrow = lines[start]
+            .spans
+            .iter()
+            .find(|s| s.content.contains('▶'))
+            .unwrap();
+        assert_eq!(arrow.style.fg, Some(palette.accent));
+
+        // A kind it doesn't draw stays code, header and all.
+        assert!(rendered.iter().any(|l| l.contains("mermaid")));
+        assert!(rendered.iter().any(|l| l.contains("pie title Pets")));
+    }
+
+    #[test]
+    fn a_wide_diagram_keeps_its_width_for_panning() {
+        let vault = TempVault::new("render-mermaid-wide");
+        let index = vault.index();
+        let mut source = String::from("```mermaid\ngraph TD\n  A --> ");
+        let fan: Vec<String> = (0..20).map(|at| format!("n{at}[node {at}]")).collect();
+        source.push_str(&fan.join(" & "));
+        source.push_str("\n```\n");
+        let document = markdown::parse(&source);
+        let lines = render_document(&document, &mut Ctx::text(&palette(), &index), 40);
+
+        let widest = lines.iter().map(Line::width).max().unwrap();
+        assert!(widest > 40, "wider than the pane rather than squeezed");
+        let rendered = text_of(&lines);
+        assert!(rendered.iter().any(|l| l.contains("node 19")));
     }
 
     #[test]

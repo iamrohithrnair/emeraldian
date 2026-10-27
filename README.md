@@ -498,6 +498,16 @@ matrices, `cases` and `aligned` blocks get brackets as tall as they are. A
 command it doesn't know is shown as typed. In the editor, a `$$` block is
 coloured as maths instead of being read as Markdown.
 
+**Mermaid.** A ```` ```mermaid ```` block is drawn in the reading pane as boxes
+and arrows in box-drawing characters, so it reads the same in every terminal.
+Flowcharts (`graph` and `flowchart`, in all four directions, with their node
+shapes, dotted and thick links and words on the links) and sequence diagrams
+(messages, notes, `loop` and `alt` blocks) are drawn. A sideways flowchart too
+wide for the pane is turned to run downwards, and anything still wider pans
+like a wide table. Any other kind of diagram, or one it can't read, stays as
+code. Each diagram is drawn once and kept, so scrolling past fifty costs
+nothing extra.
+
 **Pictures.** `![[chart.png]]` and `![alt](assets/chart.png)` are drawn in the
 reading pane — real pixels in Kitty, Ghostty, WezTerm, iTerm2 and anything that
 speaks sixel, and half-block mosaics everywhere else. Obsidian's `|400` width

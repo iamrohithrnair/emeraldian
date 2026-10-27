@@ -263,6 +263,11 @@ fn backlink_lines(app: &App, palette: &Palette, width: usize) -> Vec<Line<'stati
     };
     let backlinks = app.index.backlinks(id);
     if backlinks.is_empty() {
+        // Until every note is read, not knowing of a link isn't knowing there
+        // is none.
+        if app.indexing() {
+            return vec![empty_hint("Reading the vault…", palette)];
+        }
         return vec![empty_hint("Nothing links here yet", palette)];
     }
 
@@ -288,6 +293,9 @@ fn backlink_lines(app: &App, palette: &Palette, width: usize) -> Vec<Line<'stati
 
 fn tag_lines(app: &App, palette: &Palette, width: usize) -> Vec<Line<'static>> {
     let tags = app.index.tags();
+    if app.indexing() {
+        return vec![empty_hint("Reading the vault…", palette)];
+    }
     if tags.is_empty() {
         return vec![empty_hint("No tags in this vault", palette)];
     }

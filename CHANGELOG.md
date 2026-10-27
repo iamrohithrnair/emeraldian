@@ -96,6 +96,38 @@ All notable changes to this project are documented here. The format follows
 - A heading that ends in `#`, such as `## C#`, keeps its `#`. It used to be
   shown, and listed in the outline, as `C`.
 
+## [0.9.0]
+
+### Added
+
+- **Mermaid diagrams in reading mode.** A ```` ```mermaid ```` block now
+  shows as the diagram it describes, drawn in box-drawing characters, rather
+  than as its source. Flowcharts are drawn in all four directions with their
+  node shapes, dotted and thick links and the words on them, and loops back to
+  an earlier step are drawn too. Sequence diagrams get their participants,
+  lifelines, messages, notes and `loop` or `alt` blocks. A sideways flowchart
+  too wide for the pane runs downwards instead, and anything wider still pans
+  like a wide table. Nothing runs outside the app to do it: each diagram is
+  drawn the first time its note is laid out and kept in a small cache, so a
+  note with fifty of them opens about a millisecond slower and scrolls as
+  smoothly as before. Other kinds of diagram, and any it can't read, stay as
+  code, just as they were.
+
+### Changed
+
+- **A note is on screen at once, however big its folder.** Emeraldian used
+  to read every note in the vault before showing anything, which takes a
+  second for twenty thousand notes. Now it lists the folders, shows the note
+  you asked for, and reads the rest a little at a time while you start
+  reading. Backlinks and tags say "Reading the vault…" for that moment, and
+  the assistant waits for it. A folder Obsidian has never opened, such as a
+  code project, also leaves out what an editor leaves out: `node_modules`,
+  `target`, `dist`, `build`, `vendor` and the like, and whatever its
+  `.gitignore` files name. A note at the top of a web app's repository now
+  opens in about 30 milliseconds rather than a second or two, in a
+  seventeenth of the memory. A real Obsidian vault still shows every file,
+  just as Obsidian does.
+
 ## [0.8.0] — 2026-10-22
 
 Shortcuts that follow your system, on Windows, Linux and the Mac alike, find

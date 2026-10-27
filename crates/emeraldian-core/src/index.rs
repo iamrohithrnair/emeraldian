@@ -13,6 +13,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use crate::links::{self, Heading, LinkRef};
 use crate::note::{self, NoteMeta};
@@ -83,9 +84,32 @@ pub struct IndexedNote {
     /// Line the body starts on, so outline entries and link positions map back
     /// to real file lines even when frontmatter is present.
     pub body_offset: usize,
+    /// Whether the note has been read yet. See [`VaultIndex::scan`].
+    read: bool,
 }
 
 impl IndexedNote {
+    /// A note known only by its file, before it is read.
+    fn unread(meta: NoteMeta) -> Self {
+        Self {
+            meta,
+            links: Vec::new(),
+            tags: Vec::new(),
+            aliases: Vec::new(),
+            headings: Vec::new(),
+            words: 0,
+            body_offset: 0,
+            read: false,
+        }
+    }
+
+    /// Whether the note has been read, so its links, tags and headings are
+    /// known. Every note is, once the index has been filled.
+    #[must_use]
+    pub fn is_read(&self) -> bool {
+        self.read
+    }
+
     /// Notes this one links to, deduplicated and in document order.
     #[must_use]
     pub fn outgoing(&self) -> Vec<NoteId> {
@@ -136,49 +160,29 @@ impl VaultIndex {
     /// A note that can't be read is skipped rather than aborting the build: one
     /// unreadable file shouldn't cost the user their whole vault.
     pub fn build(vault: Vault, options: ScanOptions) -> Result<Self, std::io::Error> {
-        let scan = vault.scan(&options)?;
-        Ok(Self::from_scan(vault, options, scan))
+        let (mut index, unread) = Self::scan(vault, options)?;
+        index.fill(unread.read());
+        Ok(index)
     }
 
-    fn from_scan(vault: Vault, options: ScanOptions, scan: Scan) -> Self {
+    /// The quick half of [`build`](Self::build): lists the vault's notes and
+    /// folders without reading a single note.
+    ///
+    /// Reading is nearly all the time a build takes, a second for twenty
+    /// thousand notes, so the app shows the vault from this straight away and
+    /// reads the notes a slice at a time between keystrokes with
+    /// [`Unread::read_some`], handing them to [`fill`](Self::fill) once they
+    /// are all read. Until then every note is known by its file name, with no
+    /// links, tags or headings yet.
+    pub fn scan(vault: Vault, options: ScanOptions) -> Result<(Self, Unread), std::io::Error> {
         let Scan {
             notes: metas,
             folders,
             attachments,
-        } = scan;
+        } = vault.scan(&options)?;
 
-        // Pass 1: read and parse each note. Link resolution needs the full
-        // name table, so it can't happen until every note is known.
-        let mut notes: Vec<IndexedNote> = Vec::with_capacity(metas.len());
-        let mut raw_links: Vec<Vec<(LinkRef, Arc<str>)>> = Vec::with_capacity(metas.len());
-
-        for mut meta in metas {
-            let content = fs::read_to_string(&meta.path).unwrap_or_default();
-            let (fm_text, body, body_offset) = note::split_frontmatter(&content);
-            let frontmatter = fm_text.map(note::parse_frontmatter).unwrap_or_default();
-
-            if let Some(title) = frontmatter.title() {
-                meta.title = title;
-            }
-
-            let mut tags = frontmatter.tags();
-            for tag in links::extract_tags(body) {
-                if !tags.contains(&tag) {
-                    tags.push(tag);
-                }
-            }
-
-            notes.push(IndexedNote {
-                meta,
-                aliases: frontmatter.aliases(),
-                headings: links::extract_headings(body),
-                words: links::word_count(body),
-                tags,
-                links: Vec::new(),
-                body_offset,
-            });
-            raw_links.push(links_with_context(body));
-        }
+        let unread = Unread::new(metas.iter().map(|meta| meta.path.clone()).collect());
+        let notes = metas.into_iter().map(IndexedNote::unread).collect();
 
         let mut index = Self {
             vault,
@@ -194,16 +198,52 @@ impl VaultIndex {
             attachments,
             revision: 0,
         };
-
         index.rebuild_lookup();
+        index.rebuild_derived();
+        Ok((index, unread))
+    }
 
-        // Pass 2: resolve links now that every name is known.
-        for (id, raw) in raw_links.into_iter().enumerate() {
-            index.notes[id].links = index.resolve_links(raw);
+    /// Takes in notes read by [`Unread::read`] and resolves every link.
+    ///
+    /// Safe to call however much the index changed while they were being
+    /// read. A note deleted or renamed in the meantime is no longer here to
+    /// fill, and one saved or created in the meantime was read again then, so
+    /// it already has what is newer than anything in `read`.
+    pub fn fill(&mut self, read: Vec<ReadNote>) {
+        for found in read {
+            let Some(id) = note::relative_path(&self.vault.path, &found.path)
+                .and_then(|rel| self.by_rel.get(&rel).copied())
+            else {
+                continue;
+            };
+            let indexed = &mut self.notes[id];
+            if indexed.read {
+                continue;
+            }
+            if let Some(title) = found.title {
+                indexed.meta.title = title;
+            }
+            indexed.aliases = found.aliases;
+            indexed.headings = found.headings;
+            indexed.words = found.words;
+            indexed.tags = found.tags;
+            indexed.body_offset = found.body_offset;
+            // Resolved below, once every note's names are known.
+            indexed.links = found
+                .links
+                .into_iter()
+                .map(|(raw, context)| ResolvedLink {
+                    target: LinkTarget::Unresolved(String::new()),
+                    raw,
+                    context,
+                })
+                .collect();
+            indexed.read = true;
         }
 
-        index.rebuild_derived();
-        index
+        self.rebuild_lookup();
+        self.resolve_all_links();
+        self.rebuild_derived();
     }
 
     fn resolve_links(&self, raw: Vec<(LinkRef, Arc<str>)>) -> Vec<ResolvedLink> {
@@ -510,6 +550,7 @@ impl VaultIndex {
         note.words = links::word_count(body);
         note.tags = tags;
         note.body_offset = body_offset;
+        note.read = true;
 
         let raw = links_with_context(body);
         self.rebuild_lookup();
@@ -542,18 +583,18 @@ impl VaultIndex {
     /// Only the targets are worked out afresh. Copying every link in the vault
     /// to do it, as this used to, doubled the index for a moment on every save.
     fn resolve_all_links(&mut self) {
-        let targets: Vec<Vec<LinkTarget>> = self
-            .notes
-            .iter()
-            .map(|note| note.links.iter().map(|l| self.classify(&l.raw)).collect())
-            .collect();
-        for (note, targets) in self.notes.iter_mut().zip(targets) {
-            for (link, target) in note.links.iter_mut().zip(targets) {
+        // One note at a time, so what is held aside is one note's targets.
+        for id in 0..self.notes.len() {
+            let targets: Vec<LinkTarget> = self.notes[id]
+                .links
+                .iter()
+                .map(|link| self.classify(&link.raw))
+                .collect();
+            for (link, target) in self.notes[id].links.iter_mut().zip(targets) {
                 link.target = target;
             }
         }
     }
-
     /// Registers an already-created note file without a full rebuild.
     pub(crate) fn insert_note(&mut self, meta: NoteMeta) -> Result<NoteId, std::io::Error> {
         // Keeping notes sorted by path means ids shift, so callers must use the
@@ -563,18 +604,7 @@ impl VaultIndex {
             .binary_search_by(|n| n.meta.rel.cmp(&meta.rel))
             .unwrap_or_else(|pos| pos);
 
-        self.notes.insert(
-            position,
-            IndexedNote {
-                links: Vec::new(),
-                tags: Vec::new(),
-                aliases: Vec::new(),
-                headings: Vec::new(),
-                words: 0,
-                body_offset: 0,
-                meta,
-            },
-        );
+        self.notes.insert(position, IndexedNote::unread(meta));
 
         let folder = self.notes[position].meta.folder().to_string();
         if !folder.is_empty() && !self.folders.contains(&folder) {
@@ -598,6 +628,97 @@ impl VaultIndex {
 
     pub(crate) fn folders_mut(&mut self) -> &mut Vec<String> {
         &mut self.folders
+    }
+}
+
+/// The notes a [`VaultIndex::scan`] found, still to be read.
+///
+/// Read a slice at a time with [`read_some`](Self::read_some), so the app can
+/// keep answering keys between slices, or all at once with
+/// [`read`](Self::read).
+#[derive(Debug)]
+pub struct Unread {
+    /// Notes not read yet, the next one last.
+    left: Vec<PathBuf>,
+    read: Vec<ReadNote>,
+}
+
+impl Unread {
+    fn new(mut paths: Vec<PathBuf>) -> Self {
+        paths.reverse();
+        Self {
+            read: Vec::with_capacity(paths.len()),
+            left: paths,
+        }
+    }
+
+    /// Whether every note has been read.
+    #[must_use]
+    pub fn is_done(&self) -> bool {
+        self.left.is_empty()
+    }
+
+    /// Reads and parses notes until `budget` is spent, at least one each time.
+    /// Returns whether every note has now been read.
+    ///
+    /// A note that can't be read is taken as empty, as it always was.
+    pub fn read_some(&mut self, budget: Duration) -> bool {
+        let start = Instant::now();
+        while let Some(path) = self.left.pop() {
+            let content = fs::read_to_string(&path).unwrap_or_default();
+            self.read.push(ReadNote::parse(path, &content));
+            if start.elapsed() >= budget {
+                break;
+            }
+        }
+        self.is_done()
+    }
+
+    /// Reads every note still to be read, and hands them all over for
+    /// [`VaultIndex::fill`].
+    #[must_use]
+    pub fn read(mut self) -> Vec<ReadNote> {
+        while !self.read_some(Duration::MAX) {}
+        self.read
+    }
+}
+
+/// One note as read from disk, waiting to go into the index.
+#[derive(Debug)]
+pub struct ReadNote {
+    path: PathBuf,
+    /// The frontmatter title, if it gives one.
+    title: Option<String>,
+    aliases: Vec<String>,
+    headings: Vec<Heading>,
+    words: usize,
+    tags: Vec<String>,
+    links: Vec<(LinkRef, Arc<str>)>,
+    body_offset: usize,
+}
+
+impl ReadNote {
+    fn parse(path: PathBuf, content: &str) -> Self {
+        let (fm_text, body, body_offset) = note::split_frontmatter(content);
+        let frontmatter = fm_text.map(note::parse_frontmatter).unwrap_or_default();
+
+        let mut tags = frontmatter.tags();
+        for tag in links::extract_tags(body) {
+            if !tags.contains(&tag) {
+                tags.push(tag);
+            }
+        }
+
+        Self {
+            path,
+            title: frontmatter.title(),
+            aliases: frontmatter.aliases(),
+            headings: links::extract_headings(body),
+            words: links::word_count(body),
+            tags,
+            links: links_with_context(body),
+            body_offset,
+        }
     }
 }
 
@@ -969,6 +1090,89 @@ mod tests {
 
         assert_eq!(index.note(a).unwrap().outgoing(), vec![b]);
         assert_eq!(index.backlinks(b).len(), 1);
+    }
+
+    #[test]
+    fn scanning_then_filling_gives_what_a_build_gives() {
+        let vault = TempVault::new("scan-fill");
+        vault.write(
+            "A.md",
+            "---\ntitle: Alpha\naliases: [First]\n---\n# A\nsee [[B]] #x\n",
+        );
+        vault.write("B.md", "back to [[First]] and [[Nowhere]]\n");
+        vault.write("pic.png", "");
+
+        let built = vault.index();
+        let (mut index, unread) =
+            VaultIndex::scan(vault.vault(), ScanOptions::default()).expect("scan");
+
+        // Before reading, every note is listed by its file name alone.
+        assert_eq!(index.len(), 2);
+        assert!(index.notes().iter().all(|n| !n.is_read()));
+        assert_eq!(index.note(0).unwrap().meta.title, "A");
+        assert!(index.backlinks(1).is_empty());
+
+        index.fill(unread.read());
+        assert!(index.notes().iter().all(IndexedNote::is_read));
+        assert_eq!(index.note(0).unwrap().meta.title, "Alpha");
+        for id in 0..2 {
+            assert_eq!(index.backlinks(id), built.backlinks(id));
+            assert_eq!(index.note(id).unwrap().links, built.note(id).unwrap().links);
+        }
+        assert_eq!(index.tags(), built.tags());
+        assert_eq!(index.unresolved(), built.unresolved());
+        assert_ne!(index.revision(), built.revision());
+    }
+
+    #[test]
+    fn notes_can_be_read_a_slice_at_a_time() {
+        let vault = TempVault::new("slices");
+        vault.write("A.md", "[[B]]\n");
+        vault.write("B.md", "[[C]]\n");
+        vault.write("C.md", "[[A]]\n");
+
+        let (mut index, mut unread) =
+            VaultIndex::scan(vault.vault(), ScanOptions::default()).expect("scan");
+        // A spent budget still reads one note, so reading always moves on.
+        assert!(!unread.read_some(Duration::ZERO));
+        assert!(!unread.read_some(Duration::ZERO));
+        assert!(unread.read_some(Duration::ZERO));
+        assert!(unread.is_done());
+
+        index.fill(unread.read());
+        assert_eq!(index.stats().links, 3);
+    }
+
+    #[test]
+    fn filling_keeps_what_changed_while_the_notes_were_read() {
+        let vault = TempVault::new("fill-later");
+        vault.write("A.md", "old [[B]]\n");
+        vault.write("B.md", "# B\n");
+        vault.write("C.md", "[[B]]\n");
+
+        let (mut index, unread) =
+            VaultIndex::scan(vault.vault(), ScanOptions::default()).expect("scan");
+        let read = unread.read();
+
+        // Meanwhile A is saved, C is deleted and D is created.
+        let a = index.id_of_rel("A.md").unwrap();
+        vault.write("A.md", "# New\nnow [[D]]\n");
+        index.refresh_note(a).expect("refresh");
+        let c = index.id_of_rel("C.md").unwrap();
+        index.delete_note(c).expect("delete");
+        index.create_note("D", "[[B]]\n").expect("create");
+
+        index.fill(read);
+
+        let a = index.id_of_rel("A.md").unwrap();
+        let b = index.id_of_rel("B.md").unwrap();
+        let d = index.id_of_rel("D.md").unwrap();
+        assert_eq!(index.id_of_rel("C.md"), None);
+        assert_eq!(index.note(a).unwrap().headings[0].text, "New");
+        assert_eq!(index.note(a).unwrap().outgoing(), vec![d]);
+        assert_eq!(index.note(b).unwrap().headings[0].text, "B");
+        let sources: Vec<_> = index.backlinks(b).iter().map(|l| l.source).collect();
+        assert_eq!(sources, vec![d]);
     }
 
     #[test]

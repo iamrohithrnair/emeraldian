@@ -192,6 +192,9 @@ pub fn specs(allow_writes: bool) -> Vec<ToolSpec> {
 
 /// Runs one tool call against the live app.
 pub fn execute(app: &mut App, call: &ToolCall) -> ToolOutcome {
+    // The assistant answers from links, backlinks and tags, so it waits for
+    // the vault to be read rather than answer from part of it.
+    app.finish_index();
     let args = &call.arguments;
     match call.name.as_str() {
         "search_notes" => search_notes(app, args),

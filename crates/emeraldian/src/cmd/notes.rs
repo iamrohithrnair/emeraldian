@@ -207,7 +207,7 @@ pub(super) fn info(ctx: &mut Ctx, args: &Args) -> Result<Output> {
     let index = ctx.index()?;
     let Some(note) = index.id_of_rel(&found.rel).and_then(|id| index.note(id)) else {
         return fail(format!(
-            "{} isn't indexed: it's in a hidden folder (see `ui.show_hidden`)",
+            "{} isn't indexed: it's in a hidden folder (see `ui.show_hidden`), or one a code project leaves out",
             found.name()
         ));
     };
@@ -598,7 +598,7 @@ fn indexed(ctx: &mut Ctx, found: &Located) -> Result<usize> {
     let index = ctx.index()?;
     index.id_of_rel(&found.rel).ok_or_else(|| {
         Failure::Failed(format!(
-            "{} isn't indexed: it's in a hidden folder (see `ui.show_hidden`)",
+            "{} isn't indexed: it's in a hidden folder (see `ui.show_hidden`), or one a code project leaves out",
             found.name()
         ))
     })

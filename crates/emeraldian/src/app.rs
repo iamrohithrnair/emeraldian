@@ -7,11 +7,12 @@
 //! capabilities the user has, not a parallel set.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use ratatui::layout::Rect;
 
 use emeraldian_core::graph::{Graph, GraphOptions, Simulation, Vec2};
-use emeraldian_core::index::{NoteId, VaultIndex};
+use emeraldian_core::index::{NoteId, Unread, VaultIndex};
 use emeraldian_core::vault::{ScanOptions, Vault};
 use emeraldian_theme::{ActiveTheme, presets};
 
@@ -444,18 +445,36 @@ pub struct App {
     /// so leaving it puts back exactly what was there, and saving settings
     /// while in it doesn't save an empty layout.
     pub focus_mode: bool,
+    /// The notes still being read while the vault is already on screen. See
+    /// [`App::open`].
+    indexing: Option<Unread>,
     pub quit: bool,
 }
 
 impl App {
-    /// Builds the app over a vault.
+    /// Builds the app over a vault, every note read before it returns.
     pub fn new(vault: Vault, config: Config) -> Result<Self, std::io::Error> {
-        let scan = ScanOptions {
-            include_hidden: config.ui.show_hidden,
-            ..Default::default()
-        };
-        let index = VaultIndex::build(vault, scan)?;
+        let options = scan_options(&vault, &config);
+        let index = VaultIndex::build(vault, options)?;
+        Ok(Self::over(index, config))
+    }
 
+    /// Builds the app over a vault without waiting for its notes to be read,
+    /// so the first frame is on screen as soon as the folders are listed.
+    ///
+    /// The notes are then read a slice at a time between keystrokes, by
+    /// [`poll_index`](Self::poll_index). Until they are all read the explorer
+    /// and the switcher list every note, a note that is opened is read there
+    /// and then, and backlinks and tags say they are still being worked out.
+    pub fn open(vault: Vault, config: Config) -> Result<Self, std::io::Error> {
+        let options = scan_options(&vault, &config);
+        let (index, unread) = VaultIndex::scan(vault, options)?;
+        let mut app = Self::over(index, config);
+        app.indexing = Some(unread);
+        Ok(app)
+    }
+
+    fn over(index: VaultIndex, config: Config) -> Self {
         let mut themes = presets::builtin();
         if let Some(dir) = Config::themes_dir() {
             let (custom, _errors) = presets::load_custom(&dir);
@@ -496,6 +515,7 @@ impl App {
             keymap: crate::keymap::Keymap::new(&config.keys),
             config_dir: None,
             focus_mode: false,
+            indexing: None,
             quit: false,
             theme: ActiveTheme::new(theme),
             themes,
@@ -510,7 +530,46 @@ impl App {
         // so tests aren't steered by whatever is in the real config directory.
         app.explorer.collapse_all(&app.index);
         app.explorer.rebuild(&app.index);
-        Ok(app)
+        app
+    }
+
+    /// Reads another slice of the vault's notes, and takes them all in once
+    /// the last is read. Returns whether that happened, so the screen needs
+    /// drawing again.
+    ///
+    /// Reading happens here, on the one thread everything else runs on, so
+    /// nothing else can be changing the index meanwhile. What did change
+    /// between slices, a note saved or renamed, [`VaultIndex::fill`] allows
+    /// for.
+    pub fn poll_index(&mut self) -> bool {
+        let Some(unread) = self.indexing.as_mut() else {
+            return false;
+        };
+        if !unread.read_some(INDEX_SLICE) {
+            return false;
+        }
+        // Note ids are unchanged: filling only adds to each note.
+        self.finish_index();
+        true
+    }
+
+    /// Reads whatever is left of the vault's notes now, for a caller that
+    /// needs the whole index at once.
+    pub fn finish_index(&mut self) {
+        if let Some(unread) = self.indexing.take() {
+            self.index.fill(unread.read());
+            self.explorer.rebuild(&self.index);
+            if self.graph.is_some() {
+                self.refresh_graph();
+            }
+        }
+    }
+
+    /// Whether the notes are still being read, so links, backlinks and tags
+    /// aren't all known yet.
+    #[must_use]
+    pub fn indexing(&self) -> bool {
+        self.indexing.is_some()
     }
 
     /// Writes the settings, wherever this app has been told to keep them.
@@ -676,9 +735,14 @@ impl App {
 
     /// Opens a note, reusing an existing tab if it's already open.
     pub fn open_note(&mut self, id: NoteId) {
-        if self.index.note(id).is_none() {
+        let Some(note) = self.index.note(id) else {
             self.error("that note no longer exists");
             return;
+        };
+        // While the vault is still being read, the note asked for is read now,
+        // so its outline and links are there the moment it is.
+        if !note.is_read() {
+            let _ = self.index.refresh_note(id);
         }
 
         if let Some(current) = self.active_note()
@@ -913,6 +977,9 @@ impl App {
             self.error(format!("refresh failed: {err}"));
             return;
         }
+        // Everything has just been read, so whatever was still waiting to be
+        // read is no longer wanted.
+        self.indexing = None;
         // A reload is the one moment the user has said the files on disk have
         // changed, so it is also when an edited picture should be read again.
         self.images.forget();
@@ -941,13 +1008,12 @@ impl App {
 
     /// Switches to another vault, keeping settings and theme.
     pub fn open_vault(&mut self, path: PathBuf) {
-        let scan = ScanOptions {
-            include_hidden: self.config.ui.show_hidden,
-            ..Default::default()
-        };
-        match VaultIndex::build(Vault::from_path(&path), scan) {
-            Ok(index) => {
+        let vault = Vault::from_path(&path);
+        let options = scan_options(&vault, &self.config);
+        match VaultIndex::scan(vault, options) {
+            Ok((index, unread)) => {
                 self.index = index;
+                self.indexing = Some(unread);
                 self.tabs.clear();
                 self.active_tab = None;
                 self.history.clear();
@@ -986,6 +1052,24 @@ impl App {
     }
 }
 
+/// How long to spend reading notes before looking for a key again, while a
+/// vault is being read. Short enough that typing never feels it.
+const INDEX_SLICE: Duration = Duration::from_millis(8);
+
+/// How to scan a vault.
+///
+/// A folder Obsidian has never opened is most often a code project opened to
+/// read one of its notes, so its dependency and build folders, and what its
+/// `.gitignore` leaves out, are left out here too. A real vault is scanned
+/// exactly as Obsidian scans it.
+fn scan_options(vault: &Vault, config: &Config) -> ScanOptions {
+    ScanOptions {
+        include_hidden: config.ui.show_hidden,
+        skip_project_folders: !vault.is_initialized(),
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1001,6 +1085,58 @@ mod tests {
         vault.write("B.md", "# B\n");
         vault.write("Folder/C.md", "# C\n");
         vault
+    }
+
+    #[test]
+    fn a_vault_is_shown_before_its_notes_are_read() {
+        let vault = sample();
+        let mut app = App::open(vault.vault(), Config::default()).expect("open app");
+        assert!(app.indexing());
+        assert_eq!(app.index.len(), 3, "every note is listed straight away");
+
+        // The note asked for is read as it opens, outline and links and all.
+        let a = app.index.id_of_rel("A.md").unwrap();
+        let b = app.index.id_of_rel("B.md").unwrap();
+        app.open_note(a);
+        assert_eq!(app.index.note(a).unwrap().headings[0].text, "A");
+        assert_eq!(app.index.note(a).unwrap().outgoing(), vec![b]);
+        assert!(!app.index.note(b).unwrap().is_read());
+
+        while app.indexing() {
+            app.poll_index();
+        }
+        assert!(app.index.notes().iter().all(|n| n.is_read()));
+        assert_eq!(app.index.backlinks(b).len(), 1);
+        assert_eq!(app.active_note(), Some(a), "the open note stays open");
+    }
+
+    #[test]
+    fn the_assistant_waits_for_the_whole_vault() {
+        let vault = sample();
+        let mut app = App::open(vault.vault(), Config::default()).expect("open app");
+        app.finish_index();
+        assert!(!app.indexing());
+        let b = app.index.id_of_rel("B.md").unwrap();
+        assert_eq!(app.index.backlinks(b).len(), 1);
+    }
+
+    #[test]
+    fn a_folder_that_is_not_a_vault_leaves_out_dependencies() {
+        let vault = sample();
+        vault.write("node_modules/pkg/README.md", "# pkg\n");
+        vault.write(".gitignore", "Folder/\n");
+        let folder = app(&vault);
+        let rels: Vec<_> = folder
+            .index
+            .notes()
+            .iter()
+            .map(|n| n.meta.rel.as_str())
+            .collect();
+        assert_eq!(rels, vec!["A.md", "B.md"]);
+
+        // Once Obsidian has opened it, it is a vault, and shows everything.
+        vault.write(".obsidian/app.json", "{}");
+        assert_eq!(app(&vault).index.len(), 4);
     }
 
     #[test]

@@ -125,9 +125,8 @@ impl Ctx {
             root: self.root()?,
             folder: folder.to_string(),
             options: emeraldian_core::vault::ScanOptions {
-                include_hidden: self.config.ui.show_hidden,
                 include_attachments: false,
-                ..Default::default()
+                ..self.scan_options()?
             },
         })
     }

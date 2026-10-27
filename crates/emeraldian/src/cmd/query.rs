@@ -394,7 +394,7 @@ pub(super) fn links(ctx: &mut Ctx, args: &Args) -> Result<Output> {
     let index = ctx.index()?;
     let Some(id) = index.id_of_rel(&found.rel) else {
         return fail(format!(
-            "{} isn't indexed: it's in a hidden folder (see `ui.show_hidden`)",
+            "{} isn't indexed: it's in a hidden folder (see `ui.show_hidden`), or one a code project leaves out",
             found.name()
         ));
     };

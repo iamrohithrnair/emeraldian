@@ -3,6 +3,7 @@
 pub mod edit;
 pub mod error;
 pub mod excalidraw;
+mod gitignore;
 pub mod graph;
 pub mod index;
 pub mod links;

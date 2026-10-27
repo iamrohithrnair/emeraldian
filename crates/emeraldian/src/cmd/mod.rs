@@ -1257,12 +1257,16 @@ impl Ctx {
         Ok(self.vault()?.path.clone())
     }
 
-    /// Which folders the app shows: hidden ones only if it is set to.
-    fn scan_options(&self) -> ScanOptions {
-        ScanOptions {
+    /// Which folders the app shows: hidden ones only if it is set to, and,
+    /// in a folder Obsidian has never opened, not the ones a code project
+    /// leaves out, just as the app leaves them out.
+    fn scan_options(&mut self) -> Result<ScanOptions> {
+        let skip_project_folders = !self.vault()?.is_initialized();
+        Ok(ScanOptions {
             include_hidden: self.config.ui.show_hidden,
+            skip_project_folders,
             ..Default::default()
-        }
+        })
     }
 
     /// Every note's name, path and dates, from a walk of the folders, made the
@@ -1271,7 +1275,7 @@ impl Ctx {
         if self.scan.is_none() {
             let options = ScanOptions {
                 include_attachments: false,
-                ..self.scan_options()
+                ..self.scan_options()?
             };
             let scan = self.vault()?.scan(&options)?;
             self.scan = Some(scan);
@@ -1282,8 +1286,9 @@ impl Ctx {
     /// The vault's index, built the first time it is needed.
     pub fn index(&mut self) -> Result<&mut VaultIndex> {
         if self.index.is_none() {
+            let options = self.scan_options()?;
             let vault = self.vault()?.clone();
-            let index = VaultIndex::build(vault, self.scan_options())?;
+            let index = VaultIndex::build(vault, options)?;
             self.index = Some(index);
         }
         Ok(self.index.as_mut().expect("just built"))
