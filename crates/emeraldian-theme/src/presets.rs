@@ -64,11 +64,14 @@ fn build(seed: &Seed) -> Theme {
         theme.text_highlight_fg = "black".into();
     }
 
-    // Obsidian Light's cyan works as a fill or an accent, but at 2.3:1 on
-    // white it is too faint for the words of a level-3 heading. This is the
-    // same hue, darkened to the 4.5:1 that body text needs.
+    // Obsidian Light's cyan, green and yellow work as fills and accents, but
+    // on white they are too faint for the words of a heading: 2.3:1, 2.6:1
+    // and 3.0:1 at levels 3, 4 and 5. Each is the same hue, darkened to the
+    // 4.5:1 that body text needs.
     if seed.name == seed::OBSIDIAN_LIGHT.name {
         theme.h3 = "#008483".into();
+        theme.h4 = "#008a1c".into();
+        theme.h5 = "#967100".into();
     }
 
     theme
@@ -164,14 +167,22 @@ mod tests {
     }
 
     #[test]
-    fn obsidian_light_level_three_headings_read_as_text() {
+    fn obsidian_light_headings_read_as_text() {
         let light = crate::Palette::from(&builtin_by_name("obsidian-light").expect("built in"));
-        let ratio = crate::color::contrast(light.h3, light.bg_primary).expect("both RGB");
-        assert!(ratio >= crate::theme::TEXT_CONTRAST, "{ratio:.2}:1");
+        for level in 1..=6 {
+            let ratio =
+                crate::color::contrast(light.heading(level), light.bg_primary).expect("both RGB");
+            assert!(
+                ratio >= crate::theme::TEXT_CONTRAST,
+                "level {level}: {ratio:.2}:1"
+            );
+        }
 
-        // Only that theme's heading: the dark theme's cyan already reads.
+        // Only that theme's headings: the dark theme's colours already read.
         let dark = builtin_by_name("obsidian-dark").expect("built in");
         assert_eq!(dark.h3, seed::OBSIDIAN_DARK.cyan);
+        assert_eq!(dark.h4, seed::OBSIDIAN_DARK.green);
+        assert_eq!(dark.h5, seed::OBSIDIAN_DARK.yellow);
     }
 
     #[test]

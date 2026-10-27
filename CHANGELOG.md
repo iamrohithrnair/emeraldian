@@ -30,9 +30,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
-- **Level-3 headings are readable in Obsidian Light.** They were a pale
-  cyan at 2.3:1 against the white page, too faint to read comfortably. They
-  keep the same hue, darkened to the 4.5:1 that body text needs.
+- **Headings at levels 3, 4 and 5 are readable in Obsidian Light.** Their
+  cyan, green and yellow stood at 2.3:1, 2.6:1 and 3.0:1 against the white
+  page, too faint to read comfortably. Each keeps its hue, darkened to the
+  4.5:1 that body text needs.
 
 ## [0.9.1] — 2026-10-27
 
