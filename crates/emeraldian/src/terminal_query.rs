@@ -33,6 +33,7 @@ use std::time::Duration;
 pub const WAIT: Duration = Duration::from_secs(1);
 
 /// Extra time for an answer that had started arriving when [`WAIT`] ran out.
+#[cfg(unix)]
 const GRACE: Duration = Duration::from_millis(250);
 
 /// Whether this runs inside a terminal multiplexer, which answers queries
