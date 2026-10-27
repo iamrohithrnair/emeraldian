@@ -4,7 +4,11 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.10.0]
+## [0.10.0] — 2026-10-27
+
+Focus mode gives the note the screen, tabs close with a click on their `×`,
+and Mermaid diagrams are drawn in colour, each box in a colour of its own.
+Notes and a `config.toml` from an earlier version work unchanged.
 
 ### Added
 
@@ -16,6 +20,11 @@ All notable changes to this project are documented here. The format follows
   same.
 
 ### Changed
+
+- **Focus mode gives the note the screen.** `F8` hid the sidebars but kept
+  the note at a hundred columns, so on a wide terminal it sat in a narrow
+  strip with empty space either side. It now spreads across 90% of the
+  width, centred, and a terminal of 80 columns or fewer keeps all of it.
 
 - **Mermaid diagrams are drawn in colour.** Every box in a flowchart, and
   every participant in a sequence diagram, now has a colour of its own,
@@ -32,26 +41,22 @@ All notable changes to this project are documented here. The format follows
   which in Obsidian's own themes is purple, and a page with a few diagrams
   on it was mostly purple. The colours are picked once, when the note is
   laid out, so scrolling past fifty diagrams is as smooth as it was.
+
 - **List bullets are a quiet grey.** The bullets and numbers of a list are
   drawn in the muted text colour, as Obsidian draws them, rather than the
   accent, which put a column of purple dots down every list. Links and tags
   keep the accent, so they still stand out.
 
-- **Focus mode gives the note the screen.** `F8` hid the sidebars but kept
-  the note at a hundred columns, so on a wide terminal it sat in a narrow
-  strip with empty space either side. It now spreads across 90% of the
-  width, centred, and a terminal of 80 columns or fewer keeps all of it.
-
 ### Fixed
+
+- **Tabs with Chinese, Japanese or emoji in their names line up.** The tab
+  bar measured names by their characters rather than the columns they fill,
+  so a click on a tab after one of them could land on the wrong tab.
 
 - **Headings at levels 3, 4 and 5 are readable in Obsidian Light.** Their
   cyan, green and yellow stood at 2.3:1, 2.6:1 and 3.0:1 against the white
   page, too faint to read comfortably. Each keeps its hue, darkened to the
   4.5:1 that body text needs.
-
-- **Tabs with Chinese, Japanese or emoji in their names line up.** The tab
-  bar measured names by their characters rather than the columns they fill,
-  so a click on a tab after one of them could land on the wrong tab.
 
 ## [0.9.1] — 2026-10-27
 
@@ -895,6 +900,7 @@ First release.
 - Unreadable vaults are reported clearly, including the macOS privacy
   permission that usually causes it.
 
+[0.10.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.10.0
 [0.9.1]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.9.1
 [0.9.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.9.0
 [0.8.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.8.0
