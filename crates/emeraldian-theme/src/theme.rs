@@ -324,7 +324,83 @@ impl Theme {
     }
 }
 
+/// The least contrast against the page for lines and shapes that mean
+/// something, as WCAG asks of them (success criterion 1.4.11).
+pub const STROKE_CONTRAST: f32 = 3.0;
+
+/// The least contrast against the page for words: WCAG's level AA for body
+/// text (success criterion 1.4.3).
+pub const TEXT_CONTRAST: f32 = 4.5;
+
+/// Hues closer than this in OKLab look alike at a glance, like Tokyo Night's
+/// red and pink, so only the first of them is used.
+const ALIKE: f32 = 0.07;
+
+/// Hues with less chroma than this are greys, which tell nothing apart.
+const GREY: f32 = 0.03;
+
+/// A theme's hues, for telling things apart, such as the boxes of a diagram
+/// or the people in a conversation.
+///
+/// They are the colours the theme already gives its callouts and code, so
+/// what is drawn with them looks like the rest of the page in every theme,
+/// light or dark, and follows a user's theme when it changes them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hues {
+    /// For lines, outlines and arrowheads, each at least
+    /// [`STROKE_CONTRAST`]:1 against the page.
+    pub strokes: Vec<Color>,
+    /// The same hues for words, in the same order, each at least
+    /// [`TEXT_CONTRAST`]:1. Most are the stroke colour itself; on a light
+    /// page a pale one is darkened a little further.
+    pub words: Vec<Color>,
+}
+
 impl Palette {
+    /// The theme's hues, each made readable on the page, with any that would
+    /// look like one already taken, or like grey, left out. Two that would
+    /// round to the same colour in a terminal of 256 colours count as alike
+    /// too, so they stay apart there.
+    ///
+    /// The order puts unlike hues next to each other, so the colour after one
+    /// that is taken is a different one to the eye too. A theme of named
+    /// terminal colours keeps them as they are, since only the terminal knows
+    /// what they look like.
+    #[must_use]
+    pub fn hues(&self) -> Hues {
+        let theirs = [
+            self.callout_note,     // blue
+            self.callout_warning,  // orange
+            self.callout_success,  // green
+            self.code_fg,          // pink
+            self.callout_tip,      // cyan
+            self.callout_question, // yellow
+            self.syn_keyword,      // purple
+            self.callout_danger,   // red
+        ];
+        let mut hues = Hues {
+            strokes: Vec::with_capacity(theirs.len()),
+            words: Vec::with_capacity(theirs.len()),
+        };
+        for hue in theirs {
+            let stroke = color::readable(hue, self.bg_primary, STROKE_CONTRAST);
+            let grey = color::chroma(stroke).is_some_and(|chroma| chroma < GREY);
+            let rounded = color::xterm_256(stroke);
+            let taken = hues.strokes.iter().any(|&kept| {
+                kept == stroke
+                    || color::difference(kept, stroke).is_some_and(|d| d < ALIKE)
+                    || (rounded.is_some() && color::xterm_256(kept) == rounded)
+            });
+            if stroke == Color::Reset || grey || taken {
+                continue;
+            }
+            hues.strokes.push(stroke);
+            hues.words
+                .push(color::readable(hue, self.bg_primary, TEXT_CONTRAST));
+        }
+        hues
+    }
+
     /// Heading color for a level, clamped to the H1–H6 range.
     #[must_use]
     pub fn heading(&self, level: u8) -> Color {
@@ -420,5 +496,106 @@ mod tests {
         assert_eq!(palette.heading(0), palette.h1);
         assert_eq!(palette.heading(1), palette.h1);
         assert_eq!(palette.heading(9), palette.h6);
+    }
+
+    /// Every built-in theme, light and dark, has enough hues to tell a
+    /// diagram's boxes apart, each one readable on its page and none like
+    /// another.
+    #[test]
+    fn every_theme_has_hues_that_read_on_its_page_and_differ() {
+        for seed in crate::presets::ALL {
+            let palette = Palette::from(&Theme::from_seed(seed));
+            let hues = palette.hues();
+            let name = seed.name;
+            assert_eq!(hues.strokes.len(), hues.words.len(), "{name}");
+            assert!(
+                hues.strokes.len() >= 5,
+                "{name}: only {} hues",
+                hues.strokes.len()
+            );
+            let page = palette.bg_primary;
+            for (at, (&stroke, &word)) in hues.strokes.iter().zip(&hues.words).enumerate() {
+                // The terminal theme's are colour names the terminal decides,
+                // and its page is the terminal's own: nothing to measure.
+                if let Some(ratio) = color::contrast(stroke, page) {
+                    assert!(
+                        ratio >= STROKE_CONTRAST,
+                        "{name}: line {stroke:?} is {ratio:.2}:1"
+                    );
+                }
+                if let Some(ratio) = color::contrast(word, page) {
+                    assert!(
+                        ratio >= TEXT_CONTRAST,
+                        "{name}: words {word:?} are {ratio:.2}:1"
+                    );
+                }
+                // Words are the same hue as their line, just as readable as
+                // words need to be.
+                if let Some(apart) = color::difference(stroke, word) {
+                    assert!(apart < 0.15, "{name}: {stroke:?} and {word:?}");
+                }
+                for &earlier in &hues.strokes[..at] {
+                    assert_ne!(earlier, stroke, "{name}: a hue twice");
+                    if let Some(apart) = color::difference(earlier, stroke) {
+                        assert!(
+                            apart >= ALIKE,
+                            "{name}: {earlier:?} and {stroke:?} look alike"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hues_leave_out_greys_and_lookalikes_and_follow_the_theme() {
+        let tokyo = Palette::from(&Theme::from_seed(&seed::TOKYO_NIGHT));
+        let strokes = tokyo.hues().strokes;
+        assert!(
+            strokes.contains(&tokyo.code_fg) != strokes.contains(&tokyo.callout_danger),
+            "Tokyo Night's pink and red are one colour to the eye"
+        );
+
+        let mut grey = Theme::from_seed(&seed::OBSIDIAN_DARK);
+        grey.callout_note = "#8a8a8a".into();
+        grey.callout_tip = "#00ffff".into();
+        let palette = Palette::from(&grey);
+        let strokes = palette.hues().strokes;
+        assert!(!strokes.contains(&palette.callout_note), "a grey is no hue");
+        assert!(
+            strokes.contains(&palette.callout_tip),
+            "a user's own colour is used"
+        );
+
+        let terminal = Palette::from(&Theme::from_seed(&seed::TERMINAL));
+        let named = terminal.hues();
+        assert!(named.strokes.contains(&Color::Blue));
+        assert_eq!(
+            named.strokes, named.words,
+            "names are left for the terminal"
+        );
+    }
+
+    /// Where 24-bit colour isn't shown, as in tmux without its `RGB` feature,
+    /// each colour is rounded to the nearest of 256. A diagram's hues have to
+    /// stay apart when they are, or two boxes that differed become one colour.
+    #[test]
+    fn hues_stay_apart_in_a_256_colour_terminal() {
+        for seed in crate::presets::ALL {
+            let palette = Palette::from(&Theme::from_seed(seed));
+            let rounded: Vec<u8> = palette
+                .hues()
+                .strokes
+                .into_iter()
+                .filter_map(color::xterm_256)
+                .collect();
+            for (at, colour) in rounded.iter().enumerate() {
+                assert!(
+                    !rounded[..at].contains(colour),
+                    "{}: two hues round to colour {colour}: {rounded:?}",
+                    seed.name
+                );
+            }
+        }
     }
 }

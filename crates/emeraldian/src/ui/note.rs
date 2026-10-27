@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 use ratatui_image::sliced::{SignedPosition, SlicedImage};
@@ -18,7 +18,7 @@ use unicode_width::UnicodeWidthStr;
 use emeraldian_core::excalidraw;
 use emeraldian_core::index::VaultIndex;
 use emeraldian_core::markdown::{self, Align, Block, BlockKind, Marker, SpanKind, Table};
-use emeraldian_theme::Palette;
+use emeraldian_theme::{Hues, Palette, STROKE_CONTRAST, TEXT_CONTRAST, readable};
 
 use crate::app::{App, Mode, Regions};
 use crate::editor::{Cursor, Row};
@@ -71,6 +71,9 @@ pub struct Ctx<'a> {
     /// The blocks laid out wider than the pane, filled in as blocks are laid
     /// out.
     pub pans: Vec<Pan>,
+    /// The colours diagrams are drawn in, worked out the first time the note
+    /// has one rather than once for each.
+    inks: Option<DiagramInks>,
 }
 
 impl<'a> Ctx<'a> {
@@ -86,6 +89,32 @@ impl<'a> Ctx<'a> {
             pictures: Vec::new(),
             anchors: Vec::new(),
             pans: Vec::new(),
+            inks: None,
+        }
+    }
+}
+
+/// The colours diagrams are drawn in: the theme's hues for the things in
+/// them, and quieter colours for what is no one's, each held to the contrast
+/// against the page that lines or words need.
+struct DiagramInks {
+    hues: Hues,
+    /// Lines that are no one's, like the rule of a `loop` block.
+    quiet: Color,
+    /// Words that are no one's.
+    quiet_words: Color,
+    /// Notes, and the words on a `loop` or `alt` block's rule.
+    note: Color,
+}
+
+impl DiagramInks {
+    fn new(palette: &Palette) -> Self {
+        let page = palette.bg_primary;
+        Self {
+            hues: palette.hues(),
+            quiet: readable(palette.text_muted, page, STROKE_CONTRAST),
+            quiet_words: readable(palette.text_muted, page, TEXT_CONTRAST),
+            note: readable(palette.callout_note, page, TEXT_CONTRAST),
         }
     }
 }
@@ -423,6 +452,7 @@ fn draw_reading(
             pictures: Vec::new(),
             anchors: Vec::new(),
             pans: Vec::new(),
+            inks: None,
         };
         let lines = render_document(&document, &mut ctx, width);
         app.reading = ReadingCache {
@@ -992,7 +1022,8 @@ fn render_block(
             if lang.eq_ignore_ascii_case("mermaid")
                 && let Some(diagram) = mermaid::render(code, inner_width)
             {
-                diagram_lines(&diagram, palette, &pad, out);
+                let inks = ctx.inks.get_or_insert_with(|| DiagramInks::new(palette));
+                diagram_lines(&diagram, palette, inks, &pad, out);
                 note_pan(ctx, out, start, indent, width);
                 return;
             }
@@ -1048,29 +1079,61 @@ fn render_block(
 
 /// A drawn diagram as styled lines. It keeps its own width: one wider than the
 /// pane is panned across like a wide table, never squeezed.
+///
+/// Each node or participant is drawn in one of the theme's hues, and what it
+/// sends in the same one, while the words inside boxes keep the body colour.
+/// This runs when the note is laid out and the colours are kept with the
+/// lines, so a frame costs what it always did.
 fn diagram_lines(
     diagram: &mermaid::Diagram,
     palette: &Palette,
+    inks: &DiagramInks,
     pad: &str,
     out: &mut Vec<Line<'static>>,
 ) {
-    let style = |role: mermaid::Role| {
-        Style::default().fg(match role {
-            mermaid::Role::Text => palette.text_normal,
-            mermaid::Role::Border | mermaid::Role::Arrow => palette.accent,
-            mermaid::Role::Line | mermaid::Role::Label => palette.text_muted,
-            mermaid::Role::Note => palette.callout_note,
+    use mermaid::Role;
+
+    let picked = diagram.colours(inks.hues.strokes.len());
+    let style = |ink: mermaid::Ink| {
+        let hue = ink
+            .owner
+            .and_then(|owner| picked.get(usize::from(owner)))
+            .map(|&hue| usize::from(hue));
+        Style::default().fg(match (ink.role, hue) {
+            (Role::Text, _) => palette.text_normal,
+            (Role::Note, _) => inks.note,
+            (Role::Label, Some(hue)) => inks.hues.words[hue],
+            (Role::Label, None) => inks.quiet_words,
+            (Role::Border | Role::Line | Role::Arrow, Some(hue)) => inks.hues.strokes[hue],
+            (Role::Border | Role::Line | Role::Arrow, None) => inks.quiet,
         })
     };
+    // Runs that come out the same colour, like an edge and its arrowhead,
+    // share a span. This holds where each span's runs end, and its style.
+    let mut spans_of: Vec<(usize, Style)> = Vec::new();
     for row in &diagram.rows {
-        let mut spans = Vec::with_capacity(row.len() + 1);
+        spans_of.clear();
+        for (at, (_, ink)) in row.iter().enumerate() {
+            let style = style(*ink);
+            match spans_of.last_mut() {
+                Some((end, last)) if *last == style => *end = at + 1,
+                _ => spans_of.push((at + 1, style)),
+            }
+        }
+        let mut spans = Vec::with_capacity(spans_of.len() + usize::from(!pad.is_empty()));
         if !pad.is_empty() {
             spans.push(Span::raw(pad.to_string()));
         }
-        spans.extend(
-            row.iter()
-                .map(|(text, role)| Span::styled(text.clone(), style(*role))),
-        );
+        let mut start = 0;
+        for &(end, style) in &spans_of {
+            let runs = &row[start..end];
+            let mut text = String::with_capacity(runs.iter().map(|(text, _)| text.len()).sum());
+            for (run, _) in runs {
+                text.push_str(run);
+            }
+            spans.push(Span::styled(text, style));
+            start = end;
+        }
         out.push(Line::from(spans));
     }
 }
@@ -2306,6 +2369,7 @@ mod tests {
             pictures: Vec::new(),
             anchors: Vec::new(),
             pans: Vec::new(),
+            inks: None,
         }
     }
 
@@ -2624,16 +2688,87 @@ mod tests {
             !rendered.iter().any(|l| l.contains("graph LR")),
             "the source is not shown"
         );
-        let arrow = lines[start]
-            .spans
-            .iter()
-            .find(|s| s.content.contains('▶'))
-            .unwrap();
-        assert_eq!(arrow.style.fg, Some(palette.accent));
+        // The arrow is the colour of the box it leaves, and the words in the
+        // boxes are body text.
+        let colour_of = |row: usize, needle: char| {
+            lines[row]
+                .spans
+                .iter()
+                .find(|s| s.content.contains(needle))
+                .and_then(|s| s.style.fg)
+        };
+        let start_box = colour_of(start - 1, '┌');
+        assert_eq!(colour_of(start, '▶'), start_box);
+        assert_ne!(start_box, Some(palette.accent));
+        assert_eq!(colour_of(start, 'S'), Some(palette.text_normal));
 
         // A kind it doesn't draw stays code, header and all.
         assert!(rendered.iter().any(|l| l.contains("mermaid")));
         assert!(rendered.iter().any(|l| l.contains("pie title Pets")));
+    }
+
+    #[test]
+    fn two_boxes_in_a_diagram_get_two_of_the_themes_colours() {
+        let vault = TempVault::new("render-mermaid-colours");
+        let index = vault.index();
+        let palette = palette();
+        let document = markdown::parse("```mermaid\ngraph LR\n  A[Start] --> B[End]\n```\n");
+        let lines = render_document(&document, &mut Ctx::text(&palette, &index), 60);
+        let top = lines
+            .iter()
+            .find(|line| line.spans.iter().any(|s| s.content.contains('┌')))
+            .expect("the boxes' top edges");
+        let outlines: Vec<_> = top
+            .spans
+            .iter()
+            .filter(|s| s.content.contains('┌'))
+            .filter_map(|s| s.style.fg)
+            .collect();
+        assert_eq!(outlines.len(), 2, "{top:?}");
+        assert_ne!(outlines[0], outlines[1], "two boxes, two colours");
+        let hues = palette.hues().strokes;
+        assert!(outlines.iter().all(|colour| hues.contains(colour)));
+    }
+
+    /// Whatever the theme, light or dark, every colour a diagram is drawn in
+    /// stands out from the page: words at 4.5:1 and lines at 3:1.
+    #[test]
+    fn diagrams_read_on_the_page_in_every_theme() {
+        let vault = TempVault::new("render-mermaid-contrast");
+        let index = vault.index();
+        let document = markdown::parse(concat!(
+            "```mermaid\ngraph TD\n  A[One] -->|yes| B[Two]\n  A -.->|no| C((Three))\n",
+            "  B & C ==> D{Four}\n  D --> E[[Five]]\n  E --> F[Six] --> G[Seven] --> H[Eight] --> A\n```\n\n",
+            "```mermaid\nsequenceDiagram\n  participant P as Pat\n  actor Q as Quinn\n  P->>Q: hello\n",
+            "  loop again\n    Q-->>P: back\n  end\n  Note over P,Q: aside\n  Q->>Q: think\n```\n",
+        ));
+        for theme in presets::builtin() {
+            let palette = Palette::from(&theme);
+            let lines = render_document(&document, &mut Ctx::text(&palette, &index), 100);
+            assert!(
+                text_of(&lines).iter().any(|line| line.contains("Quinn")),
+                "drawn, not left as code"
+            );
+            for span in lines.iter().flat_map(|line| &line.spans) {
+                let Some(fg) = span.style.fg else { continue };
+                // The terminal theme leaves its colours to the terminal.
+                let Some(ratio) = emeraldian_theme::contrast(fg, palette.bg_primary) else {
+                    continue;
+                };
+                let words = span.content.chars().any(char::is_alphanumeric);
+                let least = if words {
+                    TEXT_CONTRAST
+                } else {
+                    STROKE_CONTRAST
+                };
+                assert!(
+                    ratio >= least,
+                    "{}: {:?} in {fg:?} is {ratio:.2}:1",
+                    theme.name,
+                    span.content
+                );
+            }
+        }
     }
 
     #[test]

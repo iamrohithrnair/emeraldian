@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0]
+
+### Changed
+
+- **Mermaid diagrams are drawn in colour.** Every box in a flowchart, and
+  every participant in a sequence diagram, now has a colour of its own,
+  taken from your theme: the same blues, greens, oranges and pinks its
+  callouts and code already use. The edges a box sends, their arrowheads and
+  the words on them come in its colour, so you can follow the flow by eye,
+  and a participant's lifeline and the messages it sends carry its colour
+  too. The words inside the boxes stay in the body colour, where they read
+  best. A diagram looks the same every time you open it, and adding a box
+  rarely changes the colour of any other. Every colour is checked against
+  the page, so on a light theme a pale yellow or cyan is darkened until it
+  reads, and two that would look alike, even in a terminal of 256 colours,
+  are never both used. Until now every box and arrow was the theme's accent,
+  which in Obsidian's own themes is purple, and a page with a few diagrams
+  on it was mostly purple. The colours are picked once, when the note is
+  laid out, so scrolling past fifty diagrams is as smooth as it was.
+
 ## [0.9.1] — 2026-10-27
 
 Emeraldian starts inside tmux again. Nothing else changes from 0.9.0.
