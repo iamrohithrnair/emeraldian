@@ -257,6 +257,18 @@ uncommitted files without being asked. Each agent's `log` and `end` reach the
 session it started in its own working tree, so agents can work side by side.
 `emeraldian help mem` has the rest.
 
+To have Claude Code do all this without being told, add the skill that comes
+with the repository, [`skills/emeraldian-memory`](skills/emeraldian-memory/SKILL.md):
+
+```sh
+mkdir -p ~/.claude/skills/emeraldian-memory
+curl -fsSL https://raw.githubusercontent.com/iamrohithrnair/emeraldian/main/skills/emeraldian-memory/SKILL.md \
+  -o ~/.claude/skills/emeraldian-memory/SKILL.md
+```
+
+It tells the agent when to start, log, remember, recall and hand over, in a
+few hundred tokens. Other agents can read the same file as instructions.
+
 ## Keys
 
 Obsidian's shortcuts where it has them, your system's own for moving through

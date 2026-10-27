@@ -63,6 +63,10 @@ All notable changes to this project are documented here. The format follows
   `document_prompt`, recall says to run `emeraldian index` to embed the notes
   again, and answers by words and links until then.
 
+- **A skill for Claude Code**, in `skills/emeraldian-memory`, that tells an
+  agent when to start a session, log, remember, recall and hand over with
+  `emeraldian mem`.
+
 - **Memory for coding agents.** `emeraldian mem` lets Claude Code, Codex or
   any other agent keep what it knows between sessions, as notes in the vault,
   under `Agents/` unless `folder` under `[memory]` says otherwise.
@@ -85,6 +89,13 @@ All notable changes to this project are documented here. The format follows
   misspelt, not only when it is incomplete.
 
 ### Fixed
+
+- **A note in a big folder that isn't a vault opens in a second or two.**
+  Opening a note there takes its folder as the vault, and a code project
+  with `node_modules` holds a hundred thousand files besides its notes.
+  Every link that pointed nowhere was checked against each of them in turn,
+  so a design doc in a web app's repository took over a minute to open, and
+  looked stuck. Links to files are now looked up by name in one step.
 
 - A link to a name goes to the note with that file name, not to a note that
   has the name as an alias. It used to be the other way round whenever both

@@ -116,6 +116,12 @@ pub struct VaultIndex {
     unresolved: BTreeMap<String, Vec<NoteId>>,
     folders: Vec<String>,
     attachments: Vec<String>,
+    /// Lowercased attachment paths and file names → the first attachment
+    /// with that path or name, so a link to a file is found at once. A
+    /// folder that isn't a vault, a code project say, can hold a hundred
+    /// thousand files, and searching them all for every unresolved link
+    /// took minutes.
+    attachment_names: HashMap<String, usize>,
     /// Changed whenever anything a note's links resolve to may have, so a
     /// view drawn from the index can tell whether to draw it again. Drawn from
     /// one counter for every index, so a rebuilt one never repeats a number.
@@ -184,6 +190,7 @@ impl VaultIndex {
             unresolved: BTreeMap::new(),
             notes,
             folders,
+            attachment_names: attachment_names(&attachments),
             attachments,
             revision: 0,
         };
@@ -309,18 +316,9 @@ impl VaultIndex {
     }
 
     fn find_attachment(&self, target: &str) -> Option<String> {
-        let needle = target.to_lowercase();
-        self.attachments
-            .iter()
-            .find(|path| {
-                let lower = path.to_lowercase();
-                lower == needle
-                    || lower
-                        .rsplit('/')
-                        .next()
-                        .is_some_and(|file_name| file_name == needle)
-            })
-            .cloned()
+        self.attachment_names
+            .get(&target.to_lowercase())
+            .map(|&at| self.attachments[at].clone())
     }
 
     // ---- queries ---------------------------------------------------------
@@ -720,6 +718,21 @@ fn is_external(target: &str) -> bool {
     ];
     let lower = target.to_lowercase();
     SCHEMES.iter().any(|s| lower.starts_with(s))
+}
+
+/// Each attachment under its lowercased path and its lowercased file name,
+/// the earliest in the list keeping a key: the one a search of the list in
+/// order would find first, by either.
+fn attachment_names(attachments: &[String]) -> HashMap<String, usize> {
+    let mut names = HashMap::with_capacity(attachments.len() * 2);
+    for (at, path) in attachments.iter().enumerate() {
+        let lower = path.to_lowercase();
+        if let Some(file_name) = lower.rsplit('/').next() {
+            names.entry(file_name.to_string()).or_insert(at);
+        }
+        names.entry(lower).or_insert(at);
+    }
+    names
 }
 
 #[cfg(test)]
