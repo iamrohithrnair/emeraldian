@@ -6,14 +6,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [0.9.0]
 
-### Fixed
+### Added
 
-- **A note in a big folder that isn't a vault opens in a second or two.**
-  Opening a note there takes its folder as the vault, and a code project
-  with `node_modules` holds a hundred thousand files besides its notes.
-  Every link that pointed nowhere was checked against each of them in turn,
-  so a design doc in a web app's repository took over a minute to open, and
-  looked stuck. Links to files are now looked up by name in one step.
+- **Mermaid diagrams in reading mode.** A ```` ```mermaid ```` block now
+  shows as the diagram it describes, drawn in box-drawing characters, rather
+  than as its source. Flowcharts are drawn in all four directions with their
+  node shapes, dotted and thick links and the words on them, and loops back to
+  an earlier step are drawn too. Sequence diagrams get their participants,
+  lifelines, messages, notes and `loop` or `alt` blocks. A sideways flowchart
+  too wide for the pane runs downwards instead, and anything wider still pans
+  like a wide table. Nothing runs outside the app to do it: each diagram is
+  drawn the first time its note is laid out and kept in a small cache, so a
+  note with fifty of them opens about a millisecond slower and scrolls as
+  smoothly as before. Other kinds of diagram, and any it can't read, stay as
+  code, just as they were.
 
 ### Changed
 
@@ -25,7 +31,7 @@ All notable changes to this project are documented here. The format follows
   the assistant waits for it. A folder Obsidian has never opened, such as a
   code project, also leaves out what an editor leaves out: `node_modules`,
   `target`, `dist`, `build`, `vendor` and the like, and whatever its
-  `.gitignore` files name. The design doc in that web app's repository now
+  `.gitignore` files name. A note at the top of a web app's repository now
   opens in about 30 milliseconds rather than a second or two, in a
   seventeenth of the memory. A real Obsidian vault still shows every file,
   just as Obsidian does.
@@ -799,6 +805,7 @@ First release.
 - Unreadable vaults are reported clearly, including the macOS privacy
   permission that usually causes it.
 
+[0.9.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.9.0
 [0.8.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.8.0
 [0.7.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.7.0
 [0.6.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.6.0
