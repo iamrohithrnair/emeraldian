@@ -23,6 +23,10 @@ All notable changes to this project are documented here. The format follows
   which in Obsidian's own themes is purple, and a page with a few diagrams
   on it was mostly purple. The colours are picked once, when the note is
   laid out, so scrolling past fifty diagrams is as smooth as it was.
+- **List bullets are a quiet grey.** The bullets and numbers of a list are
+  drawn in the muted text colour, as Obsidian draws them, rather than the
+  accent, which put a column of purple dots down every list. Links and tags
+  keep the accent, so they still stand out.
 
 ## [0.9.1] — 2026-10-27
 

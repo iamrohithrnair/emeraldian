@@ -277,7 +277,9 @@ impl Theme {
             quote_bar: s.accent.into(),
             quote_fg: s.muted.into(),
             hr: s.border.into(),
-            list_marker: s.accent.into(),
+            // A quiet grey, as Obsidian draws them, rather than the accent,
+            // which put a column of accent dots down every list.
+            list_marker: s.muted.into(),
             checkbox_done: s.green.into(),
             checkbox_todo: s.muted.into(),
             table_header: s.text.into(),
@@ -487,6 +489,15 @@ mod tests {
                 "{}: edges at {edge:.2} vanish into a {background:.2} background",
                 seed.name
             );
+        }
+    }
+
+    #[test]
+    fn list_bullets_are_quiet_rather_than_the_accent() {
+        for seed in crate::presets::ALL {
+            let palette = Palette::from(&Theme::from_seed(seed));
+            assert_eq!(palette.list_marker, palette.text_muted, "{}", seed.name);
+            assert_ne!(palette.list_marker, palette.accent, "{}", seed.name);
         }
     }
 
