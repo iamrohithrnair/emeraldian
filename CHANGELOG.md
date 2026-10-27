@@ -28,6 +28,12 @@ All notable changes to this project are documented here. The format follows
   accent, which put a column of purple dots down every list. Links and tags
   keep the accent, so they still stand out.
 
+### Fixed
+
+- **Level-3 headings are readable in Obsidian Light.** They were a pale
+  cyan at 2.3:1 against the white page, too faint to read comfortably. They
+  keep the same hue, darkened to the 4.5:1 that body text needs.
+
 ## [0.9.1] — 2026-10-27
 
 Emeraldian starts inside tmux again. Nothing else changes from 0.9.0.

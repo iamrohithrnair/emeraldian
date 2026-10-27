@@ -64,6 +64,13 @@ fn build(seed: &Seed) -> Theme {
         theme.text_highlight_fg = "black".into();
     }
 
+    // Obsidian Light's cyan works as a fill or an accent, but at 2.3:1 on
+    // white it is too faint for the words of a level-3 heading. This is the
+    // same hue, darkened to the 4.5:1 that body text needs.
+    if seed.name == seed::OBSIDIAN_LIGHT.name {
+        theme.h3 = "#008483".into();
+    }
+
     theme
 }
 
@@ -154,6 +161,17 @@ mod tests {
             let palette = Palette::from(&theme);
             assert_eq!(palette.name, theme.name);
         }
+    }
+
+    #[test]
+    fn obsidian_light_level_three_headings_read_as_text() {
+        let light = crate::Palette::from(&builtin_by_name("obsidian-light").expect("built in"));
+        let ratio = crate::color::contrast(light.h3, light.bg_primary).expect("both RGB");
+        assert!(ratio >= crate::theme::TEXT_CONTRAST, "{ratio:.2}:1");
+
+        // Only that theme's heading: the dark theme's cyan already reads.
+        let dark = builtin_by_name("obsidian-dark").expect("built in");
+        assert_eq!(dark.h3, seed::OBSIDIAN_DARK.cyan);
     }
 
     #[test]
