@@ -15,6 +15,13 @@ All notable changes to this project are documented here. The format follows
   unsaved changes shows a `●` in place of the `×`, which closes it all the
   same.
 
+### Changed
+
+- **Focus mode gives the note the screen.** `F8` hid the sidebars but kept
+  the note at a hundred columns, so on a wide terminal it sat in a narrow
+  strip with empty space either side. It now spreads across 90% of the
+  width, centred, and a terminal of 80 columns or fewer keeps all of it.
+
 ### Fixed
 
 - **Tabs with Chinese, Japanese or emoji in their names line up.** The tab
