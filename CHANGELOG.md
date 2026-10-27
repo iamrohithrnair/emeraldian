@@ -4,7 +4,9 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.9.1]
+## [0.9.1] — 2026-10-27
+
+Emeraldian starts inside tmux again. Nothing else changes from 0.9.0.
 
 ### Fixed
 
@@ -844,6 +846,7 @@ First release.
 - Unreadable vaults are reported clearly, including the macOS privacy
   permission that usually causes it.
 
+[0.9.1]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.9.1
 [0.9.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.9.0
 [0.8.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.8.0
 [0.7.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.7.0
