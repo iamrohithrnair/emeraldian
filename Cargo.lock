@@ -595,7 +595,7 @@ checksum = "9e5e8f6c15a24b9a3ee5efec809ccd006d3b30e8b3bb63c39af737c7f87daa1d"
 
 [[package]]
 name = "emeraldian"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -607,6 +607,7 @@ dependencies = [
  "lz-str",
  "ratatui",
  "ratatui-image",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "toml",
@@ -616,7 +617,7 @@ dependencies = [
 
 [[package]]
 name = "emeraldian-agent"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -625,7 +626,7 @@ dependencies = [
 
 [[package]]
 name = "emeraldian-core"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "anyhow",
  "dirs",
@@ -639,7 +640,7 @@ dependencies = [
 
 [[package]]
 name = "emeraldian-theme"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "ratatui",
  "serde",

@@ -96,6 +96,28 @@ All notable changes to this project are documented here. The format follows
 - A heading that ends in `#`, such as `## C#`, keeps its `#`. It used to be
   shown, and listed in the outline, as `C`.
 
+## [0.9.1] — 2026-10-27
+
+Emeraldian starts inside tmux again. Nothing else changes from 0.9.0.
+
+### Fixed
+
+- **Emeraldian starts inside tmux again.** Since 0.8.0 it could open to a
+  blank screen in tmux on Linux and wait there forever. Before drawing, it
+  asks the terminal two questions: what pictures it can draw, and whether it
+  speaks the Kitty keyboard protocol. tmux passes the first one on to the
+  terminal outside it, so a detached session never answers, and the reader
+  left waiting for that answer then took the reply to the second question.
+  The second one was still waiting for it, with no time limit. Now both
+  questions give up after a second and leave nothing behind, tmux and screen
+  aren't asked about the keyboard protocol at all, and terminals that speak
+  it still get `Ctrl+Tab` and `Ctrl+I` as themselves. On a Mac the same
+  leftover reader ate the first key pressed in tmux, so `Ctrl+O` did
+  nothing; that is fixed too. A new check in CI starts the app in tmux on
+  every change. Thank you to the pkg.haus Debian packagers, who found the
+  hang, narrowed it to the keyboard question, and wrote the tmux test this
+  check is built from.
+
 ## [0.9.0] — 2026-10-27
 
 A note is on screen at once, however big the folder around it, Mermaid
@@ -917,6 +939,7 @@ First release.
   permission that usually causes it.
 
 [0.10.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.10.0
+[0.9.1]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.9.1
 [0.9.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.9.0
 [0.8.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.8.0
 [0.7.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.7.0

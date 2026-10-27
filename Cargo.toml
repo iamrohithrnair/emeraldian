@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/emeraldian-core", "crates/emeraldian-theme", "crates/emeraldian-agent", "crates/emeraldian"]
 
 [workspace.package]
-version = "0.9.0"
+version = "0.9.1"
 edition = "2024"
 # Set by the dependency chain, not by this code: ratatui-image pulls
 # icy_sixel, which pins quantette 0.5.1, which requires 1.90.
@@ -19,9 +19,9 @@ keywords = ["obsidian", "tui", "notes", "markdown", "graph"]
 categories = ["command-line-utilities", "text-editors"]
 
 [workspace.dependencies]
-emeraldian-core = { path = "crates/emeraldian-core", version = "0.9.0" }
-emeraldian-theme = { path = "crates/emeraldian-theme", version = "0.9.0" }
-emeraldian-agent = { path = "crates/emeraldian-agent", version = "0.9.0" }
+emeraldian-core = { path = "crates/emeraldian-core", version = "0.9.1" }
+emeraldian-theme = { path = "crates/emeraldian-theme", version = "0.9.1" }
+emeraldian-agent = { path = "crates/emeraldian-agent", version = "0.9.1" }
 
 ratatui = "0.30"
 crossterm = "0.29"
@@ -53,6 +53,7 @@ lz-str = "0.2"
 # Snowball's English stemmer, so `hashing` finds `hashed`. Pure Rust, and the
 # same stems as the Snowball project's own Python package.
 rust-stemmers = "1.2"
+rustix = { version = "1", features = ["event", "pty", "std", "termios"] }
 
 [profile.release]
 lto = true
