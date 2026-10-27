@@ -13,6 +13,8 @@ use std::time::UNIX_EPOCH;
 
 use serde::Deserialize;
 
+use crate::gitignore::Gitignore;
+
 use crate::note::{self, NoteMeta};
 
 /// Directory Obsidian uses for its own per-vault settings. It contains no
@@ -21,6 +23,24 @@ pub const OBSIDIAN_DIR: &str = ".obsidian";
 
 /// The trash folder Obsidian moves deleted notes into.
 pub const TRASH_DIR: &str = ".trash";
+
+/// Folders a code project fills with dependencies, build output and caches.
+///
+/// None of them holds anyone's notes, and between them they can hold hundreds
+/// of thousands of files: a JavaScript project's `node_modules` alone is often
+/// most of the folder. Editors leave them out of their file lists for the same
+/// reason. Only skipped in a folder that isn't an Obsidian vault, see
+/// [`ScanOptions::skip_project_folders`].
+pub const PROJECT_FOLDERS: &[&str] = &[
+    "node_modules",
+    "bower_components",
+    "target",
+    "dist",
+    "build",
+    "vendor",
+    "venv",
+    "__pycache__",
+];
 
 /// A vault Obsidian knows about.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,7 +100,8 @@ impl Vault {
         })?;
 
         let mut scan = Scan::default();
-        walk(&self.path, &self.path, options, &mut scan, 0)?;
+        let mut ignores = Vec::new();
+        walk(&self.path, &self.path, options, &mut ignores, &mut scan, 0)?;
         scan.notes.sort_by(|a, b| a.rel.cmp(&b.rel));
         scan.folders.sort();
         scan.attachments.sort();
@@ -100,6 +121,13 @@ pub struct ScanOptions {
     pub max_depth: usize,
     /// Additional vault-relative folder names to skip.
     pub excluded_folders: Vec<String>,
+    /// Skip the folders in [`PROJECT_FOLDERS`] and whatever the folder's
+    /// `.gitignore` files name, the way an editor does.
+    ///
+    /// For a folder that isn't an Obsidian vault, a code project say, opened
+    /// to read one of its notes. Obsidian itself does neither, so a real vault
+    /// is scanned with this off and shows exactly what Obsidian shows.
+    pub skip_project_folders: bool,
 }
 
 impl Default for ScanOptions {
@@ -109,6 +137,7 @@ impl Default for ScanOptions {
             include_attachments: true,
             max_depth: 32,
             excluded_folders: Vec::new(),
+            skip_project_folders: false,
         }
     }
 }
@@ -124,10 +153,14 @@ pub struct Scan {
     pub attachments: Vec<String>,
 }
 
+/// The `.gitignore` files met on the way down to a folder, nearest last.
+type Ignores = Vec<Gitignore>;
+
 fn walk(
     root: &Path,
     dir: &Path,
     options: &ScanOptions,
+    ignores: &mut Ignores,
     out: &mut Scan,
     depth: usize,
 ) -> Result<(), std::io::Error> {
@@ -135,6 +168,23 @@ fn walk(
         return Ok(());
     }
 
+    // Read before the folder's entries, since its rules apply to them.
+    let pushed = options.skip_project_folders && push_gitignore(dir, ignores);
+    let result = walk_entries(root, dir, options, ignores, out, depth);
+    if pushed {
+        ignores.pop();
+    }
+    result
+}
+
+fn walk_entries(
+    root: &Path,
+    dir: &Path,
+    options: &ScanOptions,
+    ignores: &mut Ignores,
+    out: &mut Scan,
+    depth: usize,
+) -> Result<(), std::io::Error> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         // A directory we can't read (permissions, a broken mount) shouldn't
@@ -162,12 +212,18 @@ fn walk(
             continue;
         };
 
+        if options.skip_project_folders
+            && ((is_dir && PROJECT_FOLDERS.contains(&name)) || is_ignored(ignores, &path, is_dir))
+        {
+            continue;
+        }
+
         if is_dir {
             if options.excluded_folders.iter().any(|f| f == &rel) {
                 continue;
             }
             out.folders.push(rel);
-            walk(root, &path, options, out, depth + 1)?;
+            walk(root, &path, options, ignores, out, depth + 1)?;
         } else if is_markdown(&path) {
             let metadata = entry.metadata().ok();
             let stamp = |t: std::io::Result<std::time::SystemTime>| {
@@ -210,6 +266,29 @@ fn walk(
     }
 
     Ok(())
+}
+
+/// Adds the folder's `.gitignore` to the list, if it has one that says
+/// anything. Returns whether it did.
+fn push_gitignore(dir: &Path, ignores: &mut Ignores) -> bool {
+    match Gitignore::read(dir) {
+        Some(rules) => {
+            ignores.push(rules);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Whether the `.gitignore` files above a path leave it out. The nearest file
+/// with an opinion decides, so a deeper `!keep.md` can bring back what a
+/// shallower one ignored.
+fn is_ignored(ignores: &Ignores, path: &Path, is_dir: bool) -> bool {
+    ignores
+        .iter()
+        .rev()
+        .find_map(|rules| rules.decide(path, is_dir))
+        .unwrap_or(false)
 }
 
 /// Whether a path is a note. Obsidian only treats `.md` as notes.
@@ -386,6 +465,62 @@ mod tests {
             .expect("scan");
         let rels: Vec<_> = scan.notes.iter().map(|n| n.rel.as_str()).collect();
         assert_eq!(rels, vec!["Real.md"]);
+    }
+
+    fn notes_and_files(dir: &TempDir, options: &ScanOptions) -> (Vec<String>, Vec<String>) {
+        let scan = Vault::from_path(dir.path()).scan(options).expect("scan");
+        let notes = scan.notes.into_iter().map(|n| n.rel).collect();
+        (notes, scan.attachments)
+    }
+
+    #[test]
+    fn a_project_s_dependency_and_build_folders_are_skipped_when_asked() {
+        let dir = TempDir::new("project");
+        dir.write("README.md", "r");
+        dir.write("docs/Guide.md", "g");
+        dir.write("node_modules/left-pad/README.md", "n");
+        dir.write("web/node_modules/x/README.md", "n");
+        dir.write("target/debug/notes.md", "t");
+        dir.write("__pycache__/a.pyc", "p");
+
+        let skipping = ScanOptions {
+            skip_project_folders: true,
+            ..ScanOptions::default()
+        };
+        let (notes, files) = notes_and_files(&dir, &skipping);
+        assert_eq!(notes, vec!["README.md", "docs/Guide.md"]);
+        assert!(files.is_empty(), "got {files:?}");
+
+        // A vault keeps every one of them, as Obsidian does.
+        let (notes, _) = notes_and_files(&dir, &ScanOptions::default());
+        assert_eq!(notes.len(), 5, "got {notes:?}");
+    }
+
+    #[test]
+    fn a_project_s_gitignore_is_honoured_when_asked() {
+        let dir = TempDir::new("gitignore");
+        dir.write(".gitignore", "/out\n*.log\ncache/\n");
+        dir.write("Kept.md", "k");
+        dir.write("out/Generated.md", "o");
+        dir.write("src/out/Nested.md", "a folder only ignored at the top");
+        dir.write("debug.log", "l");
+        dir.write("src/cache/Old.md", "c");
+        // A deeper file can bring back what a shallower one left out.
+        dir.write("logs/.gitignore", "!keep.log\n");
+        dir.write("logs/keep.log", "k");
+        dir.write("logs/drop.log", "d");
+
+        let skipping = ScanOptions {
+            skip_project_folders: true,
+            ..ScanOptions::default()
+        };
+        let (notes, files) = notes_and_files(&dir, &skipping);
+        assert_eq!(notes, vec!["Kept.md", "src/out/Nested.md"]);
+        assert_eq!(files, vec!["logs/keep.log"]);
+
+        let (notes, files) = notes_and_files(&dir, &ScanOptions::default());
+        assert_eq!(notes.len(), 4, "got {notes:?}");
+        assert_eq!(files.len(), 3, "got {files:?}");
     }
 
     #[test]

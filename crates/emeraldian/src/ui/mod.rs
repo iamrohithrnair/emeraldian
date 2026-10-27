@@ -9,6 +9,7 @@ pub mod chat;
 pub mod drawing;
 pub mod graph;
 pub mod math;
+pub mod mermaid;
 pub mod modal;
 pub mod note;
 pub mod panes;
@@ -577,6 +578,14 @@ fn draw_status_bar(frame: &mut Frame, app: &App, palette: &Palette, area: Rect) 
     // Obsidian keeps word and character counts bottom-right; backlink count is
     // the other number a note's author actually looks at.
     let right = match app.active_note() {
+        // Backlinks and tags aren't all known until every note is read.
+        _ if app.indexing() => {
+            format!(
+                "{}{} notes  reading the vault…  ",
+                position(app),
+                app.index.len()
+            )
+        }
         Some(id) => {
             let words = app.index.note(id).map_or(0, |n| n.words);
             let backlinks = app.index.backlinks(id).len();

@@ -106,7 +106,14 @@ fn main() -> io::Result<()> {
     }
 
     let vault = emeraldian_core::vault::Vault::from_path(&vault_path);
-    let mut app = match App::new(vault, config) {
+    // The terminal shows the vault while its notes are still being read. A
+    // one-off question has no screen to show, and wants every note read.
+    let opened = if args.prompt.is_some() {
+        App::new(vault, config)
+    } else {
+        App::open(vault, config)
+    };
+    let mut app = match opened {
         Ok(app) => app,
         Err(err) => {
             eprintln!("emeraldian: {err}");
@@ -493,7 +500,10 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> io::Res
             }
         }
 
-        if event::poll(TICK)? {
+        // While the vault's notes are being read, look for a key and go back to
+        // reading, rather than waiting a whole tick for one.
+        let wait = if app.indexing() { Duration::ZERO } else { TICK };
+        if event::poll(wait)? {
             match event::read()? {
                 Event::Key(key) => {
                     keys::handle(app, key);
@@ -511,6 +521,11 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> io::Res
         }
 
         if agent::poll(app) {
+            needs_redraw = true;
+        }
+
+        // The vault's notes, read a slice at a time since the first frame.
+        if app.poll_index() {
             needs_redraw = true;
         }
 
