@@ -26,6 +26,11 @@ anyhow.workspace = true
 unicode-width.workspace = true
 serde_json.workspace = true
 
+# Asking the terminal questions with a deadline: poll, termios, the window
+# size. Already in the tree through crossterm.
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
 [dev-dependencies]
 lz-str.workspace = true
 emeraldian-core = { workspace = true, features = ["test-support"] }

@@ -50,6 +50,7 @@ anyhow = "1"
 unicode-width = "0.2"
 ureq = { version = "3", features = ["json"] }
 lz-str = "0.2"
+rustix = { version = "1", features = ["event", "pty", "std", "termios"] }
 
 [profile.release]
 lto = true
