@@ -322,6 +322,7 @@ The ribbon icons are buttons, and most of the UI is clickable:
 | A note in the explorer | Opens it |
 | A folder in the explorer | Folds it |
 | A tab | Switches to it |
+| A tab's `×`, or a middle click on the tab | Closes it (`●` stands in for `×` while it has unsaved changes) |
 | Outline / Backlinks / Tags | Switches panel |
 | A graph node | Selects it |
 | Text in the editor | Places the cursor; drag to select |

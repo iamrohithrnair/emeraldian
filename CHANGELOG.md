@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2]
+
+### Added
+
+- **Tabs close with the mouse.** Each tab has a `×` after its name, and a
+  click on it closes that tab, whichever one you are looking at, just as `F3`
+  would: a note with unsaved changes is saved first when auto-save is on. A
+  middle click anywhere on a tab closes it too, as in a browser. A tab with
+  unsaved changes shows a `●` in place of the `×`, which closes it all the
+  same.
+
+### Fixed
+
+- **Tabs with Chinese, Japanese or emoji in their names line up.** The tab
+  bar measured names by their characters rather than the columns they fill,
+  so a click on a tab after one of them could land on the wrong tab.
+
 ## [0.9.1] — 2026-10-27
 
 Emeraldian starts inside tmux again. Nothing else changes from 0.9.0.
