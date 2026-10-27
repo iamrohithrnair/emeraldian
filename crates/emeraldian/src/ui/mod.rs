@@ -34,6 +34,8 @@ pub mod icons {
     pub const FOLDER_CLOSED: &str = "▸";
     pub const NOTE: &str = "·";
     pub const MODIFIED: &str = "●";
+    /// A tab's close button.
+    pub const CLOSE: &str = "×";
     pub const SEARCH: &str = "⌕";
     pub const GRAPH: &str = "◈";
     pub const FILES: &str = "≡";
@@ -231,21 +233,27 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     app.regions = regions;
 }
 
-/// Widest the note is drawn in focus mode, in columns, gutter and margins
-/// included.
+/// How much of the screen's width the note takes in focus mode, in percent.
 ///
-/// Prose much wider than this is hard to read, which is why Obsidian narrows
-/// its own by default. Tables and code wider than it still pan.
-const FOCUS_WIDTH: u16 = 100;
+/// The sidebars are gone, so the note has the room: nearly all of it, with a
+/// margin either side so the text doesn't run into the screen's edges.
+const FOCUS_SHARE: u16 = 90;
 
-/// The pane, narrowed to [`FOCUS_WIDTH`] and centred if it is wider.
+/// Below this many columns, focus mode keeps the whole width: a margin there
+/// would cost more reading room than it gives.
+const FOCUS_FULL_BELOW: u16 = 80;
+
+/// The pane, narrowed to [`FOCUS_SHARE`] of its width and centred, unless it
+/// is narrow enough to need all of it.
 fn readable(pane: Rect) -> Rect {
-    if pane.width <= FOCUS_WIDTH {
+    if pane.width <= FOCUS_FULL_BELOW {
         return pane;
     }
+    let width = (u32::from(pane.width) * u32::from(FOCUS_SHARE) / 100) as u16;
+    let width = width.max(FOCUS_FULL_BELOW);
     Rect {
-        x: pane.x + (pane.width - FOCUS_WIDTH) / 2,
-        width: FOCUS_WIDTH,
+        x: pane.x + (pane.width - width) / 2,
+        width,
         ..pane
     }
 }
@@ -1190,6 +1198,36 @@ mod tests {
     }
 
     #[test]
+    fn every_tab_draws_its_close_button_where_it_can_be_clicked() {
+        let (_vault, mut app) = demo_app();
+        let screen = render(&mut app, 160, 40);
+        for (rect, _) in &app.regions.tab_close {
+            let row: Vec<char> = screen[rect.y as usize].chars().collect();
+            assert_eq!(row[rect.x as usize], '×', "{}", screen[rect.y as usize]);
+        }
+    }
+
+    #[test]
+    fn a_wide_title_keeps_its_close_button_whole() {
+        let (vault, mut app) = demo_app();
+        vault.write("漢字のノート.md", "# 漢字\n");
+        app.index = emeraldian_core::index::VaultIndex::build(
+            vault.vault(),
+            emeraldian_core::vault::ScanOptions::default(),
+        )
+        .expect("index");
+        let id = app.index.id_of_rel("漢字のノート.md").expect("indexed");
+        app.open_note(id);
+        let screen = render(&mut app, 160, 40);
+        let (close, _) = *app.regions.tab_close.last().expect("a close button");
+        let row = &screen[close.y as usize];
+        // One character per cell, a wide one followed by the blank cell it
+        // spills into, so the button's column is its place in the row.
+        let glyph = row.chars().nth(close.x as usize);
+        assert_eq!(glyph, Some('×'), "{row}");
+    }
+
+    #[test]
     fn drawing_records_clickable_regions() {
         let (_vault, mut app) = demo_app();
         app.config.ui.show_chat = true;
@@ -1198,6 +1236,11 @@ mod tests {
         let regions = &app.regions;
         assert_eq!(regions.ribbon.len(), 6, "every ribbon icon is a button");
         assert_eq!(regions.tabs.len(), app.tabs.len());
+        assert_eq!(
+            regions.tab_close.len(),
+            app.tabs.len(),
+            "each tab has a close button"
+        );
         assert_eq!(regions.side_tabs.len(), 3);
         assert!(regions.explorer.is_some());
         assert!(regions.sidebar.is_some());
@@ -1874,13 +1917,24 @@ mod tests {
     }
 
     #[test]
-    fn focus_mode_centres_the_note_on_a_wide_terminal() {
+    fn focus_mode_gives_the_note_most_of_a_wide_terminal() {
         let (_vault, mut app) = demo_app();
         crate::actions::dispatch(&mut app, crate::app::Action::ToggleFocusMode);
         render(&mut app, 200, 40);
         let main = app.regions.main.expect("the note was drawn");
-        assert_eq!(main.width, FOCUS_WIDTH);
-        assert_eq!(main.x, (200 - FOCUS_WIDTH) / 2);
+        assert_eq!(main.width, 180, "90% of the screen");
+        assert_eq!(main.x, 10, "centred, with the rest as margins");
+
+        render(&mut app, 300, 40);
+        let main = app.regions.main.expect("drawn");
+        assert_eq!((main.x, main.width), (15, 270), "however wide it is");
+
+        render(&mut app, 86, 40);
+        assert_eq!(
+            app.regions.main.expect("drawn").width,
+            80,
+            "never narrower than a narrow terminal would get"
+        );
 
         render(&mut app, 80, 40);
         assert_eq!(

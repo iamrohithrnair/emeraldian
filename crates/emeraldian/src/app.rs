@@ -338,6 +338,9 @@ pub struct Regions {
     pub explorer: Option<(Rect, usize)>,
     /// Document tabs, with the index each one selects.
     pub tabs: Vec<(Rect, usize)>,
+    /// Each tab's close button, with the index of the tab it closes. Inside
+    /// the tab's own region, so it is checked first.
+    pub tab_close: Vec<(Rect, usize)>,
     /// The outline/backlinks/tags selector.
     pub side_tabs: Vec<(Rect, SidePanel)>,
     /// The sidebar's list area and the row index its first line shows.
@@ -812,9 +815,18 @@ impl App {
     }
 
     pub fn close_tab(&mut self) {
-        let Some(index) = self.active_tab else {
+        if let Some(index) = self.active_tab {
+            self.close_tab_at(index);
+        }
+    }
+
+    /// Closes the tab at `index`, whichever is active: what its close button
+    /// does. The active tab stays the one it was, unless it is the one that
+    /// closes, when the next one along takes its place, as `close_tab` does.
+    pub fn close_tab_at(&mut self, index: usize) {
+        if index >= self.tabs.len() {
             return;
-        };
+        }
         if self.tabs[index].is_modified() && self.config.editor.auto_save {
             self.save_tab(index);
         }
@@ -826,10 +838,11 @@ impl App {
                 self.closed.remove(0);
             }
         }
-        self.active_tab = if self.tabs.is_empty() {
-            None
-        } else {
-            Some(index.min(self.tabs.len() - 1))
+        self.active_tab = match self.active_tab {
+            _ if self.tabs.is_empty() => None,
+            Some(active) if active > index => Some(active - 1),
+            Some(active) if active == index => Some(index.min(self.tabs.len() - 1)),
+            other => other,
         };
         if self.tabs.is_empty() {
             self.focus = Focus::Explorer;

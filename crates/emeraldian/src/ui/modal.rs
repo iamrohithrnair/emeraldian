@@ -279,6 +279,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
                 "F3 / Ctrl+W",
                 "Close the tab — Ctrl+W unless vim mode is on",
             ),
+            ("× / middle-click", "Close a tab with the mouse"),
             ("Ctrl+Shift+T", "Reopen the last tab closed"),
             ("Ctrl+Tab", "Next tab; with Shift, the one before"),
             ("Ctrl+PgUp/PgDn", "Previous / next tab"),
