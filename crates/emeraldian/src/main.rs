@@ -23,6 +23,7 @@ mod obsidian;
 mod session;
 mod slash;
 mod state;
+mod terminal_query;
 mod tools;
 mod ui;
 mod vim;
@@ -405,11 +406,10 @@ fn run(app: &mut App) -> io::Result<()> {
     // a key arrive as itself: `⌘` on a Mac at all, and `Ctrl+Shift+T`,
     // `Ctrl+Tab` or `Ctrl+I` instead of the plainer key a legacy terminal
     // sends in their place. Asked for only where it is understood, so other
-    // terminals see nothing new.
-    let enhanced = matches!(
-        crossterm::terminal::supports_keyboard_enhancement(),
-        Ok(true)
-    );
+    // terminals see nothing new. Not crossterm's own check, which can wait
+    // forever for its answer: this one gives up after a second, and doesn't
+    // ask tmux or screen at all.
+    let enhanced = terminal_query::supports_keyboard_enhancement();
     if enhanced {
         let _ = crossterm::execute!(
             std::io::stdout(),

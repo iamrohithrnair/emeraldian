@@ -28,6 +28,26 @@ jobs:
       - name: Doc tests
         run: cargo test --workspace --doc
 
+  tmux:
+    # Starts the real binary inside tmux and checks it draws a vault. Unit
+    # tests have no terminal, so they can't catch a start-up query that waits
+    # forever for an answer, which is how 0.8.0 shipped blank under tmux (#47).
+    name: renders under tmux
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install tmux
+        run: command -v tmux || (sudo apt-get update && sudo apt-get install -y tmux)
+      - name: Build
+        run: cargo build -p emeraldian
+      - name: Render a vault in tmux, images on
+        run: tests/tmux-render.sh target/debug/emeraldian
+      - name: Render a vault in tmux, images off
+        run: IMAGES=off tests/tmux-render.sh target/debug/emeraldian
+
   lint:
     name: format and clippy
     runs-on: ubuntu-latest

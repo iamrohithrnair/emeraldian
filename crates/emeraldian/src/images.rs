@@ -77,6 +77,100 @@ pub fn is_image(path: &Path) -> bool {
         .is_some_and(|ext| EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
 }
 
+/// Asks the terminal what it can draw, giving up after
+/// [`terminal_query::WAIT`].
+///
+/// This sends `ratatui_image`'s own question and reads the answer with its own
+/// parser, and picks the protocol and cell size the way
+/// `Picker::from_query_stdio` does. What it doesn't do is leave a thread
+/// behind: that function reads the answer on one and abandons it, still
+/// blocked on stdin, when the terminal is silent, as a detached tmux session
+/// is. The thread then eats the next keypress, or the answer to the next
+/// query, which is how 0.8.0 came to hang at start-up in tmux.
+#[cfg(unix)]
+fn query_picker() -> Option<Picker> {
+    use ratatui_image::picker::cap_parser::{Parser, QueryStdioOptions, Response};
+
+    // Made first because, inside tmux, it switches on `allow-passthrough`
+    // for this pane, which the outer terminal needs to hear the question.
+    let silent = Picker::halfblocks();
+
+    // The same test `ratatui_image` uses to decide its output needs wrapping
+    // for tmux, so the question is wrapped exactly when the pictures will be.
+    let var = |name| std::env::var(name).unwrap_or_default();
+    let is_tmux = var("TERM").starts_with("tmux") || var("TERM_PROGRAM") == "tmux";
+    let mut options = QueryStdioOptions::default();
+    if !var("WEZTERM_EXECUTABLE").is_empty() || !var("KONSOLE_VERSION").is_empty() {
+        // As `ratatui_image` does: both claim protocols they draw badly.
+        options.blacklist_protocols = vec![ProtocolType::Kitty, ProtocolType::Sixel];
+    }
+
+    let parse = |reply: &[u8]| {
+        let mut parser = Parser::new();
+        let mut responses = Vec::new();
+        for &byte in reply {
+            responses.extend(parser.push(char::from(byte)));
+        }
+        responses
+    };
+    // The question ends with a status report, which every terminal answers,
+    // so its reply means the rest is in.
+    let Some(reply) = crate::terminal_query::ask(
+        Parser::query(is_tmux, options).as_bytes(),
+        crate::terminal_query::WAIT,
+        |reply| parse(reply).contains(&Response::Status),
+    ) else {
+        return Some(silent);
+    };
+
+    let responses = parse(&reply);
+    let protocol = if responses.contains(&Response::Kitty) {
+        Some(ProtocolType::Kitty)
+    } else if responses.contains(&Response::Sixel) {
+        Some(ProtocolType::Sixel)
+    } else {
+        None
+    };
+    let font_size = responses
+        .iter()
+        .find_map(|response| match response {
+            Response::CellSize(Some((width, height))) => Some(FontSize::new(*width, *height)),
+            _ => None,
+        })
+        .or_else(font_size_from_window);
+    let Some(font_size) = font_size else {
+        return Some(silent);
+    };
+    // Deprecated in favour of `from_query_stdio`, which is the call being
+    // replaced; it is the one way to hand over a measured cell size, and it
+    // also applies the library's guesses from the environment.
+    #[allow(deprecated)]
+    let mut picker = Picker::from_fontsize(font_size);
+    if let Some(protocol) = protocol {
+        picker.set_protocol_type(protocol);
+    }
+    Some(picker)
+}
+
+#[cfg(not(unix))]
+fn query_picker() -> Option<Picker> {
+    Picker::from_query_stdio().ok()
+}
+
+/// The cell size from the window's size in pixels, for a terminal that
+/// reports that but not the cell size itself.
+#[cfg(unix)]
+fn font_size_from_window() -> Option<FontSize> {
+    let size = rustix::termios::tcgetwinsize(std::io::stdout()).ok()?;
+    if size.ws_xpixel == 0 || size.ws_ypixel == 0 || size.ws_col == 0 || size.ws_row == 0 {
+        return None;
+    }
+    Some(FontSize::new(
+        size.ws_xpixel / size.ws_col,
+        size.ws_ypixel / size.ws_row,
+    ))
+}
+
 /// The terminal's picture-drawing ability, plus everything already drawn.
 pub struct Images {
     /// `None` when images are switched off, or the terminal was never asked.
@@ -136,8 +230,8 @@ impl Images {
     /// written to stdout and the answer read back from stdin, which only works
     /// while the terminal is still in its normal mode.
     ///
-    /// A terminal that doesn't answer gets half-blocks, which need no support
-    /// at all. A `max_height_percent` of 0, or a terminal that can't even do
+    /// A terminal that doesn't answer within a second gets half-blocks, which
+    /// need no support at all. A `max_height_percent` of 0, or a terminal that can't even do
     /// half-blocks, switches images off and leaves the alt text in their place.
     ///
     /// `wanted` overrules the answer. Some terminals claim a protocol they
@@ -151,7 +245,7 @@ impl Images {
         if !enabled || max_height_percent == 0 {
             return Self::with_picker(None, max_height_percent);
         }
-        let queried = Picker::from_query_stdio().ok();
+        let queried = query_picker();
         let picker = match (queried, wanted) {
             (Some(mut picker), Choice::Use(protocol)) => {
                 picker.set_protocol_type(protocol);
