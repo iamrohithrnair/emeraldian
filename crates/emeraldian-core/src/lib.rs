@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 pub mod error;
 pub mod excalidraw;
+mod gitignore;
 pub mod graph;
 pub mod index;
 pub mod links;

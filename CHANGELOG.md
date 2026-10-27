@@ -15,6 +15,21 @@ All notable changes to this project are documented here. The format follows
   so a design doc in a web app's repository took over a minute to open, and
   looked stuck. Links to files are now looked up by name in one step.
 
+### Changed
+
+- **A note is on screen at once, however big its folder.** Emeraldian used
+  to read every note in the vault before showing anything, which takes a
+  second for twenty thousand notes. Now it lists the folders, shows the note
+  you asked for, and reads the rest a little at a time while you start
+  reading. Backlinks and tags say "Reading the vault…" for that moment, and
+  the assistant waits for it. A folder Obsidian has never opened, such as a
+  code project, also leaves out what an editor leaves out: `node_modules`,
+  `target`, `dist`, `build`, `vendor` and the like, and whatever its
+  `.gitignore` files name. The design doc in that web app's repository now
+  opens in about 30 milliseconds rather than a second or two, in a
+  seventeenth of the memory. A real Obsidian vault still shows every file,
+  just as Obsidian does.
+
 ## [0.8.0] — 2026-10-22
 
 Shortcuts that follow your system, on Windows, Linux and the Mac alike, find
