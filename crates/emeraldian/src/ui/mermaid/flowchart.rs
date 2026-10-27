@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use unicode_width::UnicodeWidthStr;
 
 use super::canvas::{Canvas, Stroke};
-use super::{Diagram, Role, label_lines, widest};
+use super::{Diagram, Ink, Role, key, label_lines, widest};
 
 /// Past these a chart is too big to read in a terminal, and the layout would
 /// do a lot of work to show it badly.
@@ -691,19 +691,26 @@ fn layout(chart: &Chart, direction: Direction) -> Option<Diagram> {
                     Shape::Subroutine => ['╔', '╗', '╚', '╝'],
                     Shape::Diamond => ['╱', '╲', '╲', '╱'],
                 };
-                canvas.outline(x, y, w, h, corners, shape == Shape::Subroutine);
-                centred(&mut canvas, x + 1, y + 1, w - 2, &labels[at], Role::Text);
+                let double = shape == Shape::Subroutine;
+                canvas.outline(x, y, w, h, corners, double, Ink::of(Role::Border, at));
+                let words = Ink::plain(Role::Text);
+                centred(&mut canvas, x + 1, y + 1, w - 2, &labels[at], words);
             }
             Kind::Words(edge) => {
-                centred(&mut canvas, x, y, w, &chart.edges[edge].label, Role::Label);
+                let edge = &chart.edges[edge];
+                let ink = Ink::of(Role::Label, edge.from);
+                centred(&mut canvas, x, y, w, &edge.label, ink);
             }
             Kind::Bend => {}
         }
     }
 
+    // Each edge is drawn in the colour of the node it leaves, which its
+    // arrowhead carries to the node it reaches.
     for s in &segments {
         let (upper, lower) = (&places[s.upper], &places[s.lower]);
         let edge = &chart.edges[s.edge];
+        let owner = Ink::of(Role::Line, edge.from).owner;
         let (from, to) = (s.from as usize, s.to as usize);
         let leave = last(upper);
         let arrive = first(lower);
@@ -716,12 +723,13 @@ fn layout(chart: &Chart, direction: Direction) -> Option<Diagram> {
         }
         points.push((arrive, to));
         let screen: Vec<(usize, usize)> = points.iter().map(|&(a, c)| view.point(a, c)).collect();
-        canvas.path(&screen, edge.stroke);
+        canvas.path(&screen, edge.stroke, owner);
         if upper.kind == Kind::Bend {
             canvas.line(
                 view.point(first(upper), from),
                 view.point(leave, from),
                 edge.stroke,
+                owner,
             );
         }
 
@@ -729,27 +737,36 @@ fn layout(chart: &Chart, direction: Direction) -> Option<Diagram> {
         let head_below = if forward { edge.head } else { edge.tail };
         let head_above = if forward { edge.tail } else { edge.head };
         let double = |place: &Place| matches!(place.kind, Kind::Node(at) if chart.nodes[at].shape == Shape::Subroutine);
-        if let Kind::Node(_) = upper.kind {
+        let arrow = Ink::of(Role::Arrow, edge.from);
+        // Where an edge meets a box, the join is part of the box's outline.
+        if let Kind::Node(at) = upper.kind {
             if !double(upper) {
                 let (x, y) = view.point(leave, from);
-                canvas.put(x, y, view.join(true), Role::Border);
+                canvas.put(x, y, view.join(true), Ink::of(Role::Border, at));
             }
             if head_above {
                 let (x, y) = view.point(leave + 1, from);
-                canvas.put(x, y, view.arrow(false), Role::Arrow);
+                canvas.put(x, y, view.arrow(false), arrow);
             }
         }
-        if let Kind::Node(_) = lower.kind {
+        if let Kind::Node(at) = lower.kind {
             if head_below {
                 let (x, y) = view.point(arrive - 1, to);
-                canvas.put(x, y, view.arrow(true), Role::Arrow);
+                canvas.put(x, y, view.arrow(true), arrow);
             } else if !double(lower) {
                 let (x, y) = view.point(arrive, to);
-                canvas.put(x, y, view.join(false), Role::Border);
+                canvas.put(x, y, view.join(false), Ink::of(Role::Border, at));
             }
         }
     }
-    Some(canvas.finish())
+    let mut diagram = canvas.finish();
+    diagram.keys = chart.nodes.iter().map(|node| key(&node.id)).collect();
+    diagram.links = chart
+        .edges
+        .iter()
+        .filter_map(|edge| Some((u16::try_from(edge.from).ok()?, u16::try_from(edge.to).ok()?)))
+        .collect();
+    Some(diagram)
 }
 
 fn segment(upper: usize, lower: usize, edge: usize) -> Segment {
@@ -764,10 +781,10 @@ fn segment(upper: usize, lower: usize, edge: usize) -> Segment {
 }
 
 /// Writes lines of text centred in a band `width` columns wide.
-fn centred(canvas: &mut Canvas, x: usize, y: usize, width: usize, lines: &[String], role: Role) {
+fn centred(canvas: &mut Canvas, x: usize, y: usize, width: usize, lines: &[String], ink: Ink) {
     for (row, line) in lines.iter().enumerate() {
         let indent = width.saturating_sub(line.width()) / 2;
-        canvas.text(x + indent, y + row, line, role);
+        canvas.text(x + indent, y + row, line, ink);
     }
 }
 
@@ -1326,6 +1343,36 @@ mod tests {
     fn a_long_edge_bends_round_what_is_between() {
         let out = drawn("graph TD\n  A --> B --> C --> D\n  A --> D", 80);
         assert_eq!(out.matches('▼').count(), 4, "{out}");
+    }
+
+    #[test]
+    fn a_box_is_its_nodes_and_an_edge_its_sources() {
+        let diagram = draw(&chart("graph LR\n  A -->|go| B").unwrap(), 80).unwrap();
+        let ink_of = |needle: char| {
+            diagram
+                .rows
+                .iter()
+                .flatten()
+                .find(|(text, _)| text.contains(needle))
+                .map(|(_, ink)| *ink)
+        };
+        assert_eq!(ink_of('▶'), Some(Ink::of(Role::Arrow, 0)));
+        assert_eq!(ink_of('g'), Some(Ink::of(Role::Label, 0)));
+        assert_eq!(
+            ink_of('A'),
+            Some(Ink::plain(Role::Text)),
+            "words stay plain"
+        );
+        let line = diagram
+            .rows
+            .iter()
+            .flatten()
+            .find(|(_, ink)| ink.role == Role::Line);
+        assert_eq!(line.map(|(_, ink)| ink.owner), Some(Some(0)));
+        let top = diagram.rows[0].last().map(|(_, ink)| *ink);
+        assert_eq!(top, Some(Ink::of(Role::Border, 1)), "B's outline");
+        assert_eq!(diagram.keys, [key("A"), key("B")]);
+        assert_eq!(diagram.links, [(0, 1)]);
     }
 
     #[test]

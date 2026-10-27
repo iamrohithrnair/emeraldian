@@ -20,9 +20,9 @@ pub mod presets;
 pub mod seed;
 pub mod theme;
 
-pub use color::{blend, luminance};
+pub use color::{blend, contrast, luminance, readable};
 pub use seed::Seed;
-pub use theme::{Palette, Theme};
+pub use theme::{Hues, Palette, STROKE_CONTRAST, TEXT_CONTRAST, Theme};
 
 /// A named theme together with its resolved colors.
 ///

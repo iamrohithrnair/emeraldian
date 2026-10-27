@@ -14,9 +14,20 @@
 //! fixed number of diagrams, and each has a size limit, so memory stays the
 //! same however many diagrams a note or a vault has.
 //!
+//! Each node, and each participant in a sequence, has a colour of its own,
+//! which its outline, the edges it sends and their arrowheads and words are
+//! drawn in, so the flow can be followed by colour. The words inside a box
+//! stay in the body colour, where they read best. The drawing only records
+//! whose each run is; the colours are the theme's own hues, picked when the
+//! note is laid out (see [`Diagram::colours`]) and kept with the laid-out
+//! lines, so a frame costs what it did.
+//!
 //! Turning a sideways chart that doesn't fit to run downwards, the limit on
-//! source size and keeping drawings by their source are ideas taken from
-//! prismantis (MIT), which draws Mermaid for Claude Code. The code is our own.
+//! source size, keeping drawings by their source and giving each box a colour
+//! from the theme are ideas taken from prismantis (MIT), which draws Mermaid
+//! for Claude Code. Arrowheads in their edge's colour, and words on edges
+//! kept to a stronger contrast than the lines, come from beautiful-mermaid
+//! (MIT), the renderer prismantis builds on. The code is our own.
 
 mod canvas;
 mod flowchart;
@@ -46,13 +57,115 @@ pub enum Role {
     Note,
 }
 
-/// A drawn diagram: rows of text runs, each with its role.
+/// How a run of a diagram's characters is coloured: what it is, and whose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ink {
+    pub role: Role,
+    /// The node or participant whose colour it is drawn in, by its place in
+    /// [`Diagram::keys`]. `None` for what is no one's: the words inside a
+    /// box, notes, and the rules of a `loop` or `alt` block.
+    pub owner: Option<u16>,
+}
+
+impl Ink {
+    /// No one's.
+    #[must_use]
+    pub const fn plain(role: Role) -> Self {
+        Self { role, owner: None }
+    }
+
+    /// In the colour of the node or participant at `owner`.
+    #[must_use]
+    pub fn of(role: Role, owner: usize) -> Self {
+        Self {
+            role,
+            owner: u16::try_from(owner).ok(),
+        }
+    }
+}
+
+/// A drawn diagram: rows of text runs, each with its ink.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagram {
-    pub rows: Vec<Vec<(String, Role)>>,
+    pub rows: Vec<Vec<(String, Ink)>>,
     /// Columns in the widest row.
     pub width: usize,
+    /// A key for each node or participant, made from its id, so the same one
+    /// is given the same colour every time it is drawn.
+    pub keys: Vec<u64>,
+    /// Owners drawn joined, by an edge or a message or as lifelines side by
+    /// side, which are given different colours where there are enough.
+    pub links: Vec<(u16, u16)>,
 }
+
+impl Diagram {
+    /// Which of `hues` colours each owner is drawn in, by its place in
+    /// [`Self::keys`]. Empty when there are no colours to give.
+    ///
+    /// Each owner's key picks the colour it starts from, so the same diagram
+    /// always looks the same, in this note or any other, and an owner keeps
+    /// its colour as others are added unless one of them takes the colour it
+    /// would have had. One already taken passes to the next along: first to
+    /// one no one has, so a diagram with no more owners than colours has no
+    /// two alike, and once every colour is in use, to the least used one that
+    /// none of its neighbours has.
+    #[must_use]
+    pub fn colours(&self, hues: usize) -> Vec<u8> {
+        // The neighbours' colours are kept as bits of a `u64`.
+        let hues = hues.min(64);
+        if hues == 0 {
+            return Vec::new();
+        }
+        let mut used = [0usize; 64];
+        let mut picked: Vec<u8> = Vec::with_capacity(self.keys.len());
+        for (owner, key) in self.keys.iter().enumerate() {
+            let mut near = 0u64;
+            for &(a, b) in &self.links {
+                let other = match (usize::from(a) == owner, usize::from(b) == owner) {
+                    (true, false) => b,
+                    (false, true) => a,
+                    _ => continue,
+                };
+                if let Some(&hue) = picked.get(usize::from(other)) {
+                    near |= 1 << hue;
+                }
+            }
+            let first = (key % hues as u64) as usize;
+            let hue = (0..hues)
+                .map(|step| (first + step) % hues)
+                .min_by_key(|&hue| ((near >> hue) & 1, used[hue]))
+                .unwrap_or(first);
+            used[hue] += 1;
+            picked.push(hue as u8);
+        }
+        picked
+    }
+}
+
+/// A key for a node's or participant's id, the same on every run and every
+/// machine: FNV-1a, then mixed with SplitMix64's finaliser so ids that differ
+/// only in their last letter, as `A`, `B` and `C` do, still land far apart.
+#[must_use]
+pub fn key(id: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in id.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    // Most diagrams name their nodes `A`, `B`, `C` and `D`, as Mermaid's own
+    // examples do. This salt was picked so those start out in different
+    // colours, `A` in the first, a theme's blue, and none of the first five
+    // in purple or red where a theme has eight.
+    hash ^= SALT;
+    hash ^= hash >> 30;
+    hash = hash.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    hash ^= hash >> 27;
+    hash = hash.wrapping_mul(0x94d0_49bb_1331_11eb);
+    hash ^ (hash >> 31)
+}
+
+/// See [`key`].
+const SALT: u64 = 231_170;
 
 /// Longest source drawn, in bytes. A diagram past this is not something
 /// anyone reads in a terminal, and the limit bounds the work of trying.
@@ -375,12 +488,82 @@ mod tests {
         });
     }
 
+    /// The colour each node or participant is given out of `hues`.
+    fn colours_of(source: &str, width: usize, hues: usize) -> Vec<u8> {
+        draw(&lines(source), width).expect("draws").colours(hues)
+    }
+
+    #[test]
+    fn colours_are_the_same_every_time_and_whichever_way_the_chart_runs() {
+        let chart = "graph LR\n  A[Start] --> B{Ready?}\n  B -->|yes| C[Go]\n  B -->|no| D[Wait]\n  D --> B";
+        let first = colours_of(chart, 200, 8);
+        assert_eq!(first.len(), 4);
+        assert_eq!(colours_of(chart, 200, 8), first, "drawn again");
+        // Too narrow to run sideways, so it is drawn downwards instead, and
+        // its nodes keep their colours.
+        assert_eq!(colours_of(chart, 20, 8), first);
+        let renamed = chart.replace("Start", "Begin");
+        assert_eq!(colours_of(&renamed, 200, 8), first, "a node is its id");
+
+        // The key is spelled out so it can't drift between builds or
+        // machines, as `std`'s hasher may.
+        assert_eq!(key(""), 0xda4a_6948_0291_1fc9);
+        assert_eq!(key("A"), 0x8d63_b02d_cc18_cd78);
+    }
+
+    #[test]
+    fn the_ids_most_diagrams_use_start_out_apart() {
+        for hues in [6, 7, 8] {
+            let picked = colours_of("graph TD\n  A --> B --> C --> D", 80, hues);
+            assert_eq!(picked[0], 0, "A is in the first colour of {hues}");
+            let mut seen = picked.clone();
+            seen.sort_unstable();
+            seen.dedup();
+            assert_eq!(seen.len(), 4, "{hues}: {picked:?}");
+        }
+        // The last two of a theme's eight hues are its purple and red.
+        let eight = colours_of("graph TD\n  A --> B --> C --> D --> E", 80, 8);
+        assert!(eight.iter().all(|&hue| hue < 6), "{eight:?}");
+    }
+
+    #[test]
+    fn a_node_keeps_its_colour_when_another_is_added() {
+        let before = colours_of("graph TD\n  A --> B --> C\n  B --> D", 80, 7);
+        let after = colours_of("graph TD\n  A --> B --> C\n  B --> D\n  D --> E", 80, 7);
+        assert_eq!(after[..4], before[..], "the first four are as they were");
+    }
+
+    #[test]
+    fn no_two_alike_until_the_colours_run_out_then_never_neighbours() {
+        let few = colours_of("graph TD\n  A --> B & C & D\n  C --> E", 80, 6);
+        let mut seen = few.clone();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), few.len(), "five nodes, five colours: {few:?}");
+
+        // A chain of twelve in four colours: some share, but never two that
+        // are joined.
+        let chain: Vec<String> = (0..12).map(|at| format!("n{at}")).collect();
+        let source = format!("graph TD\n  {}", chain.join(" --> "));
+        let many = colours_of(&source, 400, 4);
+        assert!(many.windows(2).all(|pair| pair[0] != pair[1]), "{many:?}");
+        assert!(many.iter().all(|&hue| hue < 4));
+
+        let sequence = "sequenceDiagram\n  A->>B: one\n  B->>C: two\n  C->>A: three";
+        let people = colours_of(sequence, 80, 6);
+        assert_eq!(people.len(), 3);
+        assert!(people[0] != people[1] && people[1] != people[2] && people[0] != people[2]);
+        assert!(colours_of(sequence, 80, 0).is_empty(), "no colours to give");
+    }
+
     #[test]
     fn big_diagrams_are_dropped_from_the_cache_to_keep_it_small() {
         let mut cache = Cache::default();
         let big = Rc::new(Diagram {
             rows: vec![Vec::new(); 1000],
             width: 400,
+            keys: Vec::new(),
+            links: Vec::new(),
         });
         for key in 0..10 {
             cache.put(key, 80, Some(big.clone()));
