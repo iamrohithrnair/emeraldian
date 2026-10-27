@@ -295,7 +295,7 @@ full list in the app.
 | `Ctrl+Shift+T` | Reopen the last tab closed |
 | `F3` / `F4` | Close the tab (`Ctrl+F4` too) / vim mode on / off |
 | `F5` / `Ctrl+R` | Reload the vault from disk |
-| `F8` | Focus mode: the note alone, centred, with the sidebars hidden |
+| `F8` | Focus mode: the note alone, across 90% of the screen, with the sidebars hidden |
 | `h` / `l`, `0` / `$` | While reading, pan a table, code block or diagram too wide for the pane; `‹` and `›` mark the edges with more beyond |
 
 In the editor: `↑`/`↓`, `Home` and `End` follow the rows on screen, so a wrapped
@@ -469,6 +469,7 @@ The ribbon icons are buttons, and most of the UI is clickable:
 | A note in the explorer | Opens it |
 | A folder in the explorer | Folds it |
 | A tab | Switches to it |
+| A tab's `×`, or a middle click on the tab | Closes it (`●` stands in for `×` while it has unsaved changes) |
 | Outline / Backlinks / Tags | Switches panel |
 | A graph node | Selects it |
 | Text in the editor | Places the cursor; drag to select |

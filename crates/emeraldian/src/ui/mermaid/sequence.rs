@@ -8,13 +8,15 @@
 use std::collections::HashMap;
 
 use super::canvas::{Canvas, Stroke};
-use super::{Diagram, Role, label_lines, widest};
+use super::{Diagram, Ink, Role, key, label_lines, widest};
 
 const MAX_ACTORS: usize = 40;
 const MAX_EVENTS: usize = 400;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Actor {
+    /// The name messages use for it, which its colour is picked by.
+    pub id: String,
     pub label: Vec<String>,
     /// Drawn with round corners, for an `actor` rather than a `participant`.
     pub person: bool,
@@ -104,6 +106,7 @@ impl Builder {
             return None;
         }
         self.sequence.actors.push(Actor {
+            id: id.to_string(),
             label: label_lines(id),
             person: false,
         });
@@ -367,7 +370,9 @@ pub fn draw(sequence: &Sequence) -> Option<Diagram> {
     let height = tall * 2 + events_rows;
     let mut canvas = Canvas::new(width, height)?;
 
-    // Boxes, notes and words first, so the lines stop at them.
+    // Boxes, notes and words first, so the lines stop at them. Each
+    // participant has a colour, which its boxes, its lifeline and the
+    // messages it sends are drawn in.
     for (k, actor) in actors.iter().enumerate() {
         let column = x(centre[k] - boxes[k] as i64 / 2);
         let corners = if actor.person {
@@ -375,11 +380,13 @@ pub fn draw(sequence: &Sequence) -> Option<Diagram> {
         } else {
             ['┌', '┐', '└', '┘']
         };
+        let outline = Ink::of(Role::Border, k);
         for top in [0, height - tall] {
-            canvas.outline(column, top, boxes[k], tall, corners, false);
+            canvas.outline(column, top, boxes[k], tall, corners, false, outline);
             for (row, line) in actor.label.iter().enumerate() {
                 let indent = (boxes[k] - 2 - line.width()) / 2;
-                canvas.text(column + 1 + indent, top + 1 + row, line, Role::Text);
+                let words = Ink::plain(Role::Text);
+                canvas.text(column + 1 + indent, top + 1 + row, line, words);
             }
         }
     }
@@ -397,8 +404,9 @@ pub fn draw(sequence: &Sequence) -> Option<Diagram> {
                 head,
             } => {
                 let (a, b) = (x(centre[*from]), x(centre[*to]));
+                let sender = Ink::of(Role::Line, *from).owner;
                 if from == to {
-                    canvas.text(a + 2, row, label, Role::Label);
+                    canvas.text(a + 2, row, label, Ink::of(Role::Label, *from));
                     lines.push((
                         vec![
                             (a, row + 1),
@@ -407,13 +415,15 @@ pub fn draw(sequence: &Sequence) -> Option<Diagram> {
                             (a + 1, row + 2),
                         ],
                         *stroke,
+                        sender,
                     ));
-                    arrows.push((a + 1, row + 2, glyph(*head, false)));
+                    arrows.push((a + 1, row + 2, glyph(*head, false), *from));
                     row += 3;
                 } else {
                     let (low, high) = (a.min(b), a.max(b));
                     let indent = (high - low).saturating_sub(label.width()) / 2;
-                    canvas.text(low + indent.max(1), row, label, Role::Label);
+                    let words = Ink::of(Role::Label, *from);
+                    canvas.text(low + indent.max(1), row, label, words);
                     let toward = b > a;
                     let end = if *head == Head::Open {
                         b
@@ -422,9 +432,9 @@ pub fn draw(sequence: &Sequence) -> Option<Diagram> {
                     } else {
                         b + 1
                     };
-                    lines.push((vec![(a, row + 1), (end, row + 1)], *stroke));
+                    lines.push((vec![(a, row + 1), (end, row + 1)], *stroke, sender));
                     if *head != Head::Open {
-                        arrows.push((end, row + 1, glyph(*head, toward)));
+                        arrows.push((end, row + 1, glyph(*head, toward), *from));
                     }
                     row += 2;
                 }
@@ -432,6 +442,7 @@ pub fn draw(sequence: &Sequence) -> Option<Diagram> {
             Event::Note { label, .. } => {
                 let (from, to) = notes.next()?;
                 let (column, wide) = (x(from), usize::try_from(to - from).ok()?);
+                let note = Ink::plain(Role::Note);
                 canvas.outline(
                     column,
                     row,
@@ -439,42 +450,76 @@ pub fn draw(sequence: &Sequence) -> Option<Diagram> {
                     label.len() + 2,
                     ['┌', '┐', '└', '┘'],
                     false,
+                    note,
                 );
                 // Filled with blanks first, so the lifelines don't run
                 // through it.
                 for inside in row + 1..row + 1 + label.len() {
                     for blank in column + 1..column + wide - 1 {
-                        canvas.put(blank, inside, ' ', Role::Note);
+                        canvas.put(blank, inside, ' ', note);
                     }
                 }
                 for (line_at, line) in label.iter().enumerate() {
-                    canvas.text(column + 2, row + 1 + line_at, line, Role::Note);
+                    canvas.text(column + 2, row + 1 + line_at, line, note);
                 }
                 row += label.len() + 2;
             }
             Event::Rule(text) => {
-                lines.push((vec![(0, row), (width - 1, row)], Stroke::Dotted));
+                lines.push((vec![(0, row), (width - 1, row)], Stroke::Dotted, None));
                 // Just right of the first lifeline, so it isn't cut.
                 if !text.is_empty() {
-                    canvas.text(x(centre[0]) + 2, row, &format!(" {text} "), Role::Note);
+                    let words = Ink::plain(Role::Note);
+                    canvas.text(x(centre[0]) + 2, row, &format!(" {text} "), words);
                 }
                 row += 1;
             }
         }
     }
-    for (k, _) in actors.iter().enumerate() {
-        let column = x(centre[k]);
-        canvas.line((column, tall - 1), (column, height - tall), Stroke::Solid);
-        canvas.put(column, tall - 1, '┬', Role::Border);
-        canvas.put(column, height - tall, '┴', Role::Border);
+    // Lifelines before messages, so a message keeps its colour where it
+    // crosses one.
+    for (k, &at) in centre.iter().enumerate() {
+        let column = x(at);
+        let own = Ink::of(Role::Line, k).owner;
+        canvas.line(
+            (column, tall - 1),
+            (column, height - tall),
+            Stroke::Solid,
+            own,
+        );
+        canvas.put(column, tall - 1, '┬', Ink::of(Role::Border, k));
+        canvas.put(column, height - tall, '┴', Ink::of(Role::Border, k));
     }
-    for (points, stroke) in lines {
-        canvas.path(&points, stroke);
+    for (points, stroke, owner) in lines {
+        canvas.path(&points, stroke, owner);
     }
-    for (column, row, arrow) in arrows {
-        canvas.put(column, row, arrow, Role::Arrow);
+    for (column, row, arrow, owner) in arrows {
+        canvas.put(column, row, arrow, Ink::of(Role::Arrow, owner));
     }
-    Some(canvas.finish())
+    let mut diagram = canvas.finish();
+    diagram.keys = actors.iter().map(|actor| key(&actor.id)).collect();
+    diagram.links = links(sequence);
+    Some(diagram)
+}
+
+/// Participants side by side, and those that message each other, which
+/// should differ in colour.
+fn links(sequence: &Sequence) -> Vec<(u16, u16)> {
+    let pair =
+        |a: usize, b: usize| Some((u16::try_from(a.min(b)).ok()?, u16::try_from(a.max(b)).ok()?));
+    let mut links: Vec<(u16, u16)> = (1..sequence.actors.len())
+        .filter_map(|k| pair(k - 1, k))
+        .collect();
+    for event in &sequence.events {
+        if let Event::Message { from, to, .. } = event
+            && from != to
+            && let Some(link) = pair(*from, *to)
+        {
+            links.push(link);
+        }
+    }
+    links.sort_unstable();
+    links.dedup();
+    links
 }
 
 fn glyph(head: Head, rightwards: bool) -> char {
@@ -582,6 +627,36 @@ mod tests {
             out.contains("自分") && out.contains("左 🙂") && out.contains("loop retry"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn each_participant_colours_its_lifeline_and_what_it_sends() {
+        let s = sequence("A->>B: hi\nB-->>A: back\nNote over A: aside\nC->>C: me").unwrap();
+        let diagram = draw(&s).unwrap();
+        let ink_of = |needle: &str| {
+            diagram
+                .rows
+                .iter()
+                .flatten()
+                .find(|(text, _)| text.contains(needle))
+                .map(|(_, ink)| *ink)
+        };
+        assert_eq!(ink_of("hi"), Some(Ink::of(Role::Label, 0)));
+        assert_eq!(ink_of("back"), Some(Ink::of(Role::Label, 1)));
+        assert_eq!(ink_of("▶"), Some(Ink::of(Role::Arrow, 0)));
+        assert_eq!(ink_of("◀"), Some(Ink::of(Role::Arrow, 1)));
+        assert_eq!(ink_of("aside"), Some(Ink::plain(Role::Note)));
+        assert_eq!(ink_of("me"), Some(Ink::of(Role::Label, 2)));
+        // Below the boxes, each lifeline is its participant's.
+        let mut lifelines: Vec<Option<u16>> = diagram.rows[3]
+            .iter()
+            .filter(|(text, ink)| ink.role == Role::Line && text.contains('│'))
+            .map(|(_, ink)| ink.owner)
+            .collect();
+        lifelines.dedup();
+        assert_eq!(lifelines, [Some(0), Some(1), Some(2)]);
+        assert_eq!(diagram.keys, [key("A"), key("B"), key("C")]);
+        assert_eq!(diagram.links, [(0, 1), (1, 2)], "side by side, and talking");
     }
 
     #[test]

@@ -96,6 +96,60 @@ All notable changes to this project are documented here. The format follows
 - A heading that ends in `#`, such as `## C#`, keeps its `#`. It used to be
   shown, and listed in the outline, as `C`.
 
+## [0.10.0] — 2026-10-27
+
+Focus mode gives the note the screen, tabs close with a click on their `×`,
+and Mermaid diagrams are drawn in colour, each box in a colour of its own.
+Notes and a `config.toml` from an earlier version work unchanged.
+
+### Added
+
+- **Tabs close with the mouse.** Each tab has a `×` after its name, and a
+  click on it closes that tab, whichever one you are looking at, just as `F3`
+  would: a note with unsaved changes is saved first when auto-save is on. A
+  middle click anywhere on a tab closes it too, as in a browser. A tab with
+  unsaved changes shows a `●` in place of the `×`, which closes it all the
+  same.
+
+### Changed
+
+- **Focus mode gives the note the screen.** `F8` hid the sidebars but kept
+  the note at a hundred columns, so on a wide terminal it sat in a narrow
+  strip with empty space either side. It now spreads across 90% of the
+  width, centred, and a terminal of 80 columns or fewer keeps all of it.
+
+- **Mermaid diagrams are drawn in colour.** Every box in a flowchart, and
+  every participant in a sequence diagram, now has a colour of its own,
+  taken from your theme: the same blues, greens, oranges and pinks its
+  callouts and code already use. The edges a box sends, their arrowheads and
+  the words on them come in its colour, so you can follow the flow by eye,
+  and a participant's lifeline and the messages it sends carry its colour
+  too. The words inside the boxes stay in the body colour, where they read
+  best. A diagram looks the same every time you open it, and adding a box
+  rarely changes the colour of any other. Every colour is checked against
+  the page, so on a light theme a pale yellow or cyan is darkened until it
+  reads, and two that would look alike, even in a terminal of 256 colours,
+  are never both used. Until now every box and arrow was the theme's accent,
+  which in Obsidian's own themes is purple, and a page with a few diagrams
+  on it was mostly purple. The colours are picked once, when the note is
+  laid out, so scrolling past fifty diagrams is as smooth as it was.
+
+- **List bullets are a quiet grey.** The bullets and numbers of a list are
+  drawn in the muted text colour, as Obsidian draws them, rather than the
+  accent, which put a column of purple dots down every list. Links and tags
+  keep the accent, so they still stand out.
+
+### Fixed
+
+- **Tabs with Chinese, Japanese or emoji in their names line up.** The tab
+  bar measured names by their characters rather than the columns they fill,
+  so a click on a tab after one of them could land on the wrong tab.
+
+- **Headings at levels 3, 4 and 5 are readable in Obsidian Light.** Their
+  cyan, green and yellow stood at 2.3:1, 2.6:1 and 3.0:1 against the white
+  page, too faint to read comfortably. Each keeps its hue, darkened to the
+  4.5:1 that body text needs.
+
 ## [0.9.1] — 2026-10-27
 
 Emeraldian starts inside tmux again. Nothing else changes from 0.9.0.
@@ -939,6 +993,7 @@ First release.
   permission that usually causes it.
 
 [0.11.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.11.0
+[0.10.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.10.0
 [0.9.1]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.9.1
 [0.9.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.9.0
 [0.8.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.8.0

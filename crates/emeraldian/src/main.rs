@@ -595,6 +595,14 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) -> bool {
             place_caret(app, point, true) || drag_graph_node(app, point)
         }
         MouseEventKind::Up(MouseButton::Left) => release_graph_node(app),
+        // A middle click closes a tab, as it does in a browser.
+        MouseEventKind::Down(MouseButton::Middle) => match tab_at(&app.regions.tabs, point) {
+            Some(index) => {
+                app.close_tab_at(index);
+                true
+            }
+            None => false,
+        },
         // Shift turns the wheel sideways, as it does in a browser; a trackpad
         // or a tilting wheel reports sideways scrolling as its own events.
         MouseEventKind::ScrollDown if sideways(mouse) => handle_pan(app, point, keys::PAN_STEP),
@@ -605,6 +613,14 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) -> bool {
         MouseEventKind::ScrollUp => handle_scroll(app, point, -3),
         _ => false,
     }
+}
+
+/// The tab whose region, of those the last frame recorded, holds `point`.
+fn tab_at(regions: &[(ratatui::layout::Rect, usize)], point: (u16, u16)) -> Option<usize> {
+    regions
+        .iter()
+        .find(|(rect, _)| hit(*rect, point))
+        .map(|(_, index)| *index)
 }
 
 /// Maps a screen point to graph space using the bounds the last frame recorded.
@@ -689,13 +705,12 @@ fn handle_click(app: &mut App, point: (u16, u16)) -> bool {
         return true;
     }
 
-    if let Some(index) = app
-        .regions
-        .tabs
-        .iter()
-        .find(|(rect, _)| hit(*rect, point))
-        .map(|(_, index)| *index)
-    {
+    // The close button sits inside its tab, so it is asked first.
+    if let Some(index) = tab_at(&app.regions.tab_close, point) {
+        app.close_tab_at(index);
+        return true;
+    }
+    if let Some(index) = tab_at(&app.regions.tabs, point) {
         app.active_tab = Some(index);
         app.focus = app::Focus::Note;
         app.side_selected = 0;
@@ -1295,6 +1310,96 @@ mod tests {
         assert!(click(&mut app, first.x + 1, first.y));
         assert_eq!(app.active_tab, Some(0));
         assert_eq!(app.focus, app::Focus::Note);
+    }
+
+    /// Alpha, Beta and Gamma open, Gamma the active tab, laid out.
+    fn three_tabs() -> (TempVault, App) {
+        let (vault, mut app) = demo();
+        for rel in ["Beta.md", "Folder/Gamma.md"] {
+            let id = app.index.id_of_rel(rel).unwrap();
+            app.open_note(id);
+        }
+        lay_out(&mut app);
+        assert_eq!((app.tabs.len(), app.active_tab), (3, Some(2)));
+        (vault, app)
+    }
+
+    fn active_title(app: &App) -> String {
+        app.note_title(app.active_note().expect("a tab is open"))
+    }
+
+    #[test]
+    fn a_tabs_close_button_closes_it_and_leaves_the_active_tab_alone() {
+        let (_v, mut app) = three_tabs();
+        let (close, index) = app.regions.tab_close[0];
+        assert_eq!(index, 0);
+        assert!(click(&mut app, close.x, close.y));
+        let open: Vec<String> = app.tabs.iter().map(|t| app.note_title(t.note)).collect();
+        assert_eq!(open, ["Beta", "Gamma"], "Alpha closed");
+        assert_eq!(
+            active_title(&app),
+            "Gamma",
+            "and Gamma is still the one shown"
+        );
+    }
+
+    #[test]
+    fn closing_the_active_tab_by_its_button_shows_the_next_one() {
+        let (_v, mut app) = three_tabs();
+        app.active_tab = Some(1);
+        lay_out(&mut app);
+        let (close, _) = app.regions.tab_close[1];
+        assert!(click(&mut app, close.x + 1, close.y));
+        assert_eq!(app.tabs.len(), 2);
+        assert_eq!(active_title(&app), "Gamma", "as F3 would have left it");
+    }
+
+    #[test]
+    fn a_click_on_a_tabs_title_still_switches_to_it() {
+        let (_v, mut app) = three_tabs();
+        let (tab, _) = app.regions.tabs[0];
+        let (close, _) = app.regions.tab_close[0];
+        assert!(tab.x + 1 < close.x, "the title is not the button");
+        assert!(click(&mut app, tab.x + 1, tab.y));
+        assert_eq!(app.tabs.len(), 3, "nothing closed");
+        assert_eq!(active_title(&app), "Alpha");
+    }
+
+    #[test]
+    fn a_middle_click_on_a_tab_closes_it() {
+        let (_v, mut app) = three_tabs();
+        let (tab, _) = app.regions.tabs[1];
+        assert!(handle_mouse(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Middle),
+                column: tab.x + 1,
+                row: tab.y,
+                modifiers: crossterm::event::KeyModifiers::empty(),
+            },
+        ));
+        let open: Vec<String> = app.tabs.iter().map(|t| app.note_title(t.note)).collect();
+        assert_eq!(open, ["Alpha", "Gamma"]);
+        assert_eq!(active_title(&app), "Gamma");
+    }
+
+    #[test]
+    fn a_tab_closed_by_its_button_is_saved_first_as_f3_would() {
+        let (vault, mut app) = three_tabs();
+        app.config.editor.auto_save = true;
+        app.active_tab = Some(0);
+        let editor = app.editor_mut().expect("editor");
+        editor.move_document_end(false);
+        editor.insert_str("appended");
+        app.active_tab = Some(2);
+        lay_out(&mut app);
+        let (close, _) = app.regions.tab_close[0];
+        assert!(click(&mut app, close.x, close.y));
+        assert!(
+            vault.read("Alpha.md").contains("appended"),
+            "saved, not lost"
+        );
+        assert_eq!(app.tabs.len(), 2);
     }
 
     #[test]
