@@ -595,6 +595,12 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) -> bool {
             place_caret(app, point, true) || drag_graph_node(app, point)
         }
         MouseEventKind::Up(MouseButton::Left) => release_graph_node(app),
+        // Shift turns the wheel sideways, as it does in a browser; a trackpad
+        // or a tilting wheel reports sideways scrolling as its own events.
+        MouseEventKind::ScrollDown if sideways(mouse) => handle_pan(app, point, keys::PAN_STEP),
+        MouseEventKind::ScrollUp if sideways(mouse) => handle_pan(app, point, -keys::PAN_STEP),
+        MouseEventKind::ScrollRight => handle_pan(app, point, keys::PAN_STEP),
+        MouseEventKind::ScrollLeft => handle_pan(app, point, -keys::PAN_STEP),
         MouseEventKind::ScrollDown => handle_scroll(app, point, 3),
         MouseEventKind::ScrollUp => handle_scroll(app, point, -3),
         _ => false,
@@ -809,6 +815,30 @@ fn place_caret(app: &mut App, point: (u16, u16), extend: bool) -> bool {
     true
 }
 
+fn sideways(mouse: crossterm::event::MouseEvent) -> bool {
+    mouse
+        .modifiers
+        .contains(crossterm::event::KeyModifiers::SHIFT)
+}
+
+/// Pans the wide blocks of the note being read, when the pointer is over it.
+///
+/// Only reading mode pans: the editor follows its cursor sideways instead. The
+/// next frame clamps the offset to what the blocks on screen can use.
+fn handle_pan(app: &mut App, point: (u16, u16), delta: isize) -> bool {
+    let over_note = app.regions.main.is_some_and(|rect| hit(rect, point));
+    if !over_note || app.view != View::Notes {
+        return false;
+    }
+    match app.active_mut() {
+        Some(tab) if tab.mode == app::Mode::Reading => {
+            tab.hscroll = (tab.hscroll as isize + delta).max(0) as usize;
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Scrolls whichever pane is under the pointer, not whichever has focus.
 fn handle_scroll(app: &mut App, point: (u16, u16), delta: isize) -> bool {
     if let Some((rect, _)) = app.regions.explorer
@@ -896,6 +926,57 @@ mod tests {
                 modifiers: crossterm::event::KeyModifiers::empty(),
             },
         )
+    }
+
+    #[test]
+    fn sideways_scrolling_and_shift_wheel_pan_the_note_being_read() {
+        let (_vault, mut app) = demo();
+        app.active_mut().expect("tab").mode = app::Mode::Reading;
+        lay_out(&mut app);
+        let main = app.regions.main.expect("note pane");
+        let (x, y) = (main.x + 2, main.y + 2);
+        let wheel = |kind, modifiers| MouseEvent {
+            kind,
+            column: x,
+            row: y,
+            modifiers,
+        };
+        let hscroll = |app: &App| app.active().expect("tab").hscroll;
+
+        assert!(handle_mouse(
+            &mut app,
+            wheel(MouseEventKind::ScrollRight, KeyModifiers::NONE)
+        ));
+        assert_eq!(hscroll(&app), keys::PAN_STEP as usize);
+        handle_mouse(
+            &mut app,
+            wheel(MouseEventKind::ScrollDown, KeyModifiers::SHIFT),
+        );
+        assert_eq!(hscroll(&app), keys::PAN_STEP as usize * 2);
+        assert_eq!(
+            app.active().expect("tab").scroll,
+            0,
+            "shift turns it sideways"
+        );
+        handle_mouse(
+            &mut app,
+            wheel(MouseEventKind::ScrollLeft, KeyModifiers::NONE),
+        );
+        handle_mouse(
+            &mut app,
+            wheel(MouseEventKind::ScrollUp, KeyModifiers::SHIFT),
+        );
+        assert_eq!(hscroll(&app), 0);
+
+        // Over the explorer, it is not the note's to take.
+        let (explorer, _) = app.regions.explorer.expect("explorer");
+        let elsewhere = MouseEvent {
+            column: explorer.x + 1,
+            row: explorer.y + 1,
+            ..wheel(MouseEventKind::ScrollRight, KeyModifiers::NONE)
+        };
+        assert!(!handle_mouse(&mut app, elsewhere));
+        assert_eq!(hscroll(&app), 0);
     }
 
     fn drag(app: &mut App, x: u16, y: u16) -> bool {
@@ -1102,16 +1183,13 @@ mod tests {
             "it scrolled up with everything else"
         );
 
-        // Panned sideways, a picture gives way rather than staying pinned to
-        // the left edge over whatever the reader is trying to reach.
+        // Panning moves the wide table, not the prose the picture sits in.
         app.active_mut().expect("tab").scroll = 0;
         terminal
             .draw(|frame| ui::draw(frame, &mut app))
             .expect("draw");
-        assert!(
-            picture_column(&terminal).is_some(),
-            "on screen to begin with"
-        );
+        let column = picture_column(&terminal);
+        assert!(column.is_some(), "on screen to begin with");
 
         app.active_mut().expect("tab").hscroll = 3;
         terminal
@@ -1119,8 +1197,8 @@ mod tests {
             .expect("draw");
         assert_eq!(
             picture_column(&terminal),
-            None,
-            "it moved off with the prose instead of being redrawn against the edge"
+            column,
+            "it stays with the prose, which doesn't pan"
         );
 
         // Scrolled past its last row, it leaves nothing behind.
