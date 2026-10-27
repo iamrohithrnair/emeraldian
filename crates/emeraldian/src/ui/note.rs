@@ -68,6 +68,9 @@ pub struct Ctx<'a> {
     /// headings gain a rule, a picture takes a dozen rows — so scrolling to a
     /// heading the outline points at needs the translation written down.
     pub anchors: Vec<(usize, usize)>,
+    /// The blocks laid out wider than the pane, filled in as blocks are laid
+    /// out.
+    pub pans: Vec<Pan>,
 }
 
 impl<'a> Ctx<'a> {
@@ -82,6 +85,7 @@ impl<'a> Ctx<'a> {
             images: None,
             pictures: Vec::new(),
             anchors: Vec::new(),
+            pans: Vec::new(),
         }
     }
 }
@@ -95,6 +99,29 @@ pub struct Picture {
     pub indent: u16,
     pub size: Size,
     pub path: PathBuf,
+}
+
+/// A block laid out wider than the pane: a table, a code block, a diagram.
+///
+/// These are the only things in a note that can't wrap, so they are the only
+/// things that pan. The prose around them stays where it is, rather than
+/// sliding off the left edge to show the far side of one table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pan {
+    /// Index of its first row in the rendered lines.
+    pub line: usize,
+    pub rows: usize,
+    /// Columns on the left that stay put: the indent, and the bars of any
+    /// quote or callout it sits in.
+    pub keep: usize,
+    /// Its widest row, in columns, `keep` included.
+    pub width: usize,
+}
+
+impl Pan {
+    fn contains(&self, row: usize) -> bool {
+        (self.line..self.line + self.rows).contains(&row)
+    }
 }
 
 /// The note last laid out for reading, kept until something it was laid out
@@ -111,7 +138,7 @@ pub struct ReadingCache {
     lines: Vec<Line<'static>>,
     anchors: Vec<(usize, usize)>,
     pictures: Vec<Picture>,
-    widest: usize,
+    pans: Vec<Pan>,
 }
 
 /// Everything a reading layout depends on.
@@ -395,18 +422,15 @@ fn draw_reading(
             images: Some(&mut app.images),
             pictures: Vec::new(),
             anchors: Vec::new(),
+            pans: Vec::new(),
         };
         let lines = render_document(&document, &mut ctx, width);
-        // Content can be wider than the pane — a table laid out at its
-        // natural width, a long code line — and panning is the only way to
-        // reach the rest.
-        let widest = lines.iter().map(Line::width).max().unwrap_or(0);
         app.reading = ReadingCache {
             key: Some(key),
             lines,
             anchors: std::mem::take(&mut ctx.anchors),
             pictures: std::mem::take(&mut ctx.pictures),
-            widest,
+            pans: std::mem::take(&mut ctx.pans),
         };
     }
     regions.anchors.clone_from(&app.reading.anchors);
@@ -430,24 +454,30 @@ fn draw_reading(
         }
     }
     let max_scroll = total.saturating_sub(height);
-    let max_hscroll = app.reading.widest.saturating_sub(area.width as usize);
+    let scroll = app.active().map_or(0, |t| t.scroll).min(max_scroll);
+    // Panning is held to what the wide blocks on screen can use, so `h` always
+    // moves something you can see. Scrolled away from them, it settles back to
+    // the left edge, where the next wide block is met from its start.
+    // The last column is the scrollbar's, which is why the layout was one
+    // narrower than the pane too.
+    let room = pan_room(&app.reading.pans, scroll, height, width);
     if let Some(tab) = app.active_mut() {
-        tab.scroll = tab.scroll.min(max_scroll);
-        tab.hscroll = tab.hscroll.min(max_hscroll);
+        tab.scroll = scroll;
+        tab.hscroll = tab.hscroll.min(room);
     }
-    let (scroll, hscroll) = app.active().map_or((0, 0), |t| (t.scroll, t.hscroll));
+    let hscroll = app.active().map_or(0, |t| t.hscroll);
+    regions.pan = room;
 
-    let visible: Vec<Line> = app
-        .reading
-        .lines
-        .iter()
-        .skip(scroll)
-        .take(height)
-        .cloned()
-        .collect();
-    Paragraph::new(visible)
-        .scroll((0, u16::try_from(hscroll).unwrap_or(u16::MAX)))
-        .render(area, frame.buffer_mut());
+    let visible = visible_lines(
+        &app.reading.lines,
+        &app.reading.pans,
+        scroll,
+        height,
+        hscroll,
+        width,
+        palette,
+    );
+    Paragraph::new(visible).render(area, frame.buffer_mut());
     draw_pictures(
         frame,
         &mut app.images,
@@ -455,9 +485,161 @@ fn draw_reading(
         area,
         &app.reading.pictures,
         scroll,
-        hscroll,
     );
     scrollbar(frame, palette, full, scroll, total);
+}
+
+/// How far the wide blocks showing in rows `scroll..scroll + height` can pan
+/// before the widest of them shows its last column.
+fn pan_room(pans: &[Pan], scroll: usize, height: usize, width: usize) -> usize {
+    pans.iter()
+        .filter(|pan| pan.line < scroll + height && pan.line + pan.rows > scroll)
+        .map(|pan| pan.width.saturating_sub(width))
+        .max()
+        .unwrap_or(0)
+}
+
+/// The rows on screen, each wide block panned `hscroll` columns or as far as
+/// it goes, and everything else as it was laid out.
+///
+/// Only these rows are touched, and only sliced: a diagram is drawn once when
+/// the note is laid out, never again for panning.
+fn visible_lines(
+    lines: &[Line<'static>],
+    pans: &[Pan],
+    scroll: usize,
+    height: usize,
+    hscroll: usize,
+    width: usize,
+    palette: &Palette,
+) -> Vec<Line<'static>> {
+    let marker = Style::default().fg(palette.text_faint);
+    // The blocks are in row order, so one walk forward finds each row's.
+    let mut pans = pans
+        .iter()
+        .skip_while(|pan| pan.line + pan.rows <= scroll)
+        .peekable();
+    lines
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(height)
+        .map(|(row, line)| {
+            while pans.next_if(|pan| pan.line + pan.rows <= row).is_some() {}
+            match pans.peek() {
+                Some(pan) if pan.contains(row) && pan.width > width => {
+                    let offset = hscroll.min(pan.width - width);
+                    pan_line(line, pan.keep, offset, width, marker)
+                }
+                _ => line.clone(),
+            }
+        })
+        .collect()
+}
+
+/// `line` as it shows `width` columns wide with its first `keep` columns held
+/// in place and the rest moved `offset` columns to the left.
+///
+/// A character two columns wide that the edge would cut in half is shown as
+/// blank cells instead, so nothing after it moves out of line. Where there is
+/// more to either side, the edge cell says so with `‹` or `›`, the way `less`
+/// and vim mark a line that runs off the screen.
+fn pan_line(
+    line: &Line<'static>,
+    keep: usize,
+    offset: usize,
+    width: usize,
+    marker: Style,
+) -> Line<'static> {
+    if width == 0 {
+        return Line::default();
+    }
+    let keep = keep.min(width);
+    let start = keep + offset;
+    let end = keep + offset + (width - keep);
+    // What lies past each edge, counting only what can be seen: a code
+    // block's background running on is not more to read.
+    let mut before = false;
+    let mut after = false;
+    let mut column = 0;
+    for grapheme in line.styled_graphemes(Style::default()) {
+        let wide = grapheme.symbol.width();
+        if !grapheme.symbol.trim().is_empty() {
+            before |= column < start && column + wide > keep;
+            after |= column + wide > end;
+        }
+        column += wide;
+    }
+    // The marker takes the edge cell, so the window it frames is one narrower.
+    let left = start + usize::from(before);
+    let right = (end - usize::from(after)).max(left);
+
+    let mut kept = Vec::new();
+    let mut shown = Vec::new();
+    let mut lead = None;
+    let mut trail = None;
+    let mut column = 0;
+    for grapheme in line.styled_graphemes(Style::default()) {
+        let wide = grapheme.symbol.width();
+        let (from, to) = (column, column + wide);
+        column = to;
+        if from < keep {
+            let cells = to.min(keep) - from;
+            put(
+                &mut kept,
+                grapheme.symbol,
+                cells == wide,
+                cells,
+                grapheme.style,
+            );
+            continue;
+        }
+        // The cells the markers stand in, whose background they keep.
+        if (from..to).contains(&start) {
+            lead = Some(grapheme.style);
+        }
+        if (from..to).contains(&(end - 1)) {
+            trail = Some(grapheme.style);
+        }
+        let cells = to.min(right).saturating_sub(from.max(left));
+        if cells > 0 || (wide == 0 && (left..right).contains(&from)) {
+            put(
+                &mut shown,
+                grapheme.symbol,
+                cells == wide,
+                cells,
+                grapheme.style,
+            );
+        }
+    }
+
+    let mut spans = kept;
+    if before {
+        let style = lead.unwrap_or_default().patch(marker);
+        spans.push(Span::styled("‹", style));
+    }
+    spans.extend(shown);
+    if after {
+        let style = trail.unwrap_or_default().patch(marker);
+        spans.push(Span::styled("›", style));
+    }
+    Line::from(spans)
+}
+
+/// Adds a grapheme to `spans`, whole if it fits, or as `cells` blank cells
+/// where an edge cuts it.
+fn put(spans: &mut Vec<Span<'static>>, symbol: &str, whole: bool, cells: usize, style: Style) {
+    let blank;
+    let text = if whole {
+        symbol
+    } else {
+        blank = " ".repeat(cells);
+        blank.as_str()
+    };
+    match spans.last_mut() {
+        Some(last) if last.style == style => last.content.to_mut().push_str(text),
+        _ => spans.push(Span::styled(text.to_string(), style)),
+    }
 }
 
 /// Draws the pictures whose rows are on screen, over the blanks left for them.
@@ -468,7 +650,6 @@ fn draw_pictures(
     area: Rect,
     pictures: &[Picture],
     scroll: usize,
-    hscroll: usize,
 ) {
     for picture in pictures {
         // Where the top of the picture sits relative to the pane, which is
@@ -482,17 +663,12 @@ fn draw_pictures(
         let Ok(top) = i16::try_from(top) else {
             continue;
         };
-        // Pictures pan with the text around them, but only while they stay
-        // fully inside the pane: the graphics protocols slice by row, not by
-        // column, so a picture that has run off the left edge would be redrawn
-        // squashed against it rather than clipped. Dropping it is the honest
-        // answer, and panning is for reaching a wide table anyway — a picture
-        // pinned over that table is exactly what's in the way.
-        let left = i32::from(picture.indent) - hscroll as i32;
-        if left < 0 || left >= i32::from(area.width) {
+        // Pictures sit in the prose, which never pans, so they stay put
+        // while a wide table beside them moves.
+        if picture.indent >= area.width {
             continue;
         }
-        let Ok(left) = i16::try_from(left) else {
+        let Ok(left) = i16::try_from(picture.indent) else {
             continue;
         };
 
@@ -737,6 +913,7 @@ fn render_block(
 
         BlockKind::Quote(body) => {
             let mark = ctx.pictures.len();
+            let pans = ctx.pans.len();
             let mut inner = Vec::new();
             for child in body {
                 render_block(child, ctx, width.saturating_sub(2), 0, &mut inner);
@@ -744,6 +921,7 @@ fn render_block(
             // Every inner line gains a quote bar and lands after what is
             // already in `out`, so anything laid out inside moves with it.
             shift(&mut ctx.pictures[mark..], out.len(), indent as u16 + 2);
+            shift_pans(&mut ctx.pans[pans..], out.len(), indent + 2);
             for line in inner {
                 let mut spans = vec![
                     Span::raw(pad.clone()),
@@ -790,11 +968,13 @@ fn render_block(
             }
 
             let mark = ctx.pictures.len();
+            let pans = ctx.pans.len();
             let mut inner = Vec::new();
             for child in body {
                 render_block(child, ctx, width.saturating_sub(2), 0, &mut inner);
             }
             shift(&mut ctx.pictures[mark..], out.len(), indent as u16 + 2);
+            shift_pans(&mut ctx.pans[pans..], out.len(), indent + 2);
             for line in inner {
                 let mut spans = vec![
                     Span::raw(pad.clone()),
@@ -808,10 +988,12 @@ fn render_block(
         BlockKind::Code { lang, lines: code } => {
             // A Mermaid block is drawn as its diagram when it can be, and
             // shown as code otherwise.
+            let start = out.len();
             if lang.eq_ignore_ascii_case("mermaid")
                 && let Some(diagram) = mermaid::render(code, inner_width)
             {
                 diagram_lines(&diagram, palette, &pad, out);
+                note_pan(ctx, out, start, indent, width);
                 return;
             }
             let background = Style::default().bg(palette.code_bg);
@@ -821,21 +1003,41 @@ fn render_block(
                     background.fg(palette.text_faint),
                 )));
             }
+            let body = out.len();
             for line in code {
                 let mut spans = vec![Span::styled(format!("{pad} "), background)];
                 spans.extend(highlight(line, lang, palette, background));
-                // Pad to the pane width so the block reads as a filled panel.
-                let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
-                if used < width {
-                    spans.push(Span::styled(" ".repeat(width - used), background));
-                }
                 out.push(Line::from(spans));
             }
+            // Pad to the pane width so the block reads as a filled panel, or
+            // to its longest line, so the panel stays filled when panned.
+            let fill = out[body..]
+                .iter()
+                .map(Line::width)
+                .max()
+                .unwrap_or(0)
+                .max(width);
+            for line in &mut out[body..] {
+                let used = line.width();
+                if used < fill {
+                    line.spans
+                        .push(Span::styled(" ".repeat(fill - used), background));
+                }
+            }
+            note_pan(ctx, out, start, indent, width);
         }
 
-        BlockKind::Math(tex) => display_math(tex, palette, inner_width, &pad, out),
+        BlockKind::Math(tex) => {
+            let start = out.len();
+            display_math(tex, palette, inner_width, &pad, out);
+            note_pan(ctx, out, start, indent, width);
+        }
 
-        BlockKind::Table(table) => render_table(table, palette, &pad, out),
+        BlockKind::Table(table) => {
+            let start = out.len();
+            render_table(table, palette, &pad, out);
+            note_pan(ctx, out, start, indent, width);
+        }
 
         BlockKind::Rule => out.push(Line::from(Span::styled(
             format!("{pad}{}", "─".repeat(inner_width)),
@@ -998,6 +1200,30 @@ fn measure_picture(span: &markdown::Span, ctx: &mut Ctx, width: usize) -> Option
 fn width_hint(alias: &str) -> Option<u32> {
     let width = alias.split_once('x').map_or(alias, |(width, _)| width);
     width.trim().parse().ok().filter(|&pixels| pixels > 0)
+}
+
+/// Records the rows from `start` as a block that pans, if any of them is wider
+/// than the `width` it was laid out for.
+fn note_pan(ctx: &mut Ctx, out: &[Line], start: usize, keep: usize, width: usize) {
+    let widest = out[start..].iter().map(Line::width).max().unwrap_or(0);
+    if widest > width {
+        ctx.pans.push(Pan {
+            line: start,
+            rows: out.len() - start,
+            keep,
+            width: widest,
+        });
+    }
+}
+
+/// Moves wide blocks laid out in a nested buffer to where that buffer landed,
+/// behind `keep` more columns of bars that stay put.
+fn shift_pans(pans: &mut [Pan], lines: usize, keep: usize) {
+    for pan in pans {
+        pan.line += lines;
+        pan.keep += keep;
+        pan.width += keep;
+    }
 }
 
 /// Moves pictures laid out in a nested buffer to where that buffer landed.
@@ -2079,6 +2305,7 @@ mod tests {
             images: Some(images),
             pictures: Vec::new(),
             anchors: Vec::new(),
+            pans: Vec::new(),
         }
     }
 
@@ -2830,6 +3057,143 @@ mod tests {
                 Fence::Code
             ],
             "and an unclosed fence still runs to the end"
+        );
+    }
+
+    fn plain(line: &Line) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn panning_a_line_holds_its_indent_and_marks_both_edges() {
+        let line = Line::from(vec![Span::raw("> "), Span::raw("abcdefghijklmnop")]);
+        let marker = Style::default();
+
+        // Unpanned, only the far side is hidden, and the marker says so.
+        let shown = pan_line(&line, 2, 0, 10, marker);
+        assert_eq!(plain(&shown), "> abcdefg›");
+
+        // Panned, the indent stays and the content moves under it.
+        let shown = pan_line(&line, 2, 4, 10, marker);
+        assert_eq!(plain(&shown), "> ‹fghijk›");
+        assert_eq!(shown.width(), 10);
+
+        // At the end, only the near side is marked.
+        let shown = pan_line(&line, 2, 8, 10, marker);
+        assert_eq!(plain(&shown), "> ‹jklmnop");
+    }
+
+    #[test]
+    fn panning_never_splits_a_wide_character() {
+        let line = Line::from("漢字テキスト and then some more text");
+        for offset in 0..12 {
+            let shown = pan_line(&line, 0, offset, 9, Style::default());
+            assert_eq!(shown.width(), 9, "offset {offset}: {:?}", plain(&shown));
+            // Every visible character is whole: a cut one is blank cells.
+            let text = plain(&shown);
+            let whole = "漢字テキスト and then some more text";
+            for ch in text
+                .chars()
+                .filter(|ch| !ch.is_ascii() && !"‹›".contains(*ch))
+            {
+                assert!(whole.contains(ch), "{text:?}");
+            }
+        }
+        // Panned one column, the first character is cut in half, and goes.
+        // Panned one column, the marker takes the half of 漢 left showing, and
+        // ス, cut by the far edge, leaves a blank cell rather than half itself.
+        assert_eq!(
+            plain(&pan_line(&line, 0, 1, 9, Style::default())),
+            "‹字テキ ›"
+        );
+        // Emoji are two columns too.
+        let line = Line::from("abcd🎉efgh");
+        assert_eq!(plain(&pan_line(&line, 0, 0, 6, Style::default())), "abcd ›");
+    }
+
+    #[test]
+    fn a_marker_keeps_the_background_it_stands_on() {
+        let background = Style::default().bg(palette().code_bg);
+        let line = Line::from(Span::styled("x".repeat(40), background));
+        let shown = pan_line(&line, 0, 5, 10, Style::default().fg(palette().text_faint));
+        let first = shown.spans.first().expect("a marker");
+        assert_eq!(first.content, "‹");
+        assert_eq!(first.style.bg, background.bg);
+        assert_eq!(first.style.fg, Some(palette().text_faint));
+    }
+
+    #[test]
+    fn only_wide_blocks_pan_and_each_stops_at_its_own_edge() {
+        let vault = TempVault::new("render-pans");
+        let index = vault.index();
+        let source = format!(
+            "Prose that wraps nicely.\n\n```\n{}\n```\n\n```\n{}\n```\n",
+            "x".repeat(30),
+            "z".repeat(60),
+        );
+        let document = markdown::parse(&source);
+        let palette = palette();
+        let mut ctx = Ctx::text(&palette, &index);
+        let lines = render_document(&document, &mut ctx, 20);
+        assert_eq!(ctx.pans.len(), 2, "the prose is not a wide block");
+
+        let shown = visible_lines(&lines, &ctx.pans, 0, lines.len(), 25, 20, &palette);
+        let rows: Vec<String> = shown.iter().map(plain).collect();
+        assert_eq!(rows[0], plain(&lines[0]), "prose stays put: {rows:#?}");
+        let short = rows
+            .iter()
+            .find(|row| row.contains('x'))
+            .expect("first block");
+        let long = rows
+            .iter()
+            .find(|row| row.contains('z'))
+            .expect("second block");
+        // 31 columns of block in 20 of pane leaves 11 to pan, not 25.
+        assert!(short.starts_with('‹') && !short.ends_with('›'), "{short:?}");
+        assert!(long.starts_with('‹') && long.ends_with('›'), "{long:?}");
+
+        // Panning is held to the blocks in view.
+        let first = ctx.pans[0].line;
+        assert_eq!(pan_room(&ctx.pans, first, 1, 20), ctx.pans[0].width - 20);
+        assert_eq!(pan_room(&ctx.pans, 0, 1, 20), 0, "nothing wide on row 0");
+        assert_eq!(
+            pan_room(&ctx.pans, 0, lines.len(), 20),
+            ctx.pans[1].width - 20
+        );
+    }
+
+    #[test]
+    fn a_wide_block_in_a_quote_pans_behind_its_bar() {
+        let vault = TempVault::new("render-pans-quote");
+        let index = vault.index();
+        let source = format!("> ```\n> {}\n> ```\n", "q".repeat(50));
+        let document = markdown::parse(&source);
+        let palette = palette();
+        let mut ctx = Ctx::text(&palette, &index);
+        let lines = render_document(&document, &mut ctx, 20);
+        let pan = ctx.pans.first().expect("a wide block").clone();
+        assert_eq!(pan.keep, 2, "the bar and its space stay put");
+
+        let shown = visible_lines(&lines, &ctx.pans, 0, lines.len(), 10, 20, &palette);
+        let row = plain(&shown[pan.line]);
+        assert!(row.starts_with('▎'), "{row:?}");
+        assert_eq!(row.chars().nth(2), Some('‹'), "{row:?}");
+    }
+
+    #[test]
+    fn a_wide_code_block_stays_filled_when_panned() {
+        let vault = TempVault::new("render-code-fill");
+        let index = vault.index();
+        let source = format!("```\n{}\nshort\n```\n", "c".repeat(50));
+        let document = markdown::parse(&source);
+        let lines = render_document(&document, &mut Ctx::text(&palette(), &index), 20);
+        let widths: Vec<usize> = lines.iter().map(Line::width).collect();
+        assert_eq!(
+            widths[0], widths[1],
+            "the short line is filled to the long one"
         );
     }
 }
