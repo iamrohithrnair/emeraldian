@@ -265,7 +265,11 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         &[
             ("Ctrl+E", "Toggle reading and editing"),
             ("j / k", "Scroll while reading"),
-            ("h / l", "Pan across a wide table while reading"),
+            (
+                "h / l, 0 / $",
+                "Pan a wide table, code or diagram while reading",
+            ),
+            ("Shift+wheel", "Pan sideways too, as does a trackpad"),
             ("g / G", "Top / bottom of the note"),
             ("Ctrl+N", "New note"),
             ("Ctrl+S", "Save"),

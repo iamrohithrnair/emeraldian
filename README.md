@@ -149,6 +149,7 @@ full list in the app.
 | `F3` / `F4` | Close the tab (`Ctrl+F4` too) / vim mode on / off |
 | `F5` / `Ctrl+R` | Reload the vault from disk |
 | `F8` | Focus mode: the note alone, centred, with the sidebars hidden |
+| `h` / `l`, `0` / `$` | While reading, pan a table, code block or diagram too wide for the pane; `‹` and `›` mark the edges with more beyond |
 
 In the editor: `↑`/`↓`, `Home` and `End` follow the rows on screen, so a wrapped
 paragraph moves through a line at a time as it looks rather than as it is stored.
@@ -325,6 +326,7 @@ The ribbon icons are buttons, and most of the UI is clickable:
 | A graph node | Selects it |
 | Text in the editor | Places the cursor; drag to select |
 | Scroll wheel | Scrolls the pane under the pointer, not the focused one |
+| `Shift`+wheel, or sideways on a trackpad | Pans the wide tables, code and diagrams of the note you're reading |
 
 ## Features
 
@@ -357,7 +359,7 @@ Flowcharts (`graph` and `flowchart`, in all four directions, with their node
 shapes, dotted and thick links and words on the links) and sequence diagrams
 (messages, notes, `loop` and `alt` blocks) are drawn. A sideways flowchart too
 wide for the pane is turned to run downwards, and anything still wider pans
-like a wide table. Any other kind of diagram, or one it can't read, stays as
+like a wide table, while the prose around it stays put. Any other kind of diagram, or one it can't read, stays as
 code. Each diagram is drawn once and kept, so scrolling past fifty costs
 nothing extra.
 

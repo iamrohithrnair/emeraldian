@@ -14,7 +14,7 @@ use crate::modal::{Modal, PickerKind, Prompt, PromptIntent};
 use crate::ui::panes::{SidebarTarget, sidebar_targets};
 
 /// Columns moved per keypress when panning a wide table sideways.
-const PAN_STEP: isize = 4;
+pub const PAN_STEP: isize = 4;
 
 /// Whose keyboard conventions to follow.
 ///
@@ -655,8 +655,9 @@ fn handle_reading(app: &mut App, key: KeyEvent) {
             tab.scroll = (tab.scroll as isize + delta).max(0) as usize;
         }
     };
-    // Panning across a wide table. The draw pass clamps this to the content's
-    // width, which is the only place the width is known.
+    // Panning across a wide table, code block or diagram. The draw pass
+    // clamps this to the blocks on screen, which is the only place their
+    // width is known.
     let pan = |app: &mut App, delta: isize| {
         if let Some(tab) = app.active_mut() {
             tab.hscroll = (tab.hscroll as isize + delta).max(0) as usize;
@@ -668,6 +669,9 @@ fn handle_reading(app: &mut App, key: KeyEvent) {
         KeyCode::Char('k') | KeyCode::Up => step(app, -1),
         KeyCode::Char('l') | KeyCode::Right => pan(app, PAN_STEP),
         KeyCode::Char('h') | KeyCode::Left => pan(app, -PAN_STEP),
+        // The start and end of a line, as in vim and `less`.
+        KeyCode::Char('0') => pan(app, isize::MIN / 2),
+        KeyCode::Char('$') => pan(app, isize::MAX / 2),
         KeyCode::PageDown | KeyCode::Char(' ') => step(app, 15),
         KeyCode::PageUp => step(app, -15),
         KeyCode::Char('g') | KeyCode::Home => {
@@ -1407,6 +1411,24 @@ mod tests {
         // scrolled sideways when you asked for the start of it is disorienting.
         handle(&mut app, key(KeyCode::Right));
         handle(&mut app, key(KeyCode::Char('g')));
+        assert_eq!(app.active().unwrap().hscroll, 0);
+    }
+
+    #[test]
+    fn zero_and_dollar_pan_to_the_ends_and_each_note_starts_at_the_left() {
+        let (_v, mut app) = app();
+        let a = app.index.id_of_rel("A.md").unwrap();
+        let b = app.index.id_of_rel("B.md").unwrap();
+        app.open_note(a);
+
+        handle(&mut app, key(KeyCode::Char('$')));
+        assert!(app.active().unwrap().hscroll > 1_000, "the draw clamps it");
+        handle(&mut app, key(KeyCode::Char('0')));
+        assert_eq!(app.active().unwrap().hscroll, 0);
+
+        // Another note opens at its own left edge, not where the last was left.
+        handle(&mut app, key(KeyCode::Char('l')));
+        app.open_note(b);
         assert_eq!(app.active().unwrap().hscroll, 0);
     }
 

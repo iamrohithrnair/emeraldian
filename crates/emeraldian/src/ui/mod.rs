@@ -21,7 +21,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Widget};
 
-use crate::app::{Action, App, Focus, Regions, View};
+use crate::app::{Action, App, Focus, Mode, Regions, View};
 use crate::modal::Modal;
 
 /// Glyphs used across the UI.
@@ -115,7 +115,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let show_hints = app.config.ui.show_hints && area.height >= 8;
     let hint_rows = if show_hints {
         hint_lines(
-            &hints(app),
+            &hints(app, app.regions.pan),
             &palette,
             area.width as usize,
             if area.height >= 10 { 2 } else { 1 },
@@ -198,6 +198,19 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     if show_hints {
+        // Laid out again now the note is drawn, since whether there is
+        // anything to pan is only known once it is. The rows were counted
+        // from the last frame's answer, which is nearly always the same one.
+        let hint_rows = if (regions.pan > 0) == (app.regions.pan > 0) {
+            hint_rows
+        } else {
+            hint_lines(
+                &hints(app, regions.pan),
+                &palette,
+                area.width as usize,
+                hint_rows.len(),
+            )
+        };
         draw_hints(frame, &palette, rows[2], hint_rows);
     }
     // A vim `:` or `/` takes over the status row, which is where every editor
@@ -242,7 +255,11 @@ fn readable(pane: Rect) -> Rect {
 ///
 /// Placed near the front, because the bar drops what doesn't fit from the
 /// end, and the way back out of focus mode must not be what goes.
-fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
+///
+/// `pan` is how far the note on screen can pan sideways. Panning is offered
+/// only while there is a wide block in view to pan, which is exactly when
+/// someone looks for how to reach the rest of it.
+fn hints(app: &App, pan: usize) -> Vec<(&'static str, &'static str)> {
     let mut hints = hints_for(app).to_vec();
     if app.modal.is_none() {
         let label = if app.focus_mode {
@@ -251,6 +268,10 @@ fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
             "focus"
         };
         hints.insert(hints.len().min(2), ("F8", label));
+        let reading = app.active().is_some_and(|tab| tab.mode == Mode::Reading);
+        if pan > 0 && reading && app.focus == Focus::Note && app.view == View::Notes {
+            hints.insert(hints.len().min(3), ("h/l", "pan"));
+        }
     }
     // There is only the one pane to be in.
     if app.focus_mode {
@@ -1235,6 +1256,81 @@ mod tests {
         );
     }
 
+    /// A note with prose, a table too wide for a 100-column screen, and
+    /// enough prose after it to scroll the table out of view.
+    fn wide_table_app() -> (TempVault, App) {
+        let vault = TempVault::new("pan-blocks");
+        let header: Vec<String> = (0..10).map(|i| format!("column {i}")).collect();
+        let cells: Vec<String> = (0..10).map(|i| format!("cell {i}")).collect();
+        vault.write(
+            "Wide.md",
+            &format!(
+                "# Wide\n\nOpening prose stays where it is.\n\n| {} |\n|{}|\n| {} |\n\n{}",
+                header.join(" | "),
+                "---|".repeat(10),
+                cells.join(" | "),
+                "Filler line.\n\n".repeat(60),
+            ),
+        );
+        let mut app = App::new(vault.vault(), Config::default()).expect("app");
+        let wide = app.index.id_of_rel("Wide.md").expect("indexed");
+        app.open_note(wide);
+        (vault, app)
+    }
+
+    #[test]
+    fn panning_moves_the_wide_table_but_not_the_prose() {
+        for focus in [false, true] {
+            let (_vault, mut app) = wide_table_app();
+            app.focus_mode = focus;
+            let column = |screen: &[String], text: &str| {
+                screen
+                    .iter()
+                    .find_map(|row| row.find(text).map(|at| row[..at].chars().count()))
+            };
+            let before = render(&mut app, 100, 30);
+            let prose = column(&before, "Opening prose").expect("prose on screen");
+            assert!(
+                before.join("\n").contains("h/l pan"),
+                "the hint bar offers panning while a wide table is in view"
+            );
+
+            app.active_mut().expect("tab").hscroll = 8;
+            let after = render(&mut app, 100, 30);
+            assert_eq!(
+                column(&after, "Opening prose"),
+                Some(prose),
+                "prose stays put (focus mode {focus})"
+            );
+            let table = after
+                .iter()
+                .find(|row| row.contains("olumn 1"))
+                .expect("the table");
+            assert!(table.contains('‹'), "more to the left is marked: {table}");
+            assert!(table.contains('›'), "and more to the right: {table}");
+            assert!(!table.contains("column 0"), "the table moved: {table}");
+        }
+    }
+
+    #[test]
+    fn panning_settles_back_once_the_wide_table_scrolls_away() {
+        let (_vault, mut app) = wide_table_app();
+        app.active_mut().expect("tab").hscroll = 10_000;
+        render(&mut app, 100, 30);
+        let held = app.active().expect("tab").hscroll;
+        assert!(
+            held > 0 && held < 100,
+            "held to the table's overflow: {held}"
+        );
+
+        // Scrolled to the filler below, there is nothing to pan, and nothing
+        // offered.
+        app.active_mut().expect("tab").scroll = 40;
+        let screen = render(&mut app, 100, 30).join("\n");
+        assert_eq!(app.active().expect("tab").hscroll, 0);
+        assert!(!screen.contains("h/l pan"), "{screen}");
+    }
+
     #[test]
     fn the_graph_records_its_canvas_bounds_for_hit_testing() {
         let (_vault, mut app) = demo_app();
@@ -1829,11 +1925,11 @@ mod tests {
     #[test]
     fn the_hint_bar_offers_focus_mode_and_the_way_back_out() {
         let (_vault, mut app) = demo_app();
-        assert!(hints(&app).contains(&("F8", "focus")));
+        assert!(hints(&app, 0).contains(&("F8", "focus")));
         crate::actions::dispatch(&mut app, crate::app::Action::ToggleFocusMode);
-        assert!(hints(&app).contains(&("F8", "exit focus")));
+        assert!(hints(&app, 0).contains(&("F8", "exit focus")));
         assert!(
-            !hints(&app).iter().any(|(key, _)| *key == "Tab"),
+            !hints(&app, 0).iter().any(|(key, _)| *key == "Tab"),
             "Tab has no other pane to go to"
         );
         let bar = render(&mut app, 100, 40).join("\n");

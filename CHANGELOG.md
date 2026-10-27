@@ -21,6 +21,21 @@ All notable changes to this project are documented here. The format follows
   smoothly as before. Other kinds of diagram, and any it can't read, stay as
   code, just as they were.
 
+### Fixed
+
+- **Wide diagrams, tables and code scroll sideways properly.** A diagram or
+  table wider than the pane looked cut off at the edge. Only `h` and `l`
+  reached the rest, they slid the whole note sideways with it, and nothing on
+  screen said there was more to see. Now `h` and `l` (or the arrow keys) pan
+  just the wide blocks, `0` and `$` jump to either end, and `Shift` with the
+  wheel or a sideways swipe on a trackpad does the same with the mouse. The
+  prose around them stays where you were reading it. `‹` and `›` at the edges show when there is more to one side, the hint
+  bar offers `h/l pan` whenever a wide block is on screen, and characters two
+  columns wide, like Chinese, Japanese or emoji, are never cut in half. It
+  works the same in focus mode, each note starts at its left edge, and
+  panning only slices the lines already laid out, so a diagram is never
+  drawn twice.
+
 ### Changed
 
 - **A note is on screen at once, however big its folder.** Emeraldian used

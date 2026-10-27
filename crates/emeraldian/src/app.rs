@@ -351,6 +351,9 @@ pub struct Regions {
     /// Which rendered row each block of the reading pane started on, as
     /// `(source line, row)`, so the outline can scroll to a heading.
     pub anchors: Vec<(usize, usize)>,
+    /// How far the wide blocks on screen in the reading pane can pan
+    /// sideways, in columns. Nothing to pan is 0.
+    pub pan: usize,
     pub main: Option<Rect>,
     pub chat: Option<Rect>,
     /// The graph canvas with its coordinate bounds, for hit-testing nodes.
