@@ -253,19 +253,38 @@ fn draw_tab_bar(
     let mut spans = Vec::new();
     let mut x = area.x;
     for (index, tab) in app.tabs.iter().enumerate() {
+        if x >= area.right() {
+            // Past the edge: nothing of it is drawn, so nothing can be clicked.
+            break;
+        }
         let active = app.active_tab == Some(index);
         let title = app.note_title(tab.note);
         let title = truncate(&title, 22);
+        let title_width = title.width() as u16;
 
-        // `" {title}"` plus the two-column modified marker.
-        let width = title.chars().count() as u16 + 3;
+        // `" {title}"`, then the close button with a space either side. A
+        // tab with unsaved changes shows a dot there instead, as Obsidian and
+        // VS Code do, and the dot closes it all the same.
+        let width = title_width + 4;
+        let clip = |rect: Rect| rect.intersection(area);
         regions.tabs.push((
-            Rect {
+            clip(Rect {
                 x,
                 y: area.y,
                 width,
                 height: 1,
-            },
+            }),
+            index,
+        ));
+        // The glyph and the space after it: two columns are an easier target
+        // than one, and the space before it still belongs to the title.
+        regions.tab_close.push((
+            clip(Rect {
+                x: x + 1 + title_width + 1,
+                y: area.y,
+                width: 2,
+                height: 1,
+            }),
             index,
         ));
         x += width;
@@ -287,18 +306,14 @@ fn draw_tab_bar(
         } else {
             spans.push(Span::styled(format!(" {title}"), style));
         }
-        // Obsidian marks an unsaved tab with a dot where the close button goes.
+        let (glyph, colour) = if tab.is_modified() {
+            (icons::MODIFIED, palette.tab_modified)
+        } else {
+            (icons::CLOSE, palette.tab_inactive_fg)
+        };
         spans.push(Span::styled(
-            if tab.is_modified() {
-                format!(" {} ", icons::MODIFIED)
-            } else {
-                "  ".to_string()
-            },
-            style.fg(if tab.is_modified() {
-                palette.tab_modified
-            } else {
-                palette.tab_inactive_fg
-            }),
+            format!(" {glyph} "),
+            style.fg(colour).remove_modifier(Modifier::BOLD),
         ));
     }
 

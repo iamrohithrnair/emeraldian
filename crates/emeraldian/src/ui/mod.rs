@@ -34,6 +34,8 @@ pub mod icons {
     pub const FOLDER_CLOSED: &str = "▸";
     pub const NOTE: &str = "·";
     pub const MODIFIED: &str = "●";
+    /// A tab's close button.
+    pub const CLOSE: &str = "×";
     pub const SEARCH: &str = "⌕";
     pub const GRAPH: &str = "◈";
     pub const FILES: &str = "≡";
@@ -1196,6 +1198,36 @@ mod tests {
     }
 
     #[test]
+    fn every_tab_draws_its_close_button_where_it_can_be_clicked() {
+        let (_vault, mut app) = demo_app();
+        let screen = render(&mut app, 160, 40);
+        for (rect, _) in &app.regions.tab_close {
+            let row: Vec<char> = screen[rect.y as usize].chars().collect();
+            assert_eq!(row[rect.x as usize], '×', "{}", screen[rect.y as usize]);
+        }
+    }
+
+    #[test]
+    fn a_wide_title_keeps_its_close_button_whole() {
+        let (vault, mut app) = demo_app();
+        vault.write("漢字のノート.md", "# 漢字\n");
+        app.index = emeraldian_core::index::VaultIndex::build(
+            vault.vault(),
+            emeraldian_core::vault::ScanOptions::default(),
+        )
+        .expect("index");
+        let id = app.index.id_of_rel("漢字のノート.md").expect("indexed");
+        app.open_note(id);
+        let screen = render(&mut app, 160, 40);
+        let (close, _) = *app.regions.tab_close.last().expect("a close button");
+        let row = &screen[close.y as usize];
+        // One character per cell, a wide one followed by the blank cell it
+        // spills into, so the button's column is its place in the row.
+        let glyph = row.chars().nth(close.x as usize);
+        assert_eq!(glyph, Some('×'), "{row}");
+    }
+
+    #[test]
     fn drawing_records_clickable_regions() {
         let (_vault, mut app) = demo_app();
         app.config.ui.show_chat = true;
@@ -1204,6 +1236,11 @@ mod tests {
         let regions = &app.regions;
         assert_eq!(regions.ribbon.len(), 6, "every ribbon icon is a button");
         assert_eq!(regions.tabs.len(), app.tabs.len());
+        assert_eq!(
+            regions.tab_close.len(),
+            app.tabs.len(),
+            "each tab has a close button"
+        );
         assert_eq!(regions.side_tabs.len(), 3);
         assert!(regions.explorer.is_some());
         assert!(regions.sidebar.is_some());

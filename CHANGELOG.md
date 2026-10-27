@@ -6,12 +6,27 @@ All notable changes to this project are documented here. The format follows
 
 ## [0.10.0]
 
+### Added
+
+- **Tabs close with the mouse.** Each tab has a `×` after its name, and a
+  click on it closes that tab, whichever one you are looking at, just as `F3`
+  would: a note with unsaved changes is saved first when auto-save is on. A
+  middle click anywhere on a tab closes it too, as in a browser. A tab with
+  unsaved changes shows a `●` in place of the `×`, which closes it all the
+  same.
+
 ### Changed
 
 - **Focus mode gives the note the screen.** `F8` hid the sidebars but kept
   the note at a hundred columns, so on a wide terminal it sat in a narrow
   strip with empty space either side. It now spreads across 90% of the
   width, centred, and a terminal of 80 columns or fewer keeps all of it.
+
+### Fixed
+
+- **Tabs with Chinese, Japanese or emoji in their names line up.** The tab
+  bar measured names by their characters rather than the columns they fill,
+  so a click on a tab after one of them could land on the wrong tab.
 
 ## [0.9.1] — 2026-10-27
 
