@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2]
+
+### Changed
+
+- **Focus mode gives the note the screen.** `F8` hid the sidebars but kept
+  the note at a hundred columns, so on a wide terminal it sat in a narrow
+  strip with empty space either side. It now spreads across 90% of the
+  width, centred, and a terminal of 80 columns or fewer keeps all of it.
+
 ## [0.9.1] — 2026-10-27
 
 Emeraldian starts inside tmux again. Nothing else changes from 0.9.0.
