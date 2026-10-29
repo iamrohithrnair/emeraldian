@@ -35,6 +35,7 @@ mod class;
 mod flowchart;
 mod layered;
 mod sequence;
+mod state;
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -221,6 +222,7 @@ fn draw(lines: &[String], width: usize) -> Option<Diagram> {
         "sequenceDiagram" => sequence::draw(&sequence::parse(rest)?),
         kind if c4::is_kind(kind) => c4::draw(&c4::parse(rest, kind == "C4Dynamic")?, width),
         "classDiagram" | "classDiagram-v2" => class::draw(&class::parse(rest)?),
+        "stateDiagram" | "stateDiagram-v2" => state::draw(&state::parse(rest)?, width),
         _ => None,
     }
 }

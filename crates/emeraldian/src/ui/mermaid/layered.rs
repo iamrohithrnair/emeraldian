@@ -139,6 +139,9 @@ pub struct Graph {
     /// of its own when the graph runs sideways, as they are always made wide
     /// enough to give each a column when it runs down or up.
     pub spread: bool,
+    /// Boxes drawn as a single mark, such as a state diagram's start, which
+    /// every line meets in the middle rather than at a place of its own.
+    pub points: Vec<bool>,
 }
 
 impl Graph {
@@ -153,6 +156,7 @@ impl Graph {
             labels: Vec::new(),
             room: 0,
             spread: false,
+            points: Vec::new(),
         }
     }
 }
@@ -540,7 +544,9 @@ pub fn layout(graph: &Graph) -> Option<Layout> {
             }
         }
         for (at, (out, into)) in ends.into_iter().enumerate() {
-            places[at].across = places[at].across.max(2 * out.max(into) + 1);
+            if !graph.points.get(at).copied().unwrap_or(false) {
+                places[at].across = places[at].across.max(2 * out.max(into) + 1);
+            }
         }
     }
 
@@ -563,8 +569,8 @@ pub fn layout(graph: &Graph) -> Option<Layout> {
     position(&mut places, &layers, &above, &below, &gaps);
     let mut sides: Vec<Option<(i64, i64)>> = vec![None; chains.len()];
     if framed {
-        let widths = label_widths(graph, &places, &place_chains, &above, &span, across_flow);
-        sides = separate(&mut places, &layers, &place_chains, &gaps, &chains, &widths)?;
+        let labels = label_room(graph, &places, &place_chains, &above, &span, across_flow);
+        sides = separate(&mut places, &layers, &place_chains, &gaps, &chains, &labels)?;
     }
     let least = places
         .iter()
@@ -579,7 +585,7 @@ pub fn layout(graph: &Graph) -> Option<Layout> {
         *left -= least;
         *right -= least;
     }
-    let lanes = route(&places, &mut segments, &layers);
+    let lanes = route(&places, &mut segments, &layers, &graph.points);
 
     // How many frames open just before each rank and close just after it,
     // one inside another, each of which takes two rows: its edge and a
@@ -900,18 +906,19 @@ fn compare(a: &[(f64, usize)], b: &[(f64, usize)]) -> Ordering {
     a.len().cmp(&b.len())
 }
 
-/// How wide each frame must be to show its label along its top edge, when
-/// the graph runs down or up. A frame with one box in its first rank, which
-/// a line comes into from outside, is crossed at that box's middle, so its
-/// label has to fit beside the crossing rather than along the whole edge.
-fn label_widths(
+/// What each frame's label needs along its top edge, when the graph runs
+/// down or up: the columns it takes, and the one place in the frame's first
+/// rank, if there is just one and a line comes into it from outside. That
+/// line crosses the top edge at the place's middle, so the label has to fit
+/// to the left of it.
+fn label_room(
     graph: &Graph,
     places: &[Place],
     chains: &[&[usize]],
     above: &[Vec<usize>],
     span: &[Option<(usize, usize)>],
     across_flow: bool,
-) -> Vec<i64> {
+) -> Vec<(i64, Option<usize>)> {
     let frames = span.len();
     let mut first: Vec<Vec<usize>> = vec![Vec::new(); frames];
     for (p, place) in places.iter().enumerate() {
@@ -925,22 +932,13 @@ fn label_widths(
         .map(|f| {
             let label = graph.labels.get(f).copied().unwrap_or(0).min(LABEL_ROOM);
             if across_flow || label == 0 {
-                return 0;
+                return (0, None);
             }
-            let mut wanted = label + 6;
-            if let [only] = first[f][..]
-                && above[only].iter().any(|&from| !chains[from].contains(&f))
-            {
-                // The frames between this one and the box, whose sides take
-                // two columns each.
-                let chain = chains[only];
-                let inner = chain
-                    .iter()
-                    .position(|&g| g == f)
-                    .map_or(0, |at| chain.len() - at - 1);
-                wanted = wanted.max(label + 8 + places[only].across / 2 + 2 * inner);
-            }
-            wanted as i64
+            let crossed = match first[f][..] {
+                [only] if above[only].iter().any(|&from| !chains[from].contains(&f)) => Some(only),
+                _ => None,
+            };
+            (label as i64, crossed)
         })
         .collect()
 }
@@ -1159,7 +1157,7 @@ fn separate(
     chains: &[&[usize]],
     gaps: &[Vec<i64>],
     frames: &[Vec<usize>],
-    widths: &[i64],
+    labels: &[(i64, Option<usize>)],
 ) -> Option<Vec<Option<(i64, i64)>>> {
     let count = places.len();
     let left = |f: usize| count + 2 * f;
@@ -1286,17 +1284,30 @@ fn separate(
         value
     };
     let mut value = solve(&room);
-    // A frame too narrow for its label is given more room inside its left
-    // side, which moves what it holds, its right side and everything after
-    // it along. Widening one can only widen those around it, so a few rounds
-    // settle it.
+    // A frame too narrow for its label, along the whole of its top edge or
+    // to the left of the line crossing it, is given more room inside its
+    // left side, which moves what it holds, its right side and everything
+    // after it along. Widening one can only widen those around it, so a few
+    // rounds settle it.
     for _ in 0..4 {
         let mut widened = false;
-        for (f, &wanted) in widths.iter().enumerate() {
-            if let (Some(l), Some(r)) = (value[left(f)], value[right(f)])
-                && r - l + 1 < wanted
+        for (f, &(label, crossed)) in labels.iter().enumerate() {
+            let (Some(l), Some(r)) = (value[left(f)], value[right(f)]) else {
+                continue;
+            };
+            if label == 0 {
+                continue;
+            }
+            // The label is written two columns in, with a blank either side.
+            let mut short = (label + 6) - (r - l + 1);
+            if let Some(p) = crossed
+                && let Some(at) = value[p]
             {
-                room[f] += wanted - (r - l + 1);
+                let crossing = at + places[p].across as i64 / 2;
+                short = short.max((l + 2 + label + 2) - crossing);
+            }
+            if short > 0 {
+                room[f] += short;
                 widened = true;
             }
         }
@@ -1319,7 +1330,12 @@ fn separate(
 
 /// Picks where each segment leaves and arrives, spread along the side of a
 /// box, and the lane it turns in. Returns how many lanes each gap needs.
-fn route(places: &[Place], segments: &mut [Segment], layers: &[Vec<usize>]) -> Vec<usize> {
+fn route(
+    places: &[Place],
+    segments: &mut [Segment],
+    layers: &[Vec<usize>],
+    points: &[bool],
+) -> Vec<usize> {
     let mut leaving: Vec<Vec<usize>> = vec![Vec::new(); places.len()];
     let mut arriving: Vec<Vec<usize>> = vec![Vec::new(); places.len()];
     for (at, s) in segments.iter().enumerate() {
@@ -1330,6 +1346,7 @@ fn route(places: &[Place], segments: &mut [Segment], layers: &[Vec<usize>]) -> V
     // other end, so edges leaving one box don't cross each other.
     let port = |place: &Place, k: usize, n: usize| -> i64 {
         match place.kind {
+            Kind::Node(at) if points.get(at).copied().unwrap_or(false) => place.centre(),
             Kind::Node(_) if place.across > 2 => {
                 let inside = (place.across - 2) as i64;
                 place.at + 1 + (inside * (2 * k as i64 + 1)) / (2 * n as i64)
