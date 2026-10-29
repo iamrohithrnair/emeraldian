@@ -436,6 +436,13 @@ impl Format {
         let mut at = 0;
         while at < chars.len() {
             let c = chars[at];
+            // Anything but a letter stands for itself. Only a letter's run is
+            // counted, once for the whole run, not again at each character.
+            if !c.is_alphabetic() {
+                pieces.push(Piece::Literal(c));
+                at += 1;
+                continue;
+            }
             let run = chars[at..].iter().take_while(|&&d| d == c).count();
             let piece = match (c, run) {
                 ('Y', 4) => Piece::Year,
@@ -448,12 +455,7 @@ impl Format {
                 ('S', 1..=3) => Piece::Milli,
                 ('X', 1) => Piece::Unix,
                 ('x', 1) => Piece::UnixMilli,
-                (c, _) if c.is_alphabetic() => return None,
-                (c, _) => {
-                    pieces.push(Piece::Literal(c));
-                    at += 1;
-                    continue;
-                }
+                _ => return None,
             };
             pieces.push(piece);
             at += run;
