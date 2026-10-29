@@ -50,24 +50,33 @@ fn text(raw: &str) -> String {
     }
     let text = text.trim_matches('`');
     let mut plain = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(open) = rest.find('<') {
-        plain.push_str(&rest[..open]);
-        let tag = &rest[open..];
-        match tag.find('>') {
-            Some(close) if is_tag(&tag[1..close]) => {
-                if tag[1..close].trim().to_ascii_lowercase().starts_with("br") {
-                    plain.push('\n');
-                }
-                rest = &tag[close + 1..];
+    let mut rest = 0;
+    // The first `>` after the `<` being read, or the end for none, looked
+    // for again only once a `<` is past it, so a run of `<` isn't each
+    // followed to the end.
+    let mut close = 0;
+    while let Some(open) = text[rest..].find('<').map(|at| rest + at) {
+        plain.push_str(&text[rest..open]);
+        if close <= open {
+            close = text[open..].find('>').map_or(text.len(), |at| open + at);
+        }
+        let inside = (close < text.len())
+            .then(|| &text[open + 1..close])
+            .filter(|inside| is_tag(inside));
+        if let Some(inside) = inside {
+            if inside
+                .get(..2)
+                .is_some_and(|name| name.eq_ignore_ascii_case("br"))
+            {
+                plain.push('\n');
             }
-            _ => {
-                plain.push('<');
-                rest = &tag[1..];
-            }
+            rest = close + 1;
+        } else {
+            plain.push('<');
+            rest = open + 1;
         }
     }
-    plain.push_str(rest);
+    plain.push_str(&text[rest..]);
     plain
         .replace("**", "")
         .replace("&quot;", "\"")
