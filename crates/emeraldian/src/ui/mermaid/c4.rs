@@ -595,12 +595,22 @@ pub fn draw(c4: &C4, width: usize) -> Option<Diagram> {
         let head = c4.elements[rel.from].ink(Role::Arrow, rel.from);
         let join = c4.elements[end.node].ink(Role::Border, end.node);
         if end.leaving {
-            canvas.put(end.border.0, end.border.1, end.facing.join(), join);
+            canvas.put(
+                end.border.0,
+                end.border.1,
+                layered::join(&canvas, end),
+                join,
+            );
         }
         if arrow {
             canvas.put(end.outside.0, end.outside.1, end.facing.arrow(), head);
         } else if !end.leaving {
-            canvas.put(end.border.0, end.border.1, end.facing.join(), join);
+            canvas.put(
+                end.border.0,
+                end.border.1,
+                layered::join(&canvas, end),
+                join,
+            );
         }
     }
     for (at, frame) in c4.frames.iter().enumerate() {

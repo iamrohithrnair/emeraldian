@@ -727,7 +727,8 @@ pub fn draw(diagram: &ClassDiagram) -> Option<Diagram> {
         let mark = if end.to { relation.head } else { relation.tail };
         let join = ink(Role::Border, end.node);
         if end.leaving || mark.is_none() {
-            canvas.put(end.border.0, end.border.1, end.facing.join(), join);
+            let glyph = layered::join(&canvas, end);
+            canvas.put(end.border.0, end.border.1, glyph, join);
         }
         if let Some(mark) = mark {
             let glyph = glyph(mark, end.facing);

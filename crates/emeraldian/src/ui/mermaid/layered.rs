@@ -312,6 +312,18 @@ impl Layout {
     }
 }
 
+/// The piece of a box's outline to draw where a line meets it: a cross
+/// where it meets the end of a rule between two compartments, which a line
+/// can when the graph runs sideways.
+#[must_use]
+pub fn join(canvas: &Canvas, end: &End) -> char {
+    let (x, y) = end.border;
+    match (canvas.glyph(x, y), end.facing) {
+        (Some('├' | '┤'), Facing::Left | Facing::Right) => '┼',
+        _ => end.facing.join(),
+    }
+}
+
 /// Writes lines of text centred in a band `width` columns wide.
 pub fn centred(canvas: &mut Canvas, x: usize, y: usize, width: usize, lines: &[String], ink: Ink) {
     use unicode_width::UnicodeWidthStr;

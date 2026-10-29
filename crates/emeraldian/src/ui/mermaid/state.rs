@@ -568,7 +568,7 @@ pub fn draw(diagram: &StateDiagram, width: usize) -> Option<Diagram> {
         // A start or end has no outline to join, and a bar is joined below.
         let joins = !matches!(state.kind, Kind::Start | Kind::End);
         if joins && (end.leaving || !arrow) {
-            let glyph = join(state.kind, end.facing);
+            let glyph = join(state.kind, &canvas, end);
             if joinable(state, end.border, placed.boxes[end.node], across) {
                 canvas.put(
                     end.border.0,
@@ -615,11 +615,11 @@ fn joinable(state: &State, cell: (usize, usize), rect: layered::Rect, across: bo
 }
 
 /// The piece of a state's outline, or its bar, where a line meets it.
-fn join(kind: Kind, facing: Facing) -> char {
+fn join(kind: Kind, canvas: &Canvas, end: &layered::End) -> char {
     if kind != Kind::Fork {
-        return facing.join();
+        return layered::join(canvas, end);
     }
-    match facing {
+    match end.facing {
         Facing::Down => '┻',
         Facing::Up => '┳',
         Facing::Right => '┫',

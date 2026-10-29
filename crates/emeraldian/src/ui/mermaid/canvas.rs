@@ -100,6 +100,17 @@ impl Canvas {
         column - x
     }
 
+    /// The character a cell holds, if it holds one rather than a line.
+    pub fn glyph(&self, x: usize, y: usize) -> Option<char> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        match self.cells[y * self.width + x] {
+            Cell::Glyph(glyph, _) => Some(glyph),
+            _ => None,
+        }
+    }
+
     /// Whether a cell holds only a line running across it, which words can be
     /// written over without cutting a line that runs up or down through it.
     pub fn is_rule(&self, x: usize, y: usize) -> bool {
