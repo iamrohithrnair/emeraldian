@@ -354,14 +354,26 @@ matrices, `cases` and `aligned` blocks get brackets as tall as they are. A
 command it doesn't know is shown as typed. In the editor, a `$$` block is
 coloured as maths instead of being read as Markdown.
 
-**Mermaid.** A ```` ```mermaid ```` block is drawn in the reading pane as boxes
-and arrows in box-drawing characters, so it reads the same in every terminal.
-Flowcharts (`graph` and `flowchart`, in all four directions, with their node
-shapes, dotted and thick links and words on the links) and sequence diagrams
-(messages, notes, `loop` and `alt` blocks) are drawn. A sideways flowchart too
-wide for the pane is turned to run downwards, and anything still wider pans
-like a wide table, while the prose around it stays put. Any other kind of diagram, or one it can't read, stays as
-code. Each diagram is drawn once and kept, so scrolling past fifty costs
+**Mermaid.** A ```` ```mermaid ```` block is drawn in the reading pane in
+box-drawing characters, so it reads the same in every terminal, with each box,
+slice and series in a colour of its own from your theme. These kinds are drawn:
+
+- flowcharts (`graph` and `flowchart`, in all four directions, with their node
+  shapes, dotted and thick links and words on the links) and sequence diagrams
+  (messages, notes, `loop` and `alt` blocks);
+- class diagrams (compartments, UML's marks on each relationship, namespaces
+  and notes), state diagrams (composite states framed, choices, forks, notes)
+  and entity relationship diagrams (attributes in columns, the cardinality at
+  each end of a relationship);
+- C4 context, container, component, dynamic and deployment diagrams, with
+  boundaries and deployment nodes as dashed frames;
+- pie charts, Gantt charts and XY charts (`xychart-beta`, bars and lines);
+- mind maps, timelines and user journeys.
+
+A sideways flowchart too wide for the pane is turned to run downwards, and
+anything still wider pans like a wide table, while the prose around it stays
+put. Any other kind of diagram, such as `gitGraph`, or one it can't read, stays
+as code. Each diagram is drawn once and kept, so scrolling past fifty costs
 nothing extra.
 
 **Pictures.** `![[chart.png]]` and `![alt](assets/chart.png)` are drawn in the
