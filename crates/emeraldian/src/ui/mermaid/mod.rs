@@ -57,6 +57,9 @@ pub mod export;
 mod glyphs;
 mod picture;
 
+#[cfg(test)]
+mod snapshot;
+
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::hash::{DefaultHasher, Hash, Hasher};
