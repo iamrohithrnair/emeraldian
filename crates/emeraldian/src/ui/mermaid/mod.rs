@@ -29,8 +29,10 @@
 //! kept to a stronger contrast than the lines, come from beautiful-mermaid
 //! (MIT), the renderer prismantis builds on. The code is our own.
 
+mod c4;
 mod canvas;
 mod flowchart;
+mod layered;
 mod sequence;
 
 use std::cell::RefCell;
@@ -216,6 +218,7 @@ fn draw(lines: &[String], width: usize) -> Option<Diagram> {
             flowchart::draw(&chart, width)
         }
         "sequenceDiagram" => sequence::draw(&sequence::parse(rest)?),
+        kind if c4::is_kind(kind) => c4::draw(&c4::parse(rest, kind == "C4Dynamic")?, width),
         _ => None,
     }
 }
@@ -374,6 +377,29 @@ fn wrap(text: &str, width: usize, out: &mut Vec<String>) {
 /// Columns the widest of some lines takes.
 fn widest(lines: &[String]) -> usize {
     lines.iter().map(|line| line.width()).max().unwrap_or(0)
+}
+
+/// Text cut short to fit in `width` columns, ending in `…` where it was cut.
+fn truncate(text: &str, width: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+
+    if text.width() <= width {
+        return text.to_string();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for c in text.chars() {
+        let wide = c.width().unwrap_or(0);
+        if used + wide + 1 > width {
+            break;
+        }
+        out.push(c);
+        used += wide;
+    }
+    if width > 0 {
+        out.push('…');
+    }
+    out
 }
 
 #[cfg(test)]

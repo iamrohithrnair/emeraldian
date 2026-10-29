@@ -100,6 +100,14 @@ impl Canvas {
         column - x
     }
 
+    /// Whether a cell holds only a line running across it, which words can be
+    /// written over without cutting a line that runs up or down through it.
+    pub fn is_rule(&self, x: usize, y: usize) -> bool {
+        x < self.width
+            && y < self.height
+            && matches!(self.cells[y * self.width + x], Cell::Line(bits, _, _) if bits & (UP | DOWN) == 0)
+    }
+
     /// Adds line directions to a cell, unless it holds text or an outline.
     fn mark(&mut self, x: usize, y: usize, bits: u8, stroke: Stroke, owner: Option<u16>) {
         let Some(cell) = self.at(x, y) else { return };
