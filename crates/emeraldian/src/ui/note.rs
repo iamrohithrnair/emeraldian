@@ -2739,7 +2739,7 @@ mod tests {
         let index = vault.index();
         let palette = palette();
         let document = markdown::parse(
-            "```mermaid\ngraph LR\n  A[Start] --> B[End]\n```\n\n```mermaid\npie title Pets\n  \"Dogs\" : 3\n```\n",
+            "```mermaid\ngraph LR\n  A[Start] --> B[End]\n```\n\n```mermaid\ngitGraph\n  commit\n  branch develop\n```\n",
         );
         let lines = render_document(&document, &mut Ctx::text(&palette, &index), 60);
         let rendered = text_of(&lines);
@@ -2767,7 +2767,7 @@ mod tests {
 
         // A kind it doesn't draw stays code, header and all.
         assert!(rendered.iter().any(|l| l.contains("mermaid")));
-        assert!(rendered.iter().any(|l| l.contains("pie title Pets")));
+        assert!(rendered.iter().any(|l| l.contains("branch develop")));
     }
 
     #[test]
@@ -2803,14 +2803,53 @@ mod tests {
             "```mermaid\ngraph TD\n  A[One] -->|yes| B[Two]\n  A -.->|no| C((Three))\n",
             "  B & C ==> D{Four}\n  D --> E[[Five]]\n  E --> F[Six] --> G[Seven] --> H[Eight] --> A\n```\n\n",
             "```mermaid\nsequenceDiagram\n  participant P as Pat\n  actor Q as Quinn\n  P->>Q: hello\n",
-            "  loop again\n    Q-->>P: back\n  end\n  Note over P,Q: aside\n  Q->>Q: think\n```\n",
+            "  loop again\n    Q-->>P: back\n  end\n  Note over P,Q: aside\n  Q->>Q: think\n```\n\n",
+            "```mermaid\nC4Container\n  title Shop\n  Person(c, \"Customer\", \"Buys things\")\n",
+            "  Container_Boundary(b, \"Shop\") {\n    Container(w, \"Web\", \"Rust\", \"Serves pages\")\n",
+            "    ContainerDb(d, \"Orders\", \"Postgres\")\n  }\n  System_Ext(m, \"Mail\")\n",
+            "  Rel(c, w, \"Uses\", \"HTTPS\")\n  Rel(w, d, \"Stores\")\n  Rel(w, m, \"Sends\")\n```\n\n",
+            "```mermaid\nclassDiagram\n  class Animal {\n    <<abstract>>\n    +int age\n    +mate()\n  }\n",
+            "  Animal <|-- Duck\n  Duck \"1\" *-- \"many\" Egg : lays\n  note for Duck \"quacks\"\n```\n\n",
+            "```mermaid\nstateDiagram-v2\n  [*] --> Still\n  state Moving {\n    [*] --> Slow\n  }\n",
+            "  Still --> Moving : go\n  Moving --> [*]\n  note right of Still : resting\n```\n\n",
+            "```mermaid\nerDiagram\n  CUSTOMER ||--o{ ORDER : places\n  CUSTOMER {\n",
+            "    string name PK \"the name\"\n  }\n```\n\n",
+            "```mermaid\nmindmap\n  root((Plans))\n    Work\n      Ship it\n    Home\n```\n\n",
+            "```mermaid\ntimeline\n  title Years\n  section Early\n    2002 : LinkedIn\n```\n\n",
+            "```mermaid\njourney\n  title Day\n  section Work\n    Make tea: 5: Me, Cat\n```\n\n",
+            "```mermaid\npie showData title Pets\n  \"Dogs\" : 386\n  \"Cats\" : 85\n  \"Rats\" : 15\n```\n\n",
+            "```mermaid\ngantt\n  dateFormat YYYY-MM-DD\n  section Build\n    Design : done, a1, 2024-01-01, 5d\n",
+            "    Code : after a1, 10d\n    Ship : milestone, 2024-01-20, 0d\n```\n\n",
+            "```mermaid\nxychart-beta\n  title \"Sales\"\n  x-axis [jan, feb, mar]\n",
+            "  bar \"won\" [5, 6, 7.5]\n  line \"lost\" [3, 4, 2]\n```\n",
         ));
         for theme in presets::builtin() {
             let palette = Palette::from(&theme);
             let lines = render_document(&document, &mut Ctx::text(&palette, &index), 100);
+            let rendered = text_of(&lines);
+            for drawn in [
+                "Quinn",
+                "[Container: Rust]",
+                "<<abstract>>",
+                "Still",
+                "places",
+                "Ship it",
+                "LinkedIn",
+                "Make tea",
+                "Dogs",
+                "Design",
+                "Sales",
+            ] {
+                assert!(
+                    rendered.iter().any(|line| line.contains(drawn)),
+                    "{drawn} is drawn, not left as code"
+                );
+            }
             assert!(
-                text_of(&lines).iter().any(|line| line.contains("Quinn")),
-                "drawn, not left as code"
+                !rendered
+                    .iter()
+                    .any(|line| line.trim_start().starts_with("mermaid")),
+                "no block is left as code"
             );
             for span in lines.iter().flat_map(|line| &line.spans) {
                 let Some(fg) = span.style.fg else { continue };

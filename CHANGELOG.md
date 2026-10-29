@@ -8,6 +8,37 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **C4, class, state and entity relationship diagrams are drawn.** A C4
+  diagram of any of its five kinds shows each person, system, container and
+  component as a box with its name, its kind and technology in brackets and
+  its description, with boundaries and deployment nodes as dashed frames
+  around what they hold and each relationship's label and technology on its
+  arrow. External systems are drawn in a quiet grey, as C4 draws them, and a
+  dynamic diagram numbers its steps. Class diagrams have their compartments,
+  generics and UML's marks for inheritance, composition and the rest, with
+  namespaces as frames. State diagrams show the start, the end, choices and
+  forks, and frame each composite state around the states inside it. An
+  entity relationship diagram lists each entity's attributes in columns and
+  writes the cardinality at each end of a relationship, so `||--o{` reads
+  "1 places 0..*". These are laid out the way flowcharts are, so they read
+  down the page, and boxes with nothing joined to them wrap into rows the
+  width of the pane.
+
+- **Pie, Gantt and XY charts, mind maps, timelines and journeys are
+  drawn.** A pie is drawn round with a legend of each slice's share, or as
+  bars when it has too many slices. A Gantt chart puts each task's bar on a
+  time axis under its section, with milestones as diamonds, and reads dates
+  the way `dateFormat` says. An `xychart-beta` stands up its bars and steps
+  its lines over a marked axis, on its side if you ask for `horizontal`. A
+  mind map is drawn as a tree, a timeline runs down the page, and a journey
+  gives each task a bar for its score.
+
+  Every box, slice, series and section has a colour of its own, held to the
+  same contrast against the page as flowcharts, in every theme. A diagram too
+  wide for the pane pans like a wide table, and one it can't read stays as
+  code. A note of fifty of these takes about 4 ms to lay out the first time
+  and is kept after that, so scrolling through it costs nothing extra.
+
 - **Copy a diagram out of the app.** Every Mermaid diagram in the reading
   pane now has a `⧉` at its top right. Click it, or press `y`, and the
   diagram goes on the clipboard as a picture, in the colours it has on
