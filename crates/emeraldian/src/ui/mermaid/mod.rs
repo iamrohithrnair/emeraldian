@@ -352,6 +352,17 @@ pub(crate) fn plain(diagram: &Diagram) -> String {
         .join("\n")
 }
 
+/// The ink of the first run of a drawing that has `needle` in it.
+#[cfg(test)]
+pub(crate) fn ink_of(diagram: &Diagram, needle: &str) -> Option<Ink> {
+    diagram
+        .rows
+        .iter()
+        .flatten()
+        .find(|(text, _)| text.contains(needle))
+        .map(|(_, ink)| *ink)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,6 +414,7 @@ mod tests {
             "pie showData title Pets 🐶\n  \"Dogs\" : 386\n  \"Cats\" : 85.5\n  \"Rats\" : .5\n  \"日本\" : 0",
             "gantt\n  dateFormat YYYY-MM-DD\n  title Plan 🙂\n  section A\n  One : done, a1, 2024-01-01, 3d\n  Two : after a1, 12h\n  section 日本\n  Three : until m1\n  Ship : milestone, m1, 2024-01-09, 0d",
             "xychart-beta horizontal\n  title \"Sales 🙂\"\n  x-axis \"Month\" [jan, \"feb x\", mar]\n  y-axis \"Revenue\" -40 --> 110.5\n  bar \"rain\" [5, -6, 7.5]\n  line [+1, .5, 99]",
+            "xychart-beta\n  title \"Sales 🙂\"\n  x-axis \"Month\" [jan, \"feb x\", mar]\n  y-axis \"Revenue\" -40 --> 110.5\n  bar \"rain\" [5, -6, 7.5]\n  line [+1, .5, 99]",
         ];
         for sample in samples {
             let mut cuts: Vec<String> = sample
@@ -415,7 +427,7 @@ mod tests {
                     .map(|(at, c)| format!("{}{}", &sample[..at], &sample[at + c.len_utf8()..])),
             );
             for cut in cuts {
-                for width in [1, 20, 200] {
+                for width in [1, 20, 40, 200] {
                     let _ = draw(&lines(&cut), width);
                 }
             }

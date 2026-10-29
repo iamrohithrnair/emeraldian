@@ -391,14 +391,7 @@ mod tests {
             [key("Origins"), key("Research"), key("Tools")]
         );
         assert_eq!(diagram.links, [(0, 1), (1, 2)]);
-        let ink_of = |needle: &str| {
-            diagram
-                .rows
-                .iter()
-                .flatten()
-                .find(|(text, _)| text.contains(needle))
-                .map(|(_, ink)| *ink)
-        };
+        let ink_of = |needle: &str| super::super::ink_of(&diagram, needle);
         assert_eq!(ink_of("Research"), Some(Ink::of(Role::Label, 1)));
         assert_eq!(ink_of("Uses"), Some(Ink::plain(Role::Text)));
         assert_eq!(ink_of("└──"), Some(Ink::of(Role::Line, 0)));
@@ -442,19 +435,5 @@ mod tests {
             assert!(diagram.rows.len() * diagram.width <= super::super::canvas::MAX_CELLS);
         }
         assert!(start.elapsed().as_secs() < 2);
-    }
-
-    #[test]
-    fn mangled_maps_never_panic() {
-        let sample = format!("mindmap\n{SAMPLE}\n    g[\"`two\nlines`\"]\n    h{{{{hex}}}}");
-        let lines = |text: &str| -> Vec<String> { text.lines().map(str::to_string).collect() };
-        for (at, c) in sample.char_indices() {
-            let cut = &sample[..at];
-            let dropped = format!("{}{}", &sample[..at], &sample[at + c.len_utf8()..]);
-            for width in [1, 40, 200] {
-                let _ = super::super::draw(&lines(cut), width);
-                let _ = super::super::draw(&lines(&dropped), width);
-            }
-        }
     }
 }

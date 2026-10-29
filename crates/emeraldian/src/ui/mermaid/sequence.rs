@@ -614,14 +614,7 @@ mod tests {
     fn each_participant_colours_its_lifeline_and_what_it_sends() {
         let s = sequence("A->>B: hi\nB-->>A: back\nNote over A: aside\nC->>C: me").unwrap();
         let diagram = draw(&s).unwrap();
-        let ink_of = |needle: &str| {
-            diagram
-                .rows
-                .iter()
-                .flatten()
-                .find(|(text, _)| text.contains(needle))
-                .map(|(_, ink)| *ink)
-        };
+        let ink_of = |needle: &str| super::super::ink_of(&diagram, needle);
         assert_eq!(ink_of("hi"), Some(Ink::of(Role::Label, 0)));
         assert_eq!(ink_of("back"), Some(Ink::of(Role::Label, 1)));
         assert_eq!(ink_of("▶"), Some(Ink::of(Role::Arrow, 0)));

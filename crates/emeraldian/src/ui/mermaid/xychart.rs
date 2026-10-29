@@ -985,29 +985,4 @@ mod tests {
         );
         assert!(out.contains("売上") && out.contains("一月"), "{out}");
     }
-
-    /// Every prefix of a chart, and each with one character dropped, must
-    /// come back drawn or as `None`, never as a panic.
-    #[test]
-    fn mangled_charts_never_panic() {
-        let sample = "xychart-beta horizontal\n  title \"Sales 🙂\"\n  x-axis \"Month\" [jan, \"feb x\", mar]\n  y-axis \"Revenue\" -40 --> 110.5\n  bar \"rain\" [5, -6, 7.5]\n  line [+1, .5, 99]";
-        let mut cuts: Vec<String> = sample
-            .char_indices()
-            .map(|(at, _)| sample[..at].to_string())
-            .collect();
-        cuts.extend(
-            sample
-                .char_indices()
-                .map(|(at, c)| format!("{}{}", &sample[..at], &sample[at + c.len_utf8()..])),
-        );
-        for cut in cuts {
-            if let Some(mut c) = chart(&cut) {
-                for width in [1, 40, 200] {
-                    let _ = draw(&c, width);
-                }
-                c.horizontal = !c.horizontal;
-                let _ = draw(&c, 60);
-            }
-        }
-    }
 }

@@ -726,18 +726,11 @@ mod tests {
     #[test]
     fn a_box_is_its_nodes_and_an_edge_its_sources() {
         let diagram = draw(&chart("graph LR\n  A -->|go| B").unwrap(), 80).unwrap();
-        let ink_of = |needle: char| {
-            diagram
-                .rows
-                .iter()
-                .flatten()
-                .find(|(text, _)| text.contains(needle))
-                .map(|(_, ink)| *ink)
-        };
-        assert_eq!(ink_of('▶'), Some(Ink::of(Role::Arrow, 0)));
-        assert_eq!(ink_of('g'), Some(Ink::of(Role::Label, 0)));
+        let ink_of = |needle: &str| super::super::ink_of(&diagram, needle);
+        assert_eq!(ink_of("▶"), Some(Ink::of(Role::Arrow, 0)));
+        assert_eq!(ink_of("g"), Some(Ink::of(Role::Label, 0)));
         assert_eq!(
-            ink_of('A'),
+            ink_of("A"),
             Some(Ink::plain(Role::Text)),
             "words stay plain"
         );

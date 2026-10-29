@@ -1043,27 +1043,4 @@ mod tests {
             let _ = draw(&gantt(DOCS).unwrap(), width);
         }
     }
-
-    /// Every prefix of a chart, and each with one character dropped, must
-    /// come back drawn or as `None`, never as a panic.
-    #[test]
-    fn mangled_charts_never_panic() {
-        let sample = "dateFormat YYYY-MM-DD\ntitle Plan 🙂\nsection A\nOne : done, a1, 2024-01-01, 3d\nTwo : after a1, 12h\nsection 日本\nThree : until m1\nShip : milestone, m1, 2024-01-09, 0d";
-        let mut cuts: Vec<String> = sample
-            .char_indices()
-            .map(|(at, _)| sample[..at].to_string())
-            .collect();
-        cuts.extend(
-            sample
-                .char_indices()
-                .map(|(at, c)| format!("{}{}", &sample[..at], &sample[at + c.len_utf8()..])),
-        );
-        for cut in cuts {
-            if let Some(g) = gantt(&cut) {
-                for width in [1, 40, 200] {
-                    let _ = draw(&g, width);
-                }
-            }
-        }
-    }
 }

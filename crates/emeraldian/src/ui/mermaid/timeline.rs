@@ -384,14 +384,7 @@ History of Social Media Platform
             [key("17th-20th century"), key("21st century")]
         );
         assert_eq!(diagram.links, [(0, 1)]);
-        let ink_of = |needle: &str| {
-            diagram
-                .rows
-                .iter()
-                .flatten()
-                .find(|(text, _)| text.contains(needle))
-                .map(|(_, ink)| *ink)
-        };
+        let ink_of = |needle: &str| super::super::ink_of(&diagram, needle);
         assert_eq!(ink_of("21st century"), Some(Ink::of(Role::Label, 1)));
         assert_eq!(ink_of("Industry 4.0"), Some(Ink::of(Role::Label, 1)));
         assert_eq!(ink_of("Internet"), Some(Ink::plain(Role::Text)));
@@ -429,19 +422,5 @@ History of Social Media Platform
             assert!(diagram.rows.len() * diagram.width <= super::super::canvas::MAX_CELLS);
         }
         assert!(start.elapsed().as_secs() < 2);
-    }
-
-    #[test]
-    fn mangled_timelines_never_panic() {
-        let sample = format!("timeline\n{INDUSTRY}\n        accTitle: Ages");
-        let lines = |text: &str| -> Vec<String> { text.lines().map(str::to_string).collect() };
-        for (at, c) in sample.char_indices() {
-            let cut = &sample[..at];
-            let dropped = format!("{}{}", &sample[..at], &sample[at + c.len_utf8()..]);
-            for width in [1, 40, 200] {
-                let _ = super::super::draw(&lines(cut), width);
-                let _ = super::super::draw(&lines(&dropped), width);
-            }
-        }
     }
 }

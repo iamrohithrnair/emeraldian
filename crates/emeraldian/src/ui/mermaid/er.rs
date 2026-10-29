@@ -586,14 +586,7 @@ CUSTOMER }|..|{ DELIVERY-ADDRESS : uses";
     fn keys_are_in_the_entitys_colour_and_types_are_quiet() {
         let d = diagram("A {\n  int id PK\n}\nA ||--o{ B : has").unwrap();
         let drawn = draw(&d, 80).unwrap();
-        let ink_of = |needle: &str| {
-            drawn
-                .rows
-                .iter()
-                .flatten()
-                .find(|(text, _)| text.contains(needle))
-                .map(|(_, ink)| *ink)
-        };
+        let ink_of = |needle: &str| super::super::ink_of(&drawn, needle);
         assert_eq!(ink_of("PK"), Some(Ink::of(Role::Label, 0)));
         assert_eq!(ink_of("int"), Some(Ink::plain(Role::Label)));
         assert_eq!(ink_of("has"), Some(Ink::of(Role::Label, 0)));

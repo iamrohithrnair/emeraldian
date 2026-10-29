@@ -318,14 +318,7 @@ Go home
         let diagram = draw(&journey(DAY).unwrap(), 80).unwrap();
         assert_eq!(diagram.keys, [key("Go to work"), key("Go home")]);
         assert_eq!(diagram.links, [(0, 1)]);
-        let ink_of = |needle: &str| {
-            diagram
-                .rows
-                .iter()
-                .flatten()
-                .find(|(text, _)| text.contains(needle))
-                .map(|(_, ink)| *ink)
-        };
+        let ink_of = |needle: &str| super::super::ink_of(&diagram, needle);
         assert_eq!(ink_of("Go home"), Some(Ink::of(Role::Label, 1)));
         assert_eq!(ink_of("Cat"), Some(Ink::plain(Role::Label)));
         assert_eq!(ink_of("█"), Some(Ink::of(Role::Border, 0)));
@@ -369,19 +362,5 @@ Go home
             assert!(diagram.rows.len() * diagram.width <= super::super::canvas::MAX_CELLS);
         }
         assert!(start.elapsed().as_secs() < 2);
-    }
-
-    #[test]
-    fn mangled_journeys_never_panic() {
-        let sample = format!("journey\n{DAY}\n      Sleep: 4.5: Me, Cat\n    accTitle: Day");
-        let lines = |text: &str| -> Vec<String> { text.lines().map(str::to_string).collect() };
-        for (at, c) in sample.char_indices() {
-            let cut = &sample[..at];
-            let dropped = format!("{}{}", &sample[..at], &sample[at + c.len_utf8()..]);
-            for width in [1, 40, 200] {
-                let _ = super::super::draw(&lines(cut), width);
-                let _ = super::super::draw(&lines(&dropped), width);
-            }
-        }
     }
 }

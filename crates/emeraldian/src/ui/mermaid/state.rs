@@ -783,14 +783,7 @@ Published --> [*]";
     fn states_have_colours_and_the_marks_are_no_ones() {
         let d = diagram("[*] --> A\nA --> B : go\nB --> [*]").unwrap();
         let drawn = draw(&d, 80).unwrap();
-        let ink_of = |needle: &str| {
-            drawn
-                .rows
-                .iter()
-                .flatten()
-                .find(|(text, _)| text.contains(needle))
-                .map(|(_, ink)| *ink)
-        };
+        let ink_of = |needle: &str| super::super::ink_of(&drawn, needle);
         assert_eq!(ink_of("●"), Some(Ink::plain(Role::Border)));
         assert_eq!(ink_of("go"), Some(Ink::of(Role::Label, 1)));
         assert_eq!(drawn.keys.len(), 4);

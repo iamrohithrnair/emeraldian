@@ -873,20 +873,9 @@ Fish : -canEat()";
         let d = diagram("A --> B\nnote for B \"hi\"").unwrap();
         let drawn = draw(&d).unwrap();
         assert_eq!(drawn.keys.len(), 3);
-        let note = drawn
-            .rows
-            .iter()
-            .flatten()
-            .find(|(text, _)| text.contains("hi"))
-            .map(|(_, ink)| *ink);
-        assert_eq!(note, Some(Ink::plain(Role::Note)));
-        let arrow = drawn
-            .rows
-            .iter()
-            .flatten()
-            .find(|(text, _)| text.contains('▼'))
-            .map(|(_, ink)| *ink);
-        assert_eq!(arrow, Some(Ink::of(Role::Arrow, 0)));
+        let ink_of = |needle: &str| super::super::ink_of(&drawn, needle);
+        assert_eq!(ink_of("hi"), Some(Ink::plain(Role::Note)));
+        assert_eq!(ink_of("▼"), Some(Ink::of(Role::Arrow, 0)));
     }
 
     #[test]

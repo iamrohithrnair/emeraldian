@@ -824,14 +824,7 @@ mod tests {
     fn external_elements_are_quiet_and_others_have_their_own_colours() {
         let c4 = c4(CONTAINER).unwrap();
         let diagram = draw(&c4, 160).unwrap();
-        let ink_of = |needle: &str| {
-            diagram
-                .rows
-                .iter()
-                .flatten()
-                .find(|(text, _)| text.contains(needle))
-                .map(|(_, ink)| *ink)
-        };
+        let ink_of = |needle: &str| super::super::ink_of(&diagram, needle);
         assert_eq!(
             ink_of("[External Software System]"),
             Some(Ink::plain(Role::Label))
