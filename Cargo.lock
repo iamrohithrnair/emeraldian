@@ -605,6 +605,7 @@ dependencies = [
  "emeraldian-theme",
  "image",
  "lz-str",
+ "png",
  "ratatui",
  "ratatui-image",
  "rustix 1.1.4",

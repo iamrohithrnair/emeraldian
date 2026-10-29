@@ -39,6 +39,9 @@ image = { version = "0.25", default-features = false, features = [
     "webp",
     "bmp",
 ] }
+# Encodes a diagram copied as a picture, and reads the glyph sheet it is
+# lettered from. Already in the tree through `image`, at this version.
+png = "0.18"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1"
