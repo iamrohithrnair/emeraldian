@@ -4,7 +4,12 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.10.1]
+## [0.10.1] — 2026-10-29
+
+C4, class, state and entity relationship diagrams, pie and Gantt charts, mind
+maps, timelines and journeys are drawn in the reading pane, and any diagram
+can be copied out as a full-colour picture. Notes and a `config.toml` from an
+earlier version work unchanged.
 
 ### Added
 
@@ -946,6 +951,7 @@ First release.
 - Unreadable vaults are reported clearly, including the macOS privacy
   permission that usually causes it.
 
+[0.10.1]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.10.1
 [0.10.1]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.10.1
 [0.10.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.10.0
 [0.9.1]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.9.1
