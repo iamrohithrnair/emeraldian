@@ -65,7 +65,7 @@ use std::collections::VecDeque;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::rc::Rc;
 
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// What a run of a diagram's characters is, so the renderer can colour it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -389,25 +389,134 @@ fn is_tag(inside: &str) -> bool {
 /// Breaks text at spaces into lines no wider than `width`, splitting a word
 /// that is wider on its own.
 fn wrap(text: &str, width: usize, out: &mut Vec<String>) {
-    let mut line = String::new();
+    let mut line = Line::default();
     for word in text.split_whitespace() {
-        let needed = line.width() + usize::from(!line.is_empty()) + word.width();
-        if !line.is_empty() && needed > width {
-            out.push(std::mem::take(&mut line));
+        let needed = line.width + usize::from(!line.text.is_empty()) + word.width();
+        if !line.text.is_empty() && needed > width {
+            out.push(line.take());
         }
-        if !line.is_empty() {
+        if !line.text.is_empty() {
             line.push(' ');
         }
-        for c in word.chars() {
-            if line.width() + c.to_string().width() > width && !line.is_empty() {
-                out.push(std::mem::take(&mut line));
+        // Each character as a string of its own.
+        for piece in word.split_inclusive(|_: char| true) {
+            if line.width + piece.width() > width && !line.text.is_empty() {
+                out.push(line.take());
             }
-            line.push(c);
+            line.push_str(piece);
         }
     }
-    if !line.is_empty() || out.is_empty() {
-        out.push(line);
+    if !line.text.is_empty() || out.is_empty() {
+        out.push(line.take());
     }
+}
+
+/// A line being wrapped and the columns it takes, kept up to date as it
+/// grows rather than measured again for each character, which took a label
+/// of a few thousand accents a tenth of a second.
+///
+/// A string isn't as wide as its characters added up: `unicode-width`
+/// measures it from its end, and a character can change the ones before it,
+/// as a variation selector widens an emoji, joined emoji or a pair of flags
+/// count once, and an alef makes the lam before it part of one ligature. So
+/// most characters are added as they are, and the rest are measured again
+/// with the stretch of the line they could change.
+#[derive(Default)]
+struct Line {
+    text: String,
+    width: usize,
+    /// Where the stretch measured last starts, and its columns.
+    stretch: Option<(usize, usize)>,
+}
+
+impl Line {
+    fn take(&mut self) -> String {
+        self.width = 0;
+        self.stretch = None;
+        std::mem::take(&mut self.text)
+    }
+
+    fn push_str(&mut self, piece: &str) {
+        piece.chars().for_each(|c| self.push(c));
+    }
+
+    fn push(&mut self, c: char) {
+        let alone = c.encode_utf8(&mut [0; 4]).width();
+        if self.adds(c) {
+            // A stretch keeps its columns past a character of no width, and
+            // past any other may no longer be the one to measure.
+            if alone > 0 {
+                self.stretch = None;
+            }
+            self.width += alone;
+            self.text.push(c);
+            return;
+        }
+        let from = reach(&self.text);
+        let before = match self.stretch {
+            Some((at, columns)) if at == from => columns,
+            _ => self.text[from..].width(),
+        };
+        self.text.push(c);
+        let after = self.text[from..].width();
+        self.width = self.width - before + after;
+        self.stretch = Some((from, after));
+    }
+
+    /// Whether `c` adds its own width and leaves the line before it as it
+    /// was: ASCII but a line break, a letter that is never part of a rule,
+    /// anything of no width but a variation selector, a selector after
+    /// anything of no width, and a flag after two others.
+    fn adds(&self, c: char) -> bool {
+        let mut before = self.text.chars().rev();
+        let last = before.next();
+        if c.is_ascii() || is_plain(c) {
+            c != '\n'
+        } else if c.width() == Some(0) {
+            !matches!(c, '\u{FE01}' | '\u{FE0E}' | '\u{FE0F}')
+                || last.is_some_and(|last| last.width() == Some(0))
+        } else {
+            is_flag(c) && last.is_some_and(is_flag) && before.next().is_some_and(is_flag)
+        }
+    }
+}
+
+/// Characters that whatever follows them leaves as they are: ASCII but the
+/// digits, `#` and `*`, which a selector turns into keycap emoji, and the
+/// letters of the scripts written without spaces.
+fn is_plain(c: char) -> bool {
+    matches!(c, ' ' | '!'..='"' | '$'..=')' | '+'..='/' | ':'..='~'
+        | '\u{3041}'..='\u{3096}' | '\u{30A1}'..='\u{30FA}' | '\u{3400}'..='\u{4DBF}'
+        | '\u{4E00}'..='\u{9FFF}' | '\u{AC00}'..='\u{D7A3}' | '\u{FF01}'..='\u{FF60}')
+}
+
+fn is_flag(c: char) -> bool {
+    ('\u{1F1E6}'..='\u{1F1FF}').contains(&c)
+}
+
+/// Where the part of `text` a character added to it could change begins:
+/// after the last plain character, or sixteen characters with width back,
+/// further than any of the width rules reach. A run of flags counts as one,
+/// and Tifinagh and Kirat Rai, whose rules carry along a whole run, as
+/// none; their runs take a column for every few characters, so they never
+/// reach past the line.
+fn reach(text: &str) -> usize {
+    let mut steps = 0;
+    let mut flags = false;
+    for (at, c) in text.char_indices().rev() {
+        if is_plain(c) {
+            return at + c.len_utf8();
+        }
+        let runs = matches!(c, '\u{2D30}'..='\u{2D7F}' | '\u{16D40}'..='\u{16D7F}');
+        if c.width() != Some(0) && !runs && !(flags && is_flag(c)) {
+            steps += 1;
+            if steps > 16 {
+                return at;
+            }
+        }
+        flags = is_flag(c);
+    }
+    0
 }
 
 /// Columns the widest of some lines takes.
@@ -417,8 +526,6 @@ fn widest(lines: &[String]) -> usize {
 
 /// Text cut short to fit in `width` columns, ending in `…` where it was cut.
 fn truncate(text: &str, width: usize) -> String {
-    use unicode_width::UnicodeWidthChar;
-
     if text.width() <= width {
         return text.to_string();
     }
