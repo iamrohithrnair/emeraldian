@@ -31,6 +31,7 @@
 
 mod c4;
 mod canvas;
+mod class;
 mod flowchart;
 mod layered;
 mod sequence;
@@ -219,6 +220,7 @@ fn draw(lines: &[String], width: usize) -> Option<Diagram> {
         }
         "sequenceDiagram" => sequence::draw(&sequence::parse(rest)?),
         kind if c4::is_kind(kind) => c4::draw(&c4::parse(rest, kind == "C4Dynamic")?, width),
+        "classDiagram" | "classDiagram-v2" => class::draw(&class::parse(rest)?),
         _ => None,
     }
 }

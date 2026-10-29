@@ -562,6 +562,7 @@ pub fn draw(c4: &C4, width: usize) -> Option<Diagram> {
     graph.framed = c4.elements.iter().map(|element| element.frame).collect();
     graph.labels = c4.frames.iter().map(|frame| frame.label.width()).collect();
     graph.room = width;
+    graph.spread = true;
     let mut placed = layered::layout(&graph)?;
     let mut title = Vec::new();
     if let Some(text) = &c4.title {

@@ -82,6 +82,17 @@ impl Facing {
         }
     }
 
+    /// A hollow arrowhead, the way UML marks inheritance.
+    #[must_use]
+    pub fn hollow(self) -> char {
+        match self {
+            Self::Down => '▽',
+            Self::Up => '△',
+            Self::Right => '▷',
+            Self::Left => '◁',
+        }
+    }
+
     /// The piece of a box's outline where the line meets it.
     #[must_use]
     pub fn join(self) -> char {
@@ -124,6 +135,10 @@ pub struct Graph {
     /// Columns the pane has. When the graph runs down or up, boxes with no
     /// links are wrapped onto more ranks rather than run past it.
     pub room: usize,
+    /// Whether boxes are made tall enough to give each of their links a row
+    /// of its own when the graph runs sideways, as they are always made wide
+    /// enough to give each a column when it runs down or up.
+    pub spread: bool,
 }
 
 impl Graph {
@@ -137,6 +152,7 @@ impl Graph {
             framed: Vec::new(),
             labels: Vec::new(),
             room: 0,
+            spread: false,
         }
     }
 }
@@ -513,7 +529,7 @@ pub fn layout(graph: &Graph) -> Option<Layout> {
 
     // A box going down the page widens to give each of its edges a column
     // of its own, rather than several sharing one and merging.
-    if !across_flow {
+    if !across_flow || graph.spread {
         let mut ends = vec![(0usize, 0usize); count];
         for s in &segments {
             if let Kind::Node(at) = places[s.upper].kind {
@@ -1239,7 +1255,8 @@ fn separate(
     // The room a frame keeps inside its left side, past the least, so its
     // label fits along its top edge.
     let mut room = vec![0i64; frames.len()];
-    let frame_of_left = |v: usize| (v >= count && (v - count).is_multiple_of(2)).then(|| (v - count) / 2);
+    let frame_of_left =
+        |v: usize| (v >= count && (v - count).is_multiple_of(2)).then(|| (v - count) / 2);
     let solve = |room: &[i64]| -> Vec<Option<i64>> {
         let mut value: Vec<Option<i64>> = (0..total)
             .map(|v| (v < count).then(|| places[v].at))
