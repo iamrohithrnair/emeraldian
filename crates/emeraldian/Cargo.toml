@@ -16,6 +16,7 @@ emeraldian-theme.workspace = true
 emeraldian-agent.workspace = true
 ratatui.workspace = true
 ratatui-image.workspace = true
+png.workspace = true
 image.workspace = true
 crossterm.workspace = true
 serde.workspace = true

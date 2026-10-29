@@ -74,6 +74,8 @@ pub struct Ctx<'a> {
     /// The colours diagrams are drawn in, worked out the first time the note
     /// has one rather than once for each.
     inks: Option<DiagramInks>,
+    /// The diagrams laid out, filled in as blocks are laid out.
+    diagrams: Vec<mermaid::export::Placed>,
 }
 
 impl<'a> Ctx<'a> {
@@ -90,6 +92,7 @@ impl<'a> Ctx<'a> {
             anchors: Vec::new(),
             pans: Vec::new(),
             inks: None,
+            diagrams: Vec::new(),
         }
     }
 }
@@ -97,8 +100,8 @@ impl<'a> Ctx<'a> {
 /// The colours diagrams are drawn in: the theme's hues for the things in
 /// them, and quieter colours for what is no one's, each held to the contrast
 /// against the page that lines or words need.
-struct DiagramInks {
-    hues: Hues,
+pub(crate) struct DiagramInks {
+    pub(crate) hues: Hues,
     /// Lines that are no one's, like the rule of a `loop` block.
     quiet: Color,
     /// Words that are no one's.
@@ -108,13 +111,31 @@ struct DiagramInks {
 }
 
 impl DiagramInks {
-    fn new(palette: &Palette) -> Self {
+    pub(crate) fn new(palette: &Palette) -> Self {
         let page = palette.bg_primary;
         Self {
             hues: palette.hues(),
             quiet: readable(palette.text_muted, page, STROKE_CONTRAST),
             quiet_words: readable(palette.text_muted, page, TEXT_CONTRAST),
             note: readable(palette.callout_note, page, TEXT_CONTRAST),
+        }
+    }
+
+    /// The colour a run with `ink` is drawn in, each owner in the hue it was
+    /// `picked` (see [`mermaid::Diagram::colours`]).
+    pub(crate) fn colour(&self, palette: &Palette, picked: &[u8], ink: mermaid::Ink) -> Color {
+        use mermaid::Role;
+        let hue = ink
+            .owner
+            .and_then(|owner| picked.get(usize::from(owner)))
+            .map(|&hue| usize::from(hue));
+        match (ink.role, hue) {
+            (Role::Text, _) => palette.text_normal,
+            (Role::Note, _) => self.note,
+            (Role::Label, Some(hue)) => self.hues.words[hue],
+            (Role::Label, None) => self.quiet_words,
+            (Role::Border | Role::Line | Role::Arrow, Some(hue)) => self.hues.strokes[hue],
+            (Role::Border | Role::Line | Role::Arrow, None) => self.quiet,
         }
     }
 }
@@ -168,6 +189,7 @@ pub struct ReadingCache {
     anchors: Vec<(usize, usize)>,
     pictures: Vec<Picture>,
     pans: Vec<Pan>,
+    diagrams: Vec<mermaid::export::Placed>,
 }
 
 /// Everything a reading layout depends on.
@@ -191,6 +213,12 @@ impl ReadingCache {
     /// Forgets the layout, for when something outside its key has changed.
     pub fn clear(&mut self) {
         *self = Self::default();
+    }
+
+    /// The diagrams in the note, in the order they come.
+    #[must_use]
+    pub fn diagrams(&self) -> &[mermaid::export::Placed] {
+        &self.diagrams
     }
 }
 
@@ -468,6 +496,7 @@ fn draw_reading(
             anchors: Vec::new(),
             pans: Vec::new(),
             inks: None,
+            diagrams: Vec::new(),
         };
         let lines = render_document(&document, &mut ctx, width);
         app.reading = ReadingCache {
@@ -476,6 +505,7 @@ fn draw_reading(
             anchors: std::mem::take(&mut ctx.anchors),
             pictures: std::mem::take(&mut ctx.pictures),
             pans: std::mem::take(&mut ctx.pans),
+            diagrams: std::mem::take(&mut ctx.diagrams),
         };
     }
     regions.anchors.clone_from(&app.reading.anchors);
@@ -523,6 +553,19 @@ fn draw_reading(
         palette,
     );
     Paragraph::new(visible).render(area, frame.buffer_mut());
+    let mark = Style::default()
+        .fg(palette.text_muted)
+        .bg(palette.bg_primary);
+    mermaid::export::marks(
+        frame.buffer_mut(),
+        area,
+        &app.reading.diagrams,
+        scroll,
+        hscroll,
+        width,
+        mark,
+        regions,
+    );
     draw_pictures(
         frame,
         &mut app.images,
@@ -959,6 +1002,7 @@ fn render_block(
         BlockKind::Quote(body) => {
             let mark = ctx.pictures.len();
             let pans = ctx.pans.len();
+            let diagrams = ctx.diagrams.len();
             let mut inner = Vec::new();
             for child in body {
                 render_block(child, ctx, width.saturating_sub(2), 0, &mut inner);
@@ -967,6 +1011,7 @@ fn render_block(
             // already in `out`, so anything laid out inside moves with it.
             shift(&mut ctx.pictures[mark..], out.len(), indent as u16 + 2);
             shift_pans(&mut ctx.pans[pans..], out.len(), indent + 2);
+            shift_diagrams(&mut ctx.diagrams[diagrams..], out.len(), indent + 2);
             for line in inner {
                 let mut spans = vec![
                     Span::raw(pad.clone()),
@@ -1014,12 +1059,14 @@ fn render_block(
 
             let mark = ctx.pictures.len();
             let pans = ctx.pans.len();
+            let diagrams = ctx.diagrams.len();
             let mut inner = Vec::new();
             for child in body {
                 render_block(child, ctx, width.saturating_sub(2), 0, &mut inner);
             }
             shift(&mut ctx.pictures[mark..], out.len(), indent as u16 + 2);
             shift_pans(&mut ctx.pans[pans..], out.len(), indent + 2);
+            shift_diagrams(&mut ctx.diagrams[diagrams..], out.len(), indent + 2);
             for line in inner {
                 let mut spans = vec![
                     Span::raw(pad.clone()),
@@ -1040,6 +1087,12 @@ fn render_block(
                 let inks = ctx.inks.get_or_insert_with(|| DiagramInks::new(palette));
                 diagram_lines(&diagram, palette, inks, &pad, out);
                 note_pan(ctx, out, start, indent, width);
+                ctx.diagrams.push(mermaid::export::Placed {
+                    line: start,
+                    rows: out.len() - start,
+                    keep: indent,
+                    diagram,
+                });
                 return;
             }
             let background = Style::default().bg(palette.code_bg);
@@ -1106,23 +1159,8 @@ fn diagram_lines(
     pad: &str,
     out: &mut Vec<Line<'static>>,
 ) {
-    use mermaid::Role;
-
     let picked = diagram.colours(inks.hues.strokes.len());
-    let style = |ink: mermaid::Ink| {
-        let hue = ink
-            .owner
-            .and_then(|owner| picked.get(usize::from(owner)))
-            .map(|&hue| usize::from(hue));
-        Style::default().fg(match (ink.role, hue) {
-            (Role::Text, _) => palette.text_normal,
-            (Role::Note, _) => inks.note,
-            (Role::Label, Some(hue)) => inks.hues.words[hue],
-            (Role::Label, None) => inks.quiet_words,
-            (Role::Border | Role::Line | Role::Arrow, Some(hue)) => inks.hues.strokes[hue],
-            (Role::Border | Role::Line | Role::Arrow, None) => inks.quiet,
-        })
-    };
+    let style = |ink: mermaid::Ink| Style::default().fg(inks.colour(palette, &picked, ink));
     // Runs that come out the same colour, like an edge and its arrowhead,
     // share a span. This holds where each span's runs end, and its style.
     let mut spans_of: Vec<(usize, Style)> = Vec::new();
@@ -1301,6 +1339,15 @@ fn shift_pans(pans: &mut [Pan], lines: usize, keep: usize) {
         pan.line += lines;
         pan.keep += keep;
         pan.width += keep;
+    }
+}
+
+/// Moves diagrams laid out in a nested buffer to where that buffer landed,
+/// as [`shift_pans`] moves wide blocks.
+fn shift_diagrams(diagrams: &mut [mermaid::export::Placed], lines: usize, keep: usize) {
+    for diagram in diagrams {
+        diagram.line += lines;
+        diagram.keep += keep;
     }
 }
 
@@ -2385,6 +2432,7 @@ mod tests {
             anchors: Vec::new(),
             pans: Vec::new(),
             inks: None,
+            diagrams: Vec::new(),
         }
     }
 

@@ -270,6 +270,11 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
                 "Pan a wide table, code or diagram while reading",
             ),
             ("Shift+wheel", "Pan sideways too, as does a trackpad"),
+            ("y / Y", "Copy the diagram in view as a picture / as text"),
+            (
+                "⧉ / right-click",
+                "Copy that diagram as a picture / as text",
+            ),
             ("g / G", "Top / bottom of the note"),
             ("Ctrl+N", "New note"),
             ("Ctrl+S", "Save"),

@@ -6,9 +6,6 @@ All notable changes to this project are documented here. The format follows
 
 ## [0.10.1]
 
-C4 diagrams and nine more kinds of Mermaid diagram are drawn in reading
-mode, in your theme's colours, where until now they stayed as code.
-
 ### Added
 
 - **C4, class, state and entity relationship diagrams are drawn.** A C4
@@ -41,6 +38,17 @@ mode, in your theme's colours, where until now they stayed as code.
   wide for the pane pans like a wide table, and one it can't read stays as
   code. A note of fifty of these takes about 4 ms to lay out the first time
   and is kept after that, so scrolling through it costs nothing extra.
+
+- **Copy a diagram out of the app.** Every Mermaid diagram in the reading
+  pane now has a `⧉` at its top right. Click it, or press `y`, and the
+  diagram goes on the clipboard as a picture, in the colours it has on
+  screen and on your theme's background, ready to paste into a document, a
+  slide or a chat. It is drawn at twice a terminal's size, so it stays sharp
+  on a high-density screen. `Y`, or a right click on the `⧉`, copies the
+  diagram as text instead, for places that only take text, and both are in
+  the command palette. Over SSH there is no clipboard for pictures, so the
+  picture is saved to a file and the status bar tells you where to find it.
+  Nothing is drawn until you copy, so reading a note is as quick as it was.
 
 ## [0.10.0] — 2026-10-27
 
@@ -938,6 +946,7 @@ First release.
 - Unreadable vaults are reported clearly, including the macOS privacy
   permission that usually causes it.
 
+[0.10.1]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.10.1
 [0.10.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.10.0
 [0.9.1]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.9.1
 [0.9.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.9.0

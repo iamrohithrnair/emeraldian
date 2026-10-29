@@ -52,6 +52,11 @@ mod state;
 mod timeline;
 mod xychart;
 
+// Copying a drawn diagram out, as text or as a picture.
+pub mod export;
+mod glyphs;
+mod picture;
+
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::hash::{DefaultHasher, Hash, Hasher};

@@ -13,6 +13,7 @@ mod auth;
 mod cli;
 mod clipboard;
 mod config;
+mod copy;
 mod editor;
 mod explorer;
 mod images;
@@ -511,7 +512,14 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> io::Res
                     last_status = Instant::now();
                 }
                 Event::Resize(_, _) => needs_redraw = true,
-                Event::Mouse(mouse) => needs_redraw |= handle_mouse(app, mouse),
+                // A click can say something too, as copying a diagram does,
+                // and what it says gets the same time on screen as a key's.
+                Event::Mouse(mouse) => {
+                    if handle_mouse(app, mouse) {
+                        needs_redraw = true;
+                        last_status = Instant::now();
+                    }
+                }
                 Event::Paste(text) => {
                     keys::paste(app, &text);
                     needs_redraw = true;
@@ -595,6 +603,17 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) -> bool {
             }
             None => false,
         },
+        // A right click on a diagram's copy mark copies its text, where a
+        // left click copies the picture.
+        MouseEventKind::Down(MouseButton::Right) if app.modal.is_none() => {
+            match tab_at(&app.regions.diagram_marks, point) {
+                Some(at) => {
+                    copy::diagram(app, Some(at), copy::Format::Text);
+                    true
+                }
+                None => false,
+            }
+        }
         // Shift turns the wheel sideways, as it does in a browser; a trackpad
         // or a tilting wheel reports sideways scrolling as its own events.
         MouseEventKind::ScrollDown if sideways(mouse) => handle_pan(app, point, keys::PAN_STEP),
@@ -607,7 +626,8 @@ fn handle_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) -> bool {
     }
 }
 
-/// The tab whose region, of those the last frame recorded, holds `point`.
+/// The tab whose region, of those the last frame recorded, holds `point`,
+/// or the same for any other list of numbered regions.
 fn tab_at(regions: &[(ratatui::layout::Rect, usize)], point: (u16, u16)) -> Option<usize> {
     regions
         .iter()
@@ -706,6 +726,13 @@ fn handle_click(app: &mut App, point: (u16, u16)) -> bool {
         app.active_tab = Some(index);
         app.focus = app::Focus::Note;
         app.side_selected = 0;
+        return true;
+    }
+
+    // The mark at a diagram's top right copies it as a picture.
+    if let Some(at) = tab_at(&app.regions.diagram_marks, point) {
+        app.focus = app::Focus::Note;
+        copy::diagram(app, Some(at), copy::Format::Image);
         return true;
     }
 
@@ -1355,6 +1382,56 @@ mod tests {
         assert!(click(&mut app, tab.x + 1, tab.y));
         assert_eq!(app.tabs.len(), 3, "nothing closed");
         assert_eq!(active_title(&app), "Alpha");
+    }
+
+    #[test]
+    fn a_click_on_a_diagrams_mark_copies_it_as_a_picture_and_a_right_click_as_text() {
+        let vault = TempVault::new("mouse-diagram");
+        vault.write(
+            "Flow.md",
+            "# Flow\n\n```mermaid\ngraph LR\n  A[Start] --> B[End]\n```\n\nAfter.\n",
+        );
+        let mut app = App::new(vault.vault(), Config::default()).expect("app");
+        let flow = app.index.id_of_rel("Flow.md").expect("indexed");
+        app.open_note(flow);
+        let (clipboard, copied) = clipboard::stand_in::StandIn::new();
+        app.clipboard = clipboard;
+        let mut terminal = Terminal::new(TestBackend::new(160, 40)).expect("terminal");
+        terminal
+            .draw(|frame| ui::draw(frame, &mut app))
+            .expect("draw");
+
+        let (mark, at) = app.regions.diagram_marks[0];
+        assert_eq!(at, 0);
+        let drawn = terminal.backend().buffer()[(mark.x + 1, mark.y)]
+            .symbol()
+            .to_string();
+        assert_eq!(drawn, "⧉", "the mark is where its region is");
+
+        assert!(click(&mut app, mark.x + 1, mark.y));
+        assert_eq!(copied.borrow().images.len(), 1);
+        assert!(copied.borrow().images[0].starts_with(b"\x89PNG"));
+        assert!(
+            app.status
+                .text
+                .starts_with("copied the diagram as a picture"),
+            "{}",
+            app.status.text
+        );
+
+        let right = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Right),
+            column: mark.x,
+            row: mark.y,
+            modifiers: KeyModifiers::empty(),
+        };
+        assert!(handle_mouse(&mut app, right));
+        assert_eq!(copied.borrow().texts.len(), 1);
+        assert!(copied.borrow().texts[0].contains("Start"));
+
+        // Anywhere else on the diagram is just the note.
+        click(&mut app, mark.x - 4, mark.y + 1);
+        assert_eq!(copied.borrow().images.len(), 1, "nothing more copied");
     }
 
     #[test]

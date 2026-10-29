@@ -1,5 +1,6 @@
 # Build output
 /target/
+/scripts/glyph-atlas/target/
 
 # Local editor and OS noise
 .DS_Store

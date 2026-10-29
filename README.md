@@ -150,6 +150,7 @@ full list in the app.
 | `F5` / `Ctrl+R` | Reload the vault from disk |
 | `F8` | Focus mode: the note alone, across 90% of the screen, with the sidebars hidden |
 | `h` / `l`, `0` / `$` | While reading, pan a table, code block or diagram too wide for the pane; `‹` and `›` mark the edges with more beyond |
+| `y` / `Y` | While reading, copy the diagram nearest the top of the pane as a picture / as text |
 
 In the editor: `↑`/`↓`, `Home` and `End` follow the rows on screen, so a wrapped
 paragraph moves through a line at a time as it looks rather than as it is stored.
@@ -176,6 +177,12 @@ copy, over SSH for instance, it asks the terminal to do it with OSC 52, which
 Ghostty, kitty, WezTerm, iTerm2, Alacritty and Windows Terminal understand;
 inside tmux that needs `set -g set-clipboard on`. Copy and paste within the app
 work either way.
+
+A diagram copied as a picture goes the same way: through `osascript` on macOS,
+`wl-copy` or `xclip` on Linux, and PowerShell on Windows. OSC 52 carries only
+text, so over SSH, or on Linux without either tool, the picture is saved in
+your cache folder instead (`~/.cache/emeraldian/diagrams` on Linux) and the
+status bar says where. Copying the diagram as text works everywhere text does.
 
 On a Mac the editor also takes the keys every Mac text field does: `⌥←`/`⌥→`
 move by word and `⌥⌫` deletes one, `⌘←`/`⌘→` go to the start and end of the
@@ -323,6 +330,7 @@ The ribbon icons are buttons, and most of the UI is clickable:
 | A folder in the explorer | Folds it |
 | A tab | Switches to it |
 | A tab's `×`, or a middle click on the tab | Closes it (`●` stands in for `×` while it has unsaved changes) |
+| A diagram's `⧉`, at its top right | Copies it as a picture; a right click copies it as text |
 | Outline / Backlinks / Tags | Switches panel |
 | A graph node | Selects it |
 | Text in the editor | Places the cursor; drag to select |
@@ -375,6 +383,14 @@ anything still wider pans like a wide table, while the prose around it stays
 put. Any other kind of diagram, such as `gitGraph`, or one it can't read, stays
 as code. Each diagram is drawn once and kept, so scrolling past fifty costs
 nothing extra.
+
+Each diagram has a `⧉` at its top right. Click it, or press `y`, and the
+diagram goes on the clipboard as a picture: a PNG in the colours it has on
+screen, on your theme's background, sharp enough to paste into a document, a
+slide or a chat. Lines and arrows are drawn as shapes, so they join cleanly,
+and the words are set in JetBrains Mono. `Y`, or a right click on the `⧉`,
+copies the diagram as text instead, for anywhere that takes only text. The
+picture is only drawn when you ask for it, so until then it costs nothing.
 
 **Pictures.** `![[chart.png]]` and `![alt](assets/chart.png)` are drawn in the
 reading pane — real pixels in Kitty, Ghostty, WezTerm, iTerm2 and anything that
@@ -754,6 +770,12 @@ loop. Pictures here are drawn by
 Licensing note, since two of these are copyleft: nothing was copied, so the
 choice of licence here was a free one rather than an obligation. It went to the
 GPL anyway. The debt is one of ideas, and it's a real one.
+
+Diagrams copied as pictures are lettered in
+[JetBrains Mono](https://github.com/JetBrains/JetBrainsMono), drawn ahead of
+time into the glyph sheet in `crates/emeraldian/assets`. The font, and that
+sheet with it, are under the SIL Open Font License 1.1, which is alongside them
+in `JetBrainsMono-OFL.txt`.
 
 ## Trademark
 
