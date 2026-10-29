@@ -7,7 +7,9 @@
 //! the middle of another, and a corner, a junction or an arrowhead joins the
 //! lines that come into it. Everything else is lettered from the glyph sheet,
 //! and a character the sheet hasn't got, Chinese or an emoji, is an empty box
-//! as wide as the character, so what follows it stays in its column.
+//! as wide as the character, so what follows it stays in its column. A letter
+//! written with marks after it, rather than as one character, is lettered
+//! without them, since nothing here shapes text.
 //!
 //! The picture is made a row of cells at a time, and each row is handed to
 //! the PNG encoder as soon as it is painted, so drawing even a huge diagram
@@ -18,8 +20,7 @@
 
 use std::io::Write;
 
-use unicode_width::UnicodeWidthChar;
-
+use super::canvas::{clusters, columns};
 use super::glyphs::{CELL_H, CELL_W, Glyphs};
 use super::{Diagram, Ink};
 
@@ -120,8 +121,8 @@ pub fn draw(diagram: &Diagram, paint: &dyn Fn(Ink) -> Rgb, page: Rgb) -> Result<
 struct Cell {
     glyph: char,
     ink: Rgb,
-    /// Columns it takes: 2 for a wide character, whose right half is the
-    /// blank cell after it.
+    /// Columns it takes: more than one for a wide character or cluster,
+    /// whose other columns are the blank cells after it.
     span: usize,
 }
 
@@ -132,6 +133,13 @@ const BLANK: Cell = Cell {
 };
 
 /// The diagram as a grid of cells, each with its colour.
+///
+/// A row is taken a grapheme cluster at a time, each in the columns the
+/// canvas gave it, so the picture's columns are the screen's. A cluster of
+/// more than one character, a letter with marks on it or emoji joined into
+/// one, is lettered as its first character: the sheet has no marks to put on
+/// a letter and no emoji, so `é` written as `e` and an accent is drawn as
+/// `e`, and `👨‍💻` is an empty box two columns wide, as `👨` alone would be.
 fn cells(diagram: &Diagram, paint: &dyn Fn(Ink) -> Rgb) -> Vec<Vec<Cell>> {
     diagram
         .rows
@@ -140,17 +148,16 @@ fn cells(diagram: &Diagram, paint: &dyn Fn(Ink) -> Rgb) -> Vec<Vec<Cell>> {
             let mut cells = Vec::with_capacity(diagram.width);
             for (text, ink) in row {
                 let ink = paint(*ink);
-                for glyph in text.chars() {
+                for cluster in clusters(text) {
                     // The canvas leaves out what takes no columns, and so does
                     // the terminal it is drawn in.
-                    let span = glyph.width().unwrap_or(0);
+                    let span = columns(cluster);
                     if span == 0 {
                         continue;
                     }
+                    let glyph = cluster.chars().next().unwrap_or(' ');
                     cells.push(Cell { glyph, ink, span });
-                    if span == 2 {
-                        cells.push(BLANK);
-                    }
+                    cells.extend(std::iter::repeat_n(BLANK, span - 1));
                 }
             }
             cells
@@ -976,6 +983,27 @@ mod tests {
         // The `x` after it is in the third column, where the terminal puts it.
         assert!(!decoded.inks(2, 0).is_empty());
         assert_eq!(decoded.width, 3 * CELL_W + 2 * MARGIN);
+    }
+
+    #[test]
+    fn a_cluster_is_lettered_as_its_first_character_in_the_columns_it_takes() {
+        let picture = |text: &str| {
+            let drawn = diagram(&[&[(text, None, Role::Text)]]);
+            Decoded::of(&draw(&drawn, &paint, PAGE).expect("draws"))
+        };
+        // An accent written after its letter is left off: the sheet has no
+        // marks to put on one.
+        let bare = picture("ex");
+        let marked = picture("e\u{301}x");
+        assert_eq!(marked.width, bare.width);
+        assert_eq!(marked.cell(0, 0), bare.cell(0, 0));
+        assert_eq!(marked.cell(1, 0), bare.cell(1, 0));
+        // Emoji joined into one are one box as wide as the screen draws
+        // them, so the `x` after them is in the third column, as on screen.
+        let joined = picture("👨\u{200d}💻x");
+        assert_eq!(joined.width, 3 * CELL_W + 2 * MARGIN);
+        assert!(!joined.inks(0, 0).is_empty() && !joined.inks(1, 0).is_empty());
+        assert_eq!(joined.cell(2, 0), bare.cell(1, 0));
     }
 
     #[test]

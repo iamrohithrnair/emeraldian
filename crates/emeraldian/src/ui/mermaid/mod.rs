@@ -384,7 +384,7 @@ fn is_tag(inside: &str) -> bool {
 }
 
 /// Breaks text at spaces into lines no wider than `width`, splitting a word
-/// that is wider on its own.
+/// that is wider on its own, though never inside a cluster drawn as one.
 fn wrap(text: &str, width: usize, out: &mut Vec<String>) {
     let mut line = String::new();
     for word in text.split_whitespace() {
@@ -395,11 +395,11 @@ fn wrap(text: &str, width: usize, out: &mut Vec<String>) {
         if !line.is_empty() {
             line.push(' ');
         }
-        for c in word.chars() {
-            if line.width() + c.to_string().width() > width && !line.is_empty() {
+        for cluster in canvas::clusters(word) {
+            if line.width() + cluster.width() > width && !line.is_empty() {
                 out.push(std::mem::take(&mut line));
             }
-            line.push(c);
+            line.push_str(cluster);
         }
     }
     if !line.is_empty() || out.is_empty() {
@@ -414,19 +414,17 @@ fn widest(lines: &[String]) -> usize {
 
 /// Text cut short to fit in `width` columns, ending in `…` where it was cut.
 fn truncate(text: &str, width: usize) -> String {
-    use unicode_width::UnicodeWidthChar;
-
     if text.width() <= width {
         return text.to_string();
     }
     let mut out = String::new();
     let mut used = 0;
-    for c in text.chars() {
-        let wide = c.width().unwrap_or(0);
+    for cluster in canvas::clusters(text) {
+        let wide = canvas::columns(cluster);
         if used + wide + 1 > width {
             break;
         }
-        out.push(c);
+        out.push_str(cluster);
         used += wide;
     }
     if width > 0 {

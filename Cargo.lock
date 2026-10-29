@@ -613,6 +613,7 @@ dependencies = [
  "serde_json",
  "toml",
  "toml_edit",
+ "unicode-segmentation",
  "unicode-width",
 ]
 
