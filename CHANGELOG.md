@@ -33,6 +33,11 @@ unchanged.
   key after it scrolled away. Now it comes and goes on the same frame as the
   diagram, just as `h/l pan` does.
 
+- **A diagram's `⧉` no longer covers its last column.** In a narrow pane, a
+  diagram as wide as the pane had the mark drawn over its top row, so a pie
+  could read `75⧉` instead of `75%`. Diagrams now leave two columns clear for
+  the mark and the space before it.
+
 ## [0.10.1] — 2026-10-29
 
 C4, class, state and entity relationship diagrams, pie and Gantt charts, mind

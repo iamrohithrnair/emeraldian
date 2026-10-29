@@ -1081,8 +1081,11 @@ fn render_block(
             // A Mermaid block is drawn as its diagram when it can be, and
             // shown as code otherwise.
             let start = out.len();
+            // Two columns are kept clear on the right for the copy mark and
+            // the space before it, so a diagram that fills the pane never has
+            // its last column drawn over.
             if lang.eq_ignore_ascii_case("mermaid")
-                && let Some(diagram) = mermaid::render(code, inner_width)
+                && let Some(diagram) = mermaid::render(code, inner_width.saturating_sub(2))
             {
                 let inks = ctx.inks.get_or_insert_with(|| DiagramInks::new(palette));
                 diagram_lines(&diagram, palette, inks, &pad, out);

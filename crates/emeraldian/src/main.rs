@@ -1385,6 +1385,33 @@ mod tests {
     }
 
     #[test]
+    fn a_diagram_that_fills_the_pane_keeps_its_mark_clear_of_it() {
+        let vault = TempVault::new("mouse-diagram-wide");
+        vault.write(
+            "Pie.md",
+            "# Pie\n\n```mermaid\npie\n  \"Coding all day long\" : 3\n  \"Other\" : 1\n```\n",
+        );
+        let mut app = App::new(vault.vault(), Config::default()).expect("app");
+        let pie = app.index.id_of_rel("Pie.md").expect("indexed");
+        app.open_note(pie);
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).expect("terminal");
+        terminal
+            .draw(|frame| ui::draw(frame, &mut app))
+            .expect("draw");
+
+        let (mark, _) = app.regions.diagram_marks[0];
+        let main = app.regions.main.expect("the note is drawn");
+        let buffer = terminal.backend().buffer();
+        let row: String = (main.x..mark.x + 1)
+            .map(|x| buffer[(x, mark.y)].symbol().to_string())
+            .collect();
+        assert!(
+            row.ends_with(' '),
+            "a blank column between the diagram and its mark: {row:?}"
+        );
+    }
+
+    #[test]
     fn a_click_on_a_diagrams_mark_copies_it_as_a_picture_and_a_right_click_as_text() {
         let vault = TempVault::new("mouse-diagram");
         vault.write(
