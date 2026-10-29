@@ -50,6 +50,7 @@ mod mindmap;
 mod pie;
 mod sequence;
 mod state;
+mod syntax;
 mod timeline;
 mod xychart;
 

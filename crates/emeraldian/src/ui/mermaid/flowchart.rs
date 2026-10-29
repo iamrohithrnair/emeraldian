@@ -9,10 +9,8 @@ use std::collections::HashMap;
 
 use super::canvas::{Canvas, Stroke};
 use super::label::{self, widest};
-use super::layered::{self, Graph};
-use super::{Diagram, Ink, Role, key};
-
-pub use super::layered::Direction;
+use super::layered::{self, Direction, Graph};
+use super::{Diagram, Ink, Role, key, syntax};
 
 /// Past these a chart is too big to read in a terminal, and the layout would
 /// do a lot of work to show it badly.
@@ -66,11 +64,8 @@ pub fn parse(header: &str, lines: &[&str]) -> Option<Chart> {
         None => (header, None),
     };
     let direction = match direction.trim() {
-        "" | "TD" | "TB" => Direction::Down,
-        "BT" => Direction::Up,
-        "LR" => Direction::Right,
-        "RL" => Direction::Left,
-        _ => return None,
+        "" => Direction::Down,
+        named => syntax::direction(named)?,
     };
     let mut builder = Builder {
         chart: Chart {
@@ -141,11 +136,7 @@ const IGNORED: &[&str] = &[
 
 impl Builder {
     fn statement(&mut self, statement: &str) -> Option<()> {
-        let first = statement
-            .split(|c: char| c.is_whitespace() || c == ':')
-            .next()
-            .unwrap_or("");
-        if IGNORED.contains(&first) {
+        if IGNORED.contains(&syntax::first_word(statement)) {
             return Some(());
         }
         let mut scan = Scan {
@@ -217,22 +208,14 @@ impl Builder {
             let close = scan.rest().find('}')?;
             scan.at += close + 1;
         }
-        let at = match self.ids.get(id) {
-            Some(&at) => at,
-            None => {
-                if self.chart.nodes.len() >= MAX_NODES {
-                    return None;
-                }
-                self.chart.nodes.push(Node {
-                    id: id.to_string(),
-                    label: label::lines(id),
-                    shape: Shape::Rect,
-                    looped: false,
-                });
-                self.ids.insert(id.to_string(), self.chart.nodes.len() - 1);
-                self.chart.nodes.len() - 1
+        let at = syntax::named(&mut self.ids, &mut self.chart.nodes, id, MAX_NODES, || {
+            Node {
+                id: id.to_string(),
+                label: label::lines(id),
+                shape: Shape::Rect,
+                looped: false,
             }
-        };
+        })?;
         if let Some((label, shape)) = shaped {
             self.chart.nodes[at].label = label::lines(&label);
             self.chart.nodes[at].shape = shape;

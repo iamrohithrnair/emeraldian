@@ -18,7 +18,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::canvas::Canvas;
 use super::label::{self, truncate, widest};
-use super::{Diagram, Ink, Role, key};
+use super::{Diagram, Ink, Role, key, syntax};
 
 /// Past this a pie is a list, and no longer one anyone reads as a pie.
 const MAX_SLICES: usize = 60;
@@ -65,11 +65,11 @@ pub fn parse(header: &str, lines: &[&str]) -> Option<Pie> {
         slices: Vec::new(),
     };
     let mut rest = header.trim();
-    if let Some(after) = word(rest, "showData") {
+    if let Some(after) = syntax::keyword(rest, "showData") {
         pie.show_data = true;
         rest = after;
     }
-    if let Some(title) = word(rest, "title") {
+    if let Some(title) = syntax::keyword(rest, "title") {
         pie.title = Some(title)
             .filter(|title| !title.is_empty())
             .map(label::joined);
@@ -87,11 +87,11 @@ pub fn parse(header: &str, lines: &[&str]) -> Option<Pie> {
         if line.is_empty() {
             continue;
         }
-        if let Some(title) = word(line, "title") {
+        if let Some(title) = syntax::keyword(line, "title") {
             pie.title = Some(title)
                 .filter(|title| !title.is_empty())
                 .map(label::joined);
-        } else if word(line, "showData").is_some_and(str::is_empty) {
+        } else if syntax::keyword(line, "showData").is_some_and(str::is_empty) {
             pie.show_data = true;
         } else if line.starts_with("accTitle") || line.starts_with("accDescr") {
             described = line.starts_with("accDescr") && line.contains('{') && !line.contains('}');
@@ -107,15 +107,6 @@ pub fn parse(header: &str, lines: &[&str]) -> Option<Pie> {
         return None;
     }
     Some(pie)
-}
-
-/// `text` without the keyword `name` it starts with, as a whole word.
-fn word<'a>(text: &'a str, name: &str) -> Option<&'a str> {
-    let rest = text.strip_prefix(name)?;
-    if rest.is_empty() {
-        return Some(rest);
-    }
-    rest.starts_with(char::is_whitespace).then(|| rest.trim())
 }
 
 /// `"Label" : 42.5`. A slice may be nothing, but never less.

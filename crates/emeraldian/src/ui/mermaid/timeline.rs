@@ -13,7 +13,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::canvas::{Canvas, Stroke};
 use super::label::{self, wrap};
-use super::{Diagram, Ink, Role, key};
+use super::{Diagram, Ink, Role, key, syntax};
 
 /// Past these a timeline is too long to read in a terminal.
 const MAX_PERIODS: usize = 300;
@@ -63,11 +63,11 @@ pub fn parse(lines: &[&str]) -> Option<Timeline> {
         if line.is_empty() {
             continue;
         }
-        if let Some(rest) = keyword(line, "title") {
+        if let Some(rest) = syntax::keyword(line, "title") {
             timeline.title = Some(label::unwrapped(rest).join(" "));
             continue;
         }
-        if let Some(rest) = keyword(line, "section") {
+        if let Some(rest) = syntax::keyword(line, "section") {
             timeline.sections.push(label::unwrapped(rest));
             continue;
         }
@@ -110,13 +110,6 @@ pub fn parse(lines: &[&str]) -> Option<Timeline> {
         return None;
     }
     Some(timeline)
-}
-
-/// What follows `word` at the start of a line, when the line starts with it
-/// as a word of its own.
-fn keyword<'a>(line: &'a str, word: &str) -> Option<&'a str> {
-    let rest = line.strip_prefix(word)?;
-    (rest.is_empty() || rest.starts_with(char::is_whitespace)).then(|| rest.trim())
 }
 
 /// Lines wrapped to fit `width` columns.

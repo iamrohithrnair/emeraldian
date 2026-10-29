@@ -11,7 +11,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::canvas::Canvas;
 use super::label::{self, wrap};
-use super::{Diagram, Ink, Role, key};
+use super::{Diagram, Ink, Role, key, syntax};
 
 /// Past this a journey is too long to read in a terminal.
 const MAX_TASKS: usize = 300;
@@ -64,11 +64,11 @@ pub fn parse(lines: &[&str]) -> Option<Journey> {
         if line.is_empty() {
             continue;
         }
-        if let Some(rest) = keyword(line, "title") {
+        if let Some(rest) = syntax::keyword(line, "title") {
             journey.title = Some(words(rest));
             continue;
         }
-        if let Some(rest) = keyword(line, "section") {
+        if let Some(rest) = syntax::keyword(line, "section") {
             journey.sections.push(Section {
                 name: Some(words(rest)),
                 tasks: Vec::new(),
@@ -113,13 +113,6 @@ pub fn parse(lines: &[&str]) -> Option<Journey> {
         return None;
     }
     Some(journey)
-}
-
-/// What follows `word` at the start of a line, when the line starts with it
-/// as a word of its own.
-fn keyword<'a>(line: &'a str, word: &str) -> Option<&'a str> {
-    let rest = line.strip_prefix(word)?;
-    (rest.is_empty() || rest.starts_with(char::is_whitespace)).then(|| rest.trim())
 }
 
 /// Text without its markup, on one line.

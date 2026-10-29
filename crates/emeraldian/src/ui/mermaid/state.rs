@@ -22,7 +22,7 @@ use unicode_width::UnicodeWidthStr;
 use super::canvas::{Canvas, Stroke};
 use super::label::{self, widest};
 use super::layered::{self, Direction, Facing, Graph, Link};
-use super::{Diagram, Ink, Role, key};
+use super::{Diagram, Ink, Role, key, syntax};
 
 const MAX_STATES: usize = 200;
 const MAX_TRANSITIONS: usize = 400;
@@ -147,22 +147,13 @@ impl Reader {
             *self.region.entry(self.frame()).or_insert(0) += 1;
             return Some(());
         }
-        let first = line
-            .split(|c: char| c.is_whitespace() || c == ':')
-            .next()
-            .unwrap_or("");
+        let first = syntax::first_word(line);
         if IGNORED.contains(&first) {
             return Some(());
         }
         if first == "direction" {
             if self.open.is_empty() {
-                self.diagram.direction = match line["direction".len()..].trim() {
-                    "TB" | "TD" => Direction::Down,
-                    "BT" => Direction::Up,
-                    "LR" => Direction::Right,
-                    "RL" => Direction::Left,
-                    _ => return None,
-                };
+                self.diagram.direction = syntax::direction(line["direction".len()..].trim())?;
             }
             return Some(());
         }
@@ -172,7 +163,7 @@ impl Reader {
         if let Some(rest) = line.strip_prefix("state ") {
             return self.state_statement(rest.trim());
         }
-        if let Some(at) = arrow(line) {
+        if let Some(at) = syntax::outside_quotes(line, "-->", &['"']) {
             let (link, label) = match line[at + 3..].split_once(':') {
                 Some((to, label)) => (&line[..at + 3 + to.len()], label.trim()),
                 None => (line, ""),
@@ -195,28 +186,26 @@ impl Reader {
         if id.is_empty() || id.contains(char::is_whitespace) || id.starts_with('[') {
             return None;
         }
-        if let Some(&at) = self.ids.get(id) {
-            return Some(at);
-        }
-        self.add(State {
+        let frame = self.frame();
+        self.named(id, || State {
             id: id.to_string(),
             kind: Kind::State,
             name: label::lines(id),
             description: Vec::new(),
-            frame: self.frame(),
+            frame,
             composite: None,
         })
     }
 
-    fn add(&mut self, state: State) -> Option<usize> {
-        if self.diagram.states.len() >= MAX_STATES {
-            return None;
-        }
-        let id = state.id.clone();
-        self.diagram.states.push(state);
-        let at = self.diagram.states.len() - 1;
-        self.ids.insert(id, at);
-        Some(at)
+    /// The state with `id`, made by `make` the first time it is named.
+    fn named(&mut self, id: &str, make: impl FnOnce() -> State) -> Option<usize> {
+        syntax::named(
+            &mut self.ids,
+            &mut self.diagram.states,
+            id,
+            MAX_STATES,
+            make,
+        )
     }
 
     /// A transition's end: a state, or `[*]`, which is the start of the
@@ -234,11 +223,8 @@ impl Reader {
             "[*] {} {scope} {region}",
             if from { "start" } else { "end" }
         );
-        if let Some(&at) = self.ids.get(&id) {
-            return Some(at);
-        }
-        self.add(State {
-            id,
+        self.named(&id, || State {
+            id: id.clone(),
             kind,
             name: Vec::new(),
             description: Vec::new(),
@@ -299,13 +285,7 @@ impl Reader {
                 None => (rest, None),
             }
         };
-        let (id, kind) = match id.find("<<") {
-            Some(open) => {
-                let close = id[open..].find(">>")? + open;
-                (id[..open].trim(), Some(&id[open + 2..close]))
-            }
-            None => (id, None),
-        };
+        let (id, kind) = syntax::annotated(id)?;
         let (id, description) = match id.split_once(':') {
             Some((id, description)) => (id.trim(), Some(description.trim())),
             None => (id, None),
@@ -368,10 +348,10 @@ impl Reader {
     }
 
     fn add_note(&mut self, owner: usize, text: &str) -> Option<()> {
-        let at = self.diagram.states.len();
+        let id = format!("note {}", self.diagram.states.len());
         let frame = self.diagram.states[owner].frame;
-        self.add(State {
-            id: format!("note {at}"),
+        let at = self.named(&id, || State {
+            id: id.clone(),
             kind: Kind::Note,
             name: label::lines(text),
             description: Vec::new(),
@@ -389,19 +369,6 @@ impl Reader {
         });
         Some(())
     }
-}
-
-/// Where `-->` is in a line, outside quotes.
-fn arrow(line: &str) -> Option<usize> {
-    let mut quoted = false;
-    for (at, c) in line.char_indices() {
-        match c {
-            '"' => quoted = !quoted,
-            '-' if !quoted && line[at..].starts_with("-->") => return Some(at),
-            _ => {}
-        }
-    }
-    None
 }
 
 // ---------------------------------------------------------------- drawing

@@ -20,7 +20,7 @@ use unicode_width::UnicodeWidthStr;
 use super::canvas::{Canvas, Stroke};
 use super::label::{self, truncate, widest};
 use super::layered::{self, Direction, Graph, Link};
-use super::{Diagram, Ink, Role, key};
+use super::{Diagram, Ink, Role, key, syntax};
 
 const MAX_ENTITIES: usize = 150;
 const MAX_ATTRIBUTES: usize = 60;
@@ -129,10 +129,6 @@ impl Reader {
             return Some(());
         }
         if let Some(entity) = self.open {
-            if line == "}" {
-                self.open = None;
-                return Some(());
-            }
             let (line, closed) = match line.strip_suffix('}') {
                 Some(line) => (line.trim(), true),
                 None => (line, false),
@@ -150,13 +146,7 @@ impl Reader {
             return Some(());
         }
         if first == "direction" {
-            self.diagram.direction = match line["direction".len()..].trim() {
-                "TB" | "TD" => Direction::Down,
-                "BT" => Direction::Up,
-                "LR" => Direction::Right,
-                "RL" => Direction::Left,
-                _ => return None,
-            };
+            self.diagram.direction = syntax::direction(line["direction".len()..].trim())?;
             return Some(());
         }
         if let Some(parts) = relationship(line) {
@@ -186,36 +176,20 @@ impl Reader {
     /// in its place, as `p[Person]`.
     fn entity(&mut self, name: &str) -> Option<usize> {
         let name = name.split(":::").next().unwrap_or(name).trim();
-        let (id, shown) = match name.find('[') {
-            Some(open) if name.ends_with(']') => {
-                (name[..open].trim(), Some(&name[open + 1..name.len() - 1]))
-            }
-            Some(_) => return None,
-            None => (name, None),
-        };
-        let id = unquote(id);
+        let (id, shown) = syntax::bracketed(name)?;
+        let id = syntax::unquote(id);
         if id.is_empty() || (id.contains(char::is_whitespace) && !name.starts_with('"')) {
             return None;
         }
-        let at = match self.ids.get(id) {
-            Some(&at) => at,
-            None => {
-                if self.diagram.entities.len() >= MAX_ENTITIES {
-                    return None;
-                }
-                self.diagram.entities.push(Entity {
-                    id: id.to_string(),
-                    name: label::lines(id),
-                    attributes: Vec::new(),
-                    loops: Vec::new(),
-                });
-                self.ids
-                    .insert(id.to_string(), self.diagram.entities.len() - 1);
-                self.diagram.entities.len() - 1
-            }
-        };
+        let entities = &mut self.diagram.entities;
+        let at = syntax::named(&mut self.ids, entities, id, MAX_ENTITIES, || Entity {
+            id: id.to_string(),
+            name: label::lines(id),
+            attributes: Vec::new(),
+            loops: Vec::new(),
+        })?;
         if let Some(shown) = shown {
-            self.diagram.entities[at].name = label::lines(unquote(shown));
+            self.diagram.entities[at].name = label::lines(syntax::unquote(shown));
         }
         Some(at)
     }
@@ -282,13 +256,6 @@ impl Reader {
     }
 }
 
-fn unquote(text: &str) -> &str {
-    let text = text.trim();
-    text.strip_prefix('"')
-        .and_then(|inner| inner.strip_suffix('"'))
-        .unwrap_or(text)
-}
-
 /// The parts of a relationship statement.
 struct Parts<'a> {
     from: &'a str,
@@ -303,7 +270,7 @@ struct Parts<'a> {
 /// `A ||--o{ B : label`, or the same in words, as its parts; `None` when
 /// the line holds no relationship.
 fn relationship(line: &str) -> Option<Parts<'_>> {
-    let (link, label) = split_label(line);
+    let (link, label) = syntax::label_after(line, &['"']);
     marks(link)
         .or_else(|| words(link))
         .map(|(from, left, stroke, right, to)| Parts {
@@ -312,21 +279,8 @@ fn relationship(line: &str) -> Option<Parts<'_>> {
             left,
             right,
             stroke,
-            label: unquote(label),
+            label: syntax::unquote(label),
         })
-}
-
-/// Splits at the first colon outside quotes.
-fn split_label(line: &str) -> (&str, &str) {
-    let mut quoted = false;
-    for (at, c) in line.char_indices() {
-        match c {
-            '"' => quoted = !quoted,
-            ':' if !quoted => return (&line[..at], line[at + 1..].trim()),
-            _ => {}
-        }
-    }
-    (line, "")
 }
 
 type Link4<'a> = (&'a str, &'static str, Stroke, &'static str, &'a str);

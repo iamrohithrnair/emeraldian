@@ -28,7 +28,7 @@ use unicode_width::UnicodeWidthStr;
 use super::canvas::{Canvas, Stroke};
 use super::label::{self, truncate, widest};
 use super::layered::{self, Direction, Graph, Link};
-use super::{Diagram, Ink, Role, key};
+use super::{Diagram, Ink, Role, key, syntax};
 
 const MAX_ELEMENTS: usize = 120;
 const MAX_RELS: usize = 240;
@@ -450,42 +450,18 @@ fn call(piece: &str) -> Option<(String, Args)> {
     }
     let inside = piece[open + 1..].strip_suffix(')')?;
     let mut args = Args::default();
-    let mut quoted = false;
-    let mut start = 0;
-    let mut parts = Vec::new();
-    for (at, c) in inside.char_indices() {
-        match c {
-            '"' => quoted = !quoted,
-            ',' if !quoted => {
-                parts.push(&inside[start..at]);
-                start = at + 1;
-            }
-            _ => {}
-        }
-    }
-    if quoted {
-        return None;
-    }
-    parts.push(&inside[start..]);
-    for part in parts {
+    for part in syntax::split_outside_quotes(inside, ',')? {
         let part = part.trim();
         if let Some(named) = part.strip_prefix('$')
             && let Some((name, value)) = named.split_once('=')
         {
-            args.named.push((name.trim().to_string(), unquote(value)));
+            let value = syntax::unquote(value).to_string();
+            args.named.push((name.trim().to_string(), value));
         } else {
-            args.given.push(unquote(part));
+            args.given.push(syntax::unquote(part).to_string());
         }
     }
     Some((name.to_string(), args))
-}
-
-fn unquote(text: &str) -> String {
-    let text = text.trim();
-    text.strip_prefix('"')
-        .and_then(|inner| inner.strip_suffix('"'))
-        .unwrap_or(text)
-        .to_string()
 }
 
 /// At most `most` lines, the last ending in `…` if any were cut.

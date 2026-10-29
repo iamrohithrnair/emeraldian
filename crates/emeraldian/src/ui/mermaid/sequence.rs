@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use super::canvas::{Canvas, Stroke};
 use super::label::{self, widest};
-use super::{Diagram, Ink, Role, key};
+use super::{Diagram, Ink, Role, key, syntax};
 
 const MAX_ACTORS: usize = 40;
 const MAX_EVENTS: usize = 400;
@@ -100,20 +100,12 @@ impl Builder {
         if id.is_empty() {
             return None;
         }
-        if let Some(&at) = self.ids.get(id) {
-            return Some(at);
-        }
-        if self.sequence.actors.len() >= MAX_ACTORS {
-            return None;
-        }
-        self.sequence.actors.push(Actor {
+        let actors = &mut self.sequence.actors;
+        syntax::named(&mut self.ids, actors, id, MAX_ACTORS, || Actor {
             id: id.to_string(),
             label: label::lines(id),
             person: false,
-        });
-        self.ids
-            .insert(id.to_string(), self.sequence.actors.len() - 1);
-        Some(self.sequence.actors.len() - 1)
+        })
     }
 }
 

@@ -20,7 +20,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::canvas::{Canvas, Stroke};
 use super::label::{self, truncate, widest};
-use super::{Diagram, Ink, Role, key};
+use super::{Diagram, Ink, Role, key, syntax};
 
 const MAX_SERIES: usize = 20;
 const MAX_POINTS: usize = 500;
@@ -129,12 +129,7 @@ pub fn parse(header: &str, lines: &[&str]) -> Option<Chart> {
 
 /// Words, without the quotes they may be in, and without markup.
 fn text(raw: &str) -> String {
-    let raw = raw.trim();
-    let inner = raw
-        .strip_prefix('"')
-        .and_then(|inner| inner.strip_suffix('"'))
-        .unwrap_or(raw);
-    label::joined(inner)
+    label::joined(syntax::unquote(raw))
 }
 
 /// A quoted title, or a single word, at the start of `rest`, and what
@@ -204,24 +199,8 @@ fn items(inside: &str) -> Option<Vec<&str>> {
     if inside.trim().is_empty() {
         return Some(Vec::new());
     }
-    let mut out = Vec::new();
-    let mut quoted = false;
-    let mut start = 0;
-    for (at, c) in inside.char_indices() {
-        match c {
-            '"' => quoted = !quoted,
-            ',' if !quoted => {
-                out.push(inside[start..at].trim());
-                start = at + 1;
-            }
-            _ => {}
-        }
-    }
-    if quoted || out.len() >= MAX_POINTS {
-        return None;
-    }
-    out.push(inside[start..].trim());
-    Some(out)
+    let items = syntax::split_outside_quotes(inside, ',')?;
+    (items.len() <= MAX_POINTS).then(|| items.into_iter().map(str::trim).collect())
 }
 
 /// A finite number, such as `+1.3`, `.6` or `-3.4`.

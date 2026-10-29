@@ -22,7 +22,7 @@ use unicode_width::UnicodeWidthStr;
 use super::canvas::{Canvas, Stroke};
 use super::label::{self, truncate, widest};
 use super::layered::{self, Direction, Facing, Graph, Link};
-use super::{Diagram, Ink, Role, key};
+use super::{Diagram, Ink, Role, key, syntax};
 
 const MAX_CLASSES: usize = 150;
 const MAX_MEMBERS: usize = 60;
@@ -137,10 +137,6 @@ impl Reader {
         }
         if let Some(Open::Body(class)) = self.open.last() {
             let class = *class;
-            if line == "}" {
-                self.open.pop();
-                return Some(());
-            }
             let (member, closed) = match line.strip_suffix('}') {
                 Some(member) => (member.trim(), true),
                 None => (line, false),
@@ -155,23 +151,13 @@ impl Reader {
             self.open.pop()?;
             return Some(());
         }
-        let first = line
-            .split(|c: char| c.is_whitespace() || c == ':')
-            .next()
-            .unwrap_or("");
+        let first = syntax::first_word(line);
         if IGNORED.contains(&first) {
             return Some(());
         }
         match first {
             "direction" => {
-                let name = line["direction".len()..].trim();
-                self.diagram.direction = match name {
-                    "TB" | "TD" => Direction::Down,
-                    "BT" => Direction::Up,
-                    "LR" => Direction::Right,
-                    "RL" => Direction::Left,
-                    _ => return None,
-                };
+                self.diagram.direction = syntax::direction(line["direction".len()..].trim())?;
                 Some(())
             }
             "namespace" => self.namespace(line["namespace".len()..].trim()),
@@ -204,13 +190,9 @@ impl Reader {
         if id.is_empty() {
             return None;
         }
-        if let Some(&at) = self.ids.get(&id) {
-            return Some(at);
-        }
-        if self.diagram.classes.len() >= MAX_CLASSES {
-            return None;
-        }
-        self.diagram.classes.push(Class {
+        let frame = self.frame();
+        let classes = &mut self.diagram.classes;
+        syntax::named(&mut self.ids, classes, &id, MAX_CLASSES, || Class {
             name: label::lines(&display_name(name))
                 .iter()
                 .map(|line| generics(line))
@@ -219,12 +201,10 @@ impl Reader {
             annotation: None,
             attributes: Vec::new(),
             methods: Vec::new(),
-            frame: self.frame(),
+            frame,
             looped: false,
             note: false,
-        });
-        self.ids.insert(id, self.diagram.classes.len() - 1);
-        Some(self.diagram.classes.len() - 1)
+        })
     }
 
     /// `class Name`, with a label, generics, an annotation or a body.
@@ -234,23 +214,8 @@ impl Reader {
             None => (rest, None),
         };
         let head = head.split(":::").next().unwrap_or(head).trim();
-        let (head, annotation) = match head.find("<<") {
-            Some(open) => {
-                let close = head[open..].find(">>")? + open;
-                (
-                    head[..open].trim(),
-                    Some(head[open + 2..close].trim().to_string()),
-                )
-            }
-            None => (head, None),
-        };
-        let (name, label) = match head.find('[') {
-            Some(open) if head.ends_with(']') => {
-                (&head[..open], Some(&head[open + 1..head.len() - 1]))
-            }
-            Some(_) => return None,
-            None => (head, None),
-        };
+        let (head, annotation) = syntax::annotated(head)?;
+        let (name, label) = syntax::bracketed(head)?;
         let class = self.class(name.trim())?;
         // Declared inside a namespace, it is drawn there.
         if self.frame().is_some() {
@@ -259,8 +224,8 @@ impl Reader {
         if let Some(label) = label {
             self.diagram.classes[class].name = label::lines(label);
         }
-        if annotation.is_some() {
-            self.diagram.classes[class].annotation = annotation;
+        if let Some(annotation) = annotation {
+            self.diagram.classes[class].annotation = Some(annotation.trim().to_string());
         }
         if let Some(body) = body {
             self.open.push(Open::Body(class));
@@ -306,13 +271,8 @@ impl Reader {
     /// `namespace Name {`, which may be dotted, as `A.B`, for one in another.
     fn namespace(&mut self, rest: &str) -> Option<()> {
         let rest = rest.strip_suffix('{')?.trim();
-        let (name, label) = match rest.find('[') {
-            Some(open) if rest.ends_with(']') => {
-                (rest[..open].trim(), Some(&rest[open + 1..rest.len() - 1]))
-            }
-            Some(_) => return None,
-            None => (rest, None),
-        };
+        let (name, label) = syntax::bracketed(rest)?;
+        let name = name.trim();
         if name.is_empty() {
             return None;
         }
@@ -518,36 +478,22 @@ struct Parts<'a> {
 /// `A "1" <|-- "many" B : label`, as its parts, or `None` if the line has
 /// no relationship in it.
 fn relation(line: &str) -> Option<Parts<'_>> {
-    let (link, label) = split_label(line);
+    // A label after a colon may be in backticks as well as quotes.
+    let (link, label) = syntax::label_after(line, &['"', '`']);
     // The line of the arrow, `--` or `..`, outside quotes.
-    let bytes = link.as_bytes();
-    let mut quoted = false;
-    let mut found = None;
-    for at in 0..bytes.len() {
-        match bytes[at] {
-            b'"' => quoted = !quoted,
-            b'-' | b'.' if !quoted && bytes.get(at + 1) == Some(&bytes[at]) => {
-                found = Some(at);
-                break;
-            }
-            _ => {}
-        }
-    }
-    let start = found?;
-    let line_char = bytes[start];
-    let mut end = start;
-    while bytes.get(end) == Some(&line_char) {
-        end += 1;
-    }
-    let stroke = if line_char == b'.' {
+    let start = ["--", ".."]
+        .into_iter()
+        .filter_map(|line| syntax::outside_quotes(link, line, &['"']))
+        .min()?;
+    let dash = link.as_bytes()[start];
+    let end = start + link[start..].bytes().take_while(|&b| b == dash).count();
+    let stroke = if dash == b'.' {
         Stroke::Dotted
     } else {
         Stroke::Solid
     };
-    let before = &link[..start];
-    let after = &link[end..];
-    let (before, tail) = left_mark(before);
-    let (after, head) = right_mark(after);
+    let (before, tail) = mark(&link[..start], true);
+    let (after, head) = mark(&link[end..], false);
     let (from, tail_count) = count_at_end(before.trim_end());
     let (to, head_count) = count_at_start(after.trim_start());
     let (from, to) = (from.trim(), to.trim());
@@ -566,52 +512,32 @@ fn relation(line: &str) -> Option<Parts<'_>> {
     })
 }
 
-/// Splits `link : label` at the first colon outside quotes and backticks.
-fn split_label(line: &str) -> (&str, &str) {
-    let mut quoted = false;
-    for (at, c) in line.char_indices() {
-        match c {
-            '"' | '`' => quoted = !quoted,
-            ':' if !quoted => return (&line[..at], line[at + 1..].trim()),
-            _ => {}
-        }
-    }
-    (line, "")
-}
-
-fn left_mark(text: &str) -> (&str, Option<Mark>) {
-    for (token, mark) in [
-        ("<|", Mark::Triangle),
-        ("()", Mark::Lollipop),
-        ("*", Mark::Filled),
-        ("o", Mark::Hollow),
-        ("<", Mark::Arrow),
+/// The mark where a relationship's line meets what is `left` of it, or
+/// right, as written on that side, and the rest of what is there.
+fn mark(text: &str, left: bool) -> (&str, Option<Mark>) {
+    for (before, after, mark) in [
+        ("<|", "|>", Mark::Triangle),
+        ("()", "()", Mark::Lollipop),
+        ("*", "*", Mark::Filled),
+        ("o", "o", Mark::Hollow),
+        ("<", ">", Mark::Arrow),
     ] {
-        if let Some(rest) = text.strip_suffix(token) {
-            // An `o` is a mark only where it isn't the end of a name.
-            if token == "o" && !rest.ends_with([' ', '"']) {
-                continue;
-            }
-            return (rest, Some(mark));
+        let rest = if left {
+            text.strip_suffix(before)
+        } else {
+            text.strip_prefix(after)
+        };
+        let Some(rest) = rest else { continue };
+        // An `o` is a mark only where it isn't part of a name.
+        let named = if left {
+            !rest.ends_with([' ', '"'])
+        } else {
+            !rest.starts_with([' ', '"'])
+        };
+        if before == "o" && named {
+            continue;
         }
-    }
-    (text, None)
-}
-
-fn right_mark(text: &str) -> (&str, Option<Mark>) {
-    for (token, mark) in [
-        ("|>", Mark::Triangle),
-        ("()", Mark::Lollipop),
-        ("*", Mark::Filled),
-        ("o", Mark::Hollow),
-        (">", Mark::Arrow),
-    ] {
-        if let Some(rest) = text.strip_prefix(token) {
-            if token == "o" && !rest.starts_with([' ', '"']) {
-                continue;
-            }
-            return (rest, Some(mark));
-        }
+        return (rest, Some(mark));
     }
     (text, None)
 }

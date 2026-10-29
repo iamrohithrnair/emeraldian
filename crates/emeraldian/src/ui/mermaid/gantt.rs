@@ -30,7 +30,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::canvas::{Canvas, Stroke};
 use super::label::{self, truncate};
-use super::{Diagram, Ink, Role, key};
+use super::{Diagram, Ink, Role, key, syntax};
 
 const MAX_TASKS: usize = 300;
 const MAX_SECTIONS: usize = 60;
@@ -166,11 +166,11 @@ pub fn parse(lines: &[&str]) -> Option<Gantt> {
     let lines: Vec<&str> = lines.iter().map(|line| line.trim()).collect();
     let format = lines
         .iter()
-        .find_map(|line| keyword(line, "dateFormat"))
+        .find_map(|line| syntax::keyword(line, "dateFormat"))
         .map_or_else(|| Format::new("YYYY-MM-DD"), Format::new)?;
     let inclusive = lines
         .iter()
-        .any(|line| keyword(line, "inclusiveEndDates").is_some());
+        .any(|line| syntax::keyword(line, "inclusiveEndDates").is_some());
     let mut title = None;
     let mut sections: Vec<String> = Vec::new();
     let mut specs: Vec<Spec> = Vec::new();
@@ -181,26 +181,23 @@ pub fn parse(lines: &[&str]) -> Option<Gantt> {
             continue;
         }
         if line.is_empty()
-            || keyword(line, "dateFormat").is_some()
-            || keyword(line, "inclusiveEndDates").is_some()
+            || syntax::keyword(line, "dateFormat").is_some()
+            || syntax::keyword(line, "inclusiveEndDates").is_some()
         {
             continue;
         }
-        if let Some(text) = keyword(line, "title") {
+        if let Some(text) = syntax::keyword(line, "title") {
             title = Some(label::joined(text)).filter(|text| !text.is_empty());
             continue;
         }
-        if let Some(name) = keyword(line, "section") {
+        if let Some(name) = syntax::keyword(line, "section") {
             if sections.len() >= MAX_SECTIONS {
                 return None;
             }
             sections.push(truncate(&label::joined(name), 2 * NAME_WIDTH));
             continue;
         }
-        let first = line
-            .split(|c: char| c.is_whitespace() || c == ':')
-            .next()
-            .unwrap_or("");
+        let first = syntax::first_word(line);
         if IGNORED.contains(&first) {
             described = first == "accDescr" && line.contains('{') && !line.contains('}');
             continue;
@@ -229,15 +226,6 @@ pub fn parse(lines: &[&str]) -> Option<Gantt> {
         tasks,
         axis,
     })
-}
-
-/// What follows `name` at the start of a line, as a whole word.
-fn keyword<'a>(line: &'a str, name: &str) -> Option<&'a str> {
-    let rest = line.strip_prefix(name)?;
-    if rest.is_empty() {
-        return Some(rest);
-    }
-    rest.starts_with(char::is_whitespace).then(|| rest.trim())
 }
 
 /// `Name : done, id, 2024-01-01, 3d`.

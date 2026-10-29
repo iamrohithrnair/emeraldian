@@ -17,7 +17,7 @@
 
 use super::canvas::Canvas;
 use super::label::{self, widest};
-use super::{Diagram, Ink, Role, key};
+use super::{Diagram, Ink, Role, key, syntax};
 
 /// Past these a map is too big to read in a terminal.
 const MAX_NODES: usize = 500;
@@ -122,7 +122,7 @@ const SHAPES: &[(&str, &str)] = &[
 /// `None` when a shape's brackets are left open.
 fn node(text: &str) -> Option<(String, Vec<String>)> {
     // A class only changes how the node looks.
-    let text = match outside_quotes(text, ":::") {
+    let text = match syntax::outside_quotes(text, ":::", &['"']) {
         Some(at) => text[..at].trim_end(),
         None => text,
     };
@@ -143,19 +143,6 @@ fn node(text: &str) -> Option<(String, Vec<String>)> {
         }
     }
     Some((text.to_string(), words(text)))
-}
-
-/// Where `needle` first appears outside double quotes.
-fn outside_quotes(text: &str, needle: &str) -> Option<usize> {
-    let mut quoted = false;
-    for (at, c) in text.char_indices() {
-        if c == '"' {
-            quoted = !quoted;
-        } else if !quoted && text[at..].starts_with(needle) {
-            return Some(at);
-        }
-    }
-    None
 }
 
 /// A label as the lines it is shown on. A markdown string, in backticks,
