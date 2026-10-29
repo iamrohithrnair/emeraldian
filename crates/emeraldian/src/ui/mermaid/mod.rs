@@ -2,10 +2,13 @@
 //!
 //! A ```` ```mermaid ```` block in reading mode is drawn as boxes and lines
 //! made of box-drawing characters, which every terminal can show, rather
-//! than as its source. Flowcharts (`graph` and `flowchart`) and sequence
-//! diagrams are understood. Anything else, and anything this can't make
-//! sense of, returns `None`, and the block is shown as code the way it always
-//! was: a wrong picture is worse than the source.
+//! than as its source. Flowcharts (`graph` and `flowchart`), sequence, class,
+//! state and entity relationship diagrams, C4 diagrams of all five kinds,
+//! pie charts, Gantt charts, XY charts, mind maps, timelines and user
+//! journeys are understood, each in a module of its own, and those that are
+//! graphs share one layout, [`layered`]'s. Anything else, and anything this
+//! can't make sense of, returns `None`, and the block is shown as code the
+//! way it always was: a wrong picture is worse than the source.
 //!
 //! Nothing here runs a browser or another program. Each diagram is drawn the
 //! first time a note that holds it is laid out, and kept in a small cache
@@ -16,30 +19,38 @@
 //!
 //! Each node, and each participant in a sequence, has a colour of its own,
 //! which its outline, the edges it sends and their arrowheads and words are
-//! drawn in, so the flow can be followed by colour. The words inside a box
-//! stay in the body colour, where they read best. The drawing only records
-//! whose each run is; the colours are the theme's own hues, picked when the
-//! note is laid out (see [`Diagram::colours`]) and kept with the laid-out
-//! lines, so a frame costs what it did.
+//! drawn in, so the flow can be followed by colour. So does each slice of a
+//! pie, each series of a chart and each section or branch of a timeline,
+//! journey or mind map. The words inside a box stay in the body colour,
+//! where they read best. The drawing only records whose each run is; the
+//! colours are the theme's own hues, picked when the note is laid out (see
+//! [`Diagram::colours`]) and kept with the laid-out lines, so a frame costs
+//! what it did.
 //!
 //! Turning a sideways chart that doesn't fit to run downwards, the limit on
 //! source size, keeping drawings by their source and giving each box a colour
 //! from the theme are ideas taken from prismantis (MIT), which draws Mermaid
-//! for Claude Code. Arrowheads in their edge's colour, and words on edges
-//! kept to a stronger contrast than the lines, come from beautiful-mermaid
-//! (MIT), the renderer prismantis builds on. The code is our own.
+//! for Claude Code, and so is the choice of kinds to draw beyond those two:
+//! C4, class, state and entity relationship diagrams, pies, Gantt charts and
+//! XY charts, each of whose modules says what it took. Arrowheads in their
+//! edge's colour, and words on edges kept to a stronger contrast than the
+//! lines, come from beautiful-mermaid (MIT), the renderer prismantis builds
+//! on. The code is our own.
 
 mod c4;
 mod canvas;
 mod class;
 mod er;
 mod flowchart;
+mod gantt;
 mod journey;
 mod layered;
 mod mindmap;
+mod pie;
 mod sequence;
 mod state;
 mod timeline;
+mod xychart;
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -228,6 +239,11 @@ fn draw(lines: &[String], width: usize) -> Option<Diagram> {
         "classDiagram" | "classDiagram-v2" => class::draw(&class::parse(rest)?),
         "stateDiagram" | "stateDiagram-v2" => state::draw(&state::parse(rest)?, width),
         "erDiagram" => er::draw(&er::parse(rest)?, width),
+        "pie" => pie::draw(&pie::parse(&header[kind.len()..], rest)?, width),
+        "gantt" => gantt::draw(&gantt::parse(rest)?, width),
+        "xychart-beta" | "xychart" => {
+            xychart::draw(&xychart::parse(&header[kind.len()..], rest)?, width)
+        }
         "mindmap" => mindmap::draw(&mindmap::parse(rest)?),
         "timeline" => timeline::draw(&timeline::parse(rest)?, width),
         "journey" => journey::draw(&journey::parse(rest)?, width),
@@ -498,6 +514,9 @@ mod tests {
             "mindmap\n  root((mindmap))\n    Origins\n      Long history\n      ::icon(fa fa-book)\n      Popularisation\n    Research\n      On effectiveness<br/>and features\n      id2[\"`**Bold** and *italic*\nover two lines`\"]\n    Tools{{Tools}}:::urgent\n      Pen and paper",
             "timeline\n  title England's History\n  section Stone Age\n    7600 BC : Britain's oldest known house : Orkney\n    6000 BC : Sea levels rise.<br> People hunt.\n  section Bronze Age\n    2300 BC : People arrive from Europe\n            : New styles of pottery\n  accTitle: Ages",
             "journey\n  title My working day\n  section Go to work\n    Make tea: 5: Me\n    Do work: 1: Me, Cat\n  section Go home\n    Sit down: 4.5: Me\n  accTitle: Day",
+            "pie showData title Pets 🐶\n  \"Dogs\" : 386\n  \"Cats\" : 85.5\n  \"Rats\" : .5\n  \"日本\" : 0",
+            "gantt\n  dateFormat YYYY-MM-DD\n  title Plan 🙂\n  section A\n  One : done, a1, 2024-01-01, 3d\n  Two : after a1, 12h\n  section 日本\n  Three : until m1\n  Ship : milestone, m1, 2024-01-09, 0d",
+            "xychart-beta horizontal\n  title \"Sales 🙂\"\n  x-axis \"Month\" [jan, \"feb x\", mar]\n  y-axis \"Revenue\" -40 --> 110.5\n  bar \"rain\" [5, -6, 7.5]\n  line [+1, .5, 99]",
         ];
         for sample in samples {
             let mut cuts: Vec<String> = sample
@@ -512,6 +531,60 @@ mod tests {
             for cut in cuts {
                 for width in [1, 20, 200] {
                     let _ = draw(&lines(&cut), width);
+                }
+            }
+        }
+    }
+
+    /// Sources just under the limit, dense with links, loops, nesting and
+    /// wide characters, of each kind that is a graph: each is drawn within
+    /// the canvas's limit or refused, and none takes long, as the run time
+    /// of this test shows.
+    #[test]
+    fn huge_tangled_sources_of_every_kind_stay_bounded() {
+        let mut seed = 7u64;
+        let mut next = |below: u64| {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) % below
+        };
+        let mut sources = Vec::new();
+        let mut c4 = String::from("C4Container\n");
+        for at in 0..16 {
+            c4.push_str(&format!("Boundary(b{at}, \"境界 {at}\") {{\n"));
+        }
+        for at in 0..60 {
+            c4.push_str(&format!(
+                "Container(c{at}, \"コンテナ {at}\", \"Go\", \"Does {at}\")\n"
+            ));
+        }
+        c4.push_str(&"}\n".repeat(16));
+        let mut class = String::from("classDiagram\n");
+        let mut state = String::from("stateDiagram-v2\n");
+        let mut er = String::from("erDiagram\n");
+        for _ in 0..400 {
+            let (a, b) = (next(60), next(60));
+            c4.push_str(&format!("Rel(c{a}, c{b}, \"r\")\n"));
+            class.push_str(&format!("K{a} <|-- K{b} : x\n"));
+            state.push_str(&format!("S{a} --> S{b} : e\n"));
+            er.push_str(&format!("E{a} ||--o{{ E{b} : has\n"));
+        }
+        for source in [c4, class, state, er] {
+            let mut cut = String::new();
+            for line in source.lines() {
+                if cut.len() + line.len() + 1 >= MAX_SOURCE {
+                    break;
+                }
+                cut.push_str(line);
+                cut.push('\n');
+            }
+            sources.push(cut);
+        }
+        for source in &sources {
+            for width in [1, 80, 400] {
+                if let Some(drawn) = draw(&lines(source), width) {
+                    assert!(drawn.rows.len() * drawn.width <= canvas::MAX_CELLS);
                 }
             }
         }
