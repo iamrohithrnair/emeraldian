@@ -20,7 +20,7 @@ use unicode_width::UnicodeWidthStr;
 use super::canvas::{Canvas, Stroke};
 use super::label::{self, truncate, widest};
 use super::layered::{self, Direction, Graph, Link};
-use super::{Diagram, Ink, Role, key, syntax};
+use super::{Diagram, Ink, Role, SQUARE, key, pairs, syntax};
 
 const MAX_ENTITIES: usize = 150;
 const MAX_ATTRIBUTES: usize = 60;
@@ -396,11 +396,7 @@ pub fn draw(diagram: &ErDiagram, width: usize) -> Option<Diagram> {
     graph.links = diagram
         .relationships
         .iter()
-        .map(|r| Link {
-            from: r.from,
-            to: r.to,
-            words: (!r.words.is_empty()).then(|| (widest(&r.words), r.words.len())),
-        })
+        .map(|r| Link::new(r.from, r.to, &r.words))
         .collect();
     graph.room = width;
     graph.spread = true;
@@ -410,12 +406,10 @@ pub fn draw(diagram: &ErDiagram, width: usize) -> Option<Diagram> {
     for (at, (entity, rect)) in entities.iter().zip(&placed.boxes).enumerate() {
         draw_entity(&mut canvas, entity, at, *rect);
     }
-    for (r, rect) in diagram.relationships.iter().zip(&placed.words) {
-        if let Some(rect) = rect {
-            let ink = Ink::of(Role::Label, r.from);
-            label::centred(&mut canvas, rect.x, rect.y, rect.width, &r.words, ink);
-        }
-    }
+    placed.draw_words(&mut canvas, |at| {
+        let r = &diagram.relationships[at];
+        (&r.words, Ink::of(Role::Label, r.from))
+    });
     placed.draw_lines(&mut canvas, |at| {
         let r = &diagram.relationships[at];
         (r.stroke, Ink::of(Role::Line, r.from).owner)
@@ -428,44 +422,24 @@ pub fn draw(diagram: &ErDiagram, width: usize) -> Option<Diagram> {
 
     let mut drawn = canvas.finish();
     drawn.keys = entities.iter().map(|e| key(&e.id)).collect();
-    drawn.links = diagram
-        .relationships
-        .iter()
-        .filter_map(|r| Some((u16::try_from(r.from).ok()?, u16::try_from(r.to).ok()?)))
-        .collect();
+    drawn.links = pairs(diagram.relationships.iter().map(|r| (r.from, r.to)));
     Some(drawn)
 }
 
 fn draw_entity(canvas: &mut Canvas, entity: &Entity, at: usize, rect: layered::Rect) {
     let (x, y, w, h) = (rect.x, rect.y, rect.width, rect.height);
     let outline = Ink::of(Role::Border, at);
-    canvas.outline(x, y, w, h, ['┌', '┐', '└', '┘'], false, outline);
-    label::centred(
-        canvas,
-        x + 1,
-        y + 1,
-        w - 2,
-        &entity.name,
-        Ink::plain(Role::Text),
-    );
+    canvas.outline(x, y, w, h, SQUARE, false, outline);
+    let name = Ink::plain(Role::Text);
+    label::centred(canvas, x + 1, y + 1, w - 2, &entity.name, name);
     let loops = y + 1 + entity.name.len();
-    label::centred(
-        canvas,
-        x + 1,
-        loops,
-        w - 2,
-        &entity.loops,
-        Ink::of(Role::Label, at),
-    );
+    let own = Ink::of(Role::Label, at);
+    label::centred(canvas, x + 1, loops, w - 2, &entity.loops, own);
     if entity.attributes.is_empty() {
         return;
     }
     let rule = loops + entity.loops.len();
-    canvas.put(x, rule, '├', outline);
-    canvas.put(x + w - 1, rule, '┤', outline);
-    for column in x + 1..x + w - 1 {
-        canvas.put(column, rule, '─', outline);
-    }
+    layered::rule(canvas, x, rule, w, outline);
     let widths = entity.columns();
     let quiet = Ink::plain(Role::Label);
     for (row, attribute) in entity.attributes.iter().enumerate() {

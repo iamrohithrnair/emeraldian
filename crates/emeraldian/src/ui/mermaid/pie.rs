@@ -18,7 +18,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::canvas::Canvas;
 use super::label::{self, truncate, widest};
-use super::{Diagram, Ink, Role, key, syntax};
+use super::{Diagram, Ink, Role, key, pairs, syntax};
 
 /// Past this a pie is a list, and no longer one anyone reads as a pie.
 const MAX_SLICES: usize = 60;
@@ -190,14 +190,11 @@ pub fn draw(pie: &Pie, width: usize) -> Option<Diagram> {
     // Neighbouring slices differ, and so do the first and last, which meet
     // at the top of a round pie.
     let count = pie.slices.len();
-    for at in 0..count {
-        let next = (at + 1) % count;
-        if next != at
-            && let (Ok(a), Ok(b)) = (u16::try_from(at.min(next)), u16::try_from(at.max(next)))
-        {
-            diagram.links.push((a, b));
-        }
-    }
+    let ring = (0..count).map(|at| (at, (at + 1) % count));
+    diagram.links = pairs(
+        ring.filter(|(a, b)| a != b)
+            .map(|(a, b)| (a.min(b), a.max(b))),
+    );
     diagram.links.sort_unstable();
     diagram.links.dedup();
     Some(diagram)

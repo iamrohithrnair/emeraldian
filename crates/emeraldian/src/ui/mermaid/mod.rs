@@ -169,6 +169,20 @@ impl Diagram {
     }
 }
 
+/// Owners joined in pairs, as [`Diagram::links`] keeps them, leaving out any
+/// past what it can hold.
+fn pairs(pairs: impl IntoIterator<Item = (usize, usize)>) -> Vec<(u16, u16)> {
+    pairs
+        .into_iter()
+        .filter_map(|(a, b)| Some((u16::try_from(a).ok()?, u16::try_from(b).ok()?)))
+        .collect()
+}
+
+/// The corners of a box, square and round, as [`canvas::Canvas::outline`]
+/// takes them.
+const SQUARE: [char; 4] = ['┌', '┐', '└', '┘'];
+const ROUND: [char; 4] = ['╭', '╮', '╰', '╯'];
+
 /// A key for a node's or participant's id, the same on every run and every
 /// machine: FNV-1a, then mixed with SplitMix64's finaliser so ids that differ
 /// only in their last letter, as `A`, `B` and `C` do, still land far apart.

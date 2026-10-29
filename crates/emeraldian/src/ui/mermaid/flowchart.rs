@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use super::canvas::{Canvas, Stroke};
 use super::label::{self, widest};
 use super::layered::{self, Direction, Graph};
-use super::{Diagram, Ink, Role, key, syntax};
+use super::{Diagram, Ink, ROUND, Role, SQUARE, key, pairs, syntax};
 
 /// Past these a chart is too big to read in a terminal, and the layout would
 /// do a lot of work to show it badly.
@@ -450,11 +450,7 @@ fn layout(chart: &Chart, direction: Direction) -> Option<Diagram> {
     graph.links = chart
         .edges
         .iter()
-        .map(|edge| layered::Link {
-            from: edge.from,
-            to: edge.to,
-            words: (!edge.label.is_empty()).then(|| (widest(&edge.label), edge.label.len())),
-        })
+        .map(|edge| layered::Link::new(edge.from, edge.to, &edge.label))
         .collect();
     let placed = layered::layout(&graph)?;
     let mut canvas = Canvas::new(placed.width, placed.height)?;
@@ -463,8 +459,8 @@ fn layout(chart: &Chart, direction: Direction) -> Option<Diagram> {
     for (at, rect) in placed.boxes.iter().enumerate() {
         let shape = chart.nodes[at].shape;
         let corners = match shape {
-            Shape::Rect => ['┌', '┐', '└', '┘'],
-            Shape::Round => ['╭', '╮', '╰', '╯'],
+            Shape::Rect => SQUARE,
+            Shape::Round => ROUND,
             Shape::Subroutine => ['╔', '╗', '╚', '╝'],
             Shape::Diamond => ['╱', '╲', '╲', '╱'],
         };
@@ -474,12 +470,10 @@ fn layout(chart: &Chart, direction: Direction) -> Option<Diagram> {
         let words = Ink::plain(Role::Text);
         label::centred(&mut canvas, x + 1, y + 1, w - 2, &labels[at], words);
     }
-    for (edge, rect) in chart.edges.iter().zip(&placed.words) {
-        if let Some(rect) = rect {
-            let ink = Ink::of(Role::Label, edge.from);
-            label::centred(&mut canvas, rect.x, rect.y, rect.width, &edge.label, ink);
-        }
-    }
+    placed.draw_words(&mut canvas, |edge| {
+        let edge = &chart.edges[edge];
+        (&edge.label, Ink::of(Role::Label, edge.from))
+    });
 
     // Each edge is drawn in the colour of the node it leaves, which its
     // arrowhead carries to the node it reaches.
@@ -494,26 +488,16 @@ fn layout(chart: &Chart, direction: Direction) -> Option<Diagram> {
         let head = Ink::of(Role::Arrow, edge.from);
         // Where an edge meets a box, the join is part of the box's outline.
         let join = Ink::of(Role::Border, end.node);
-        if end.leaving {
-            if !double {
-                canvas.put(end.border.0, end.border.1, end.facing.join(), join);
-            }
-            if arrow {
-                canvas.put(end.outside.0, end.outside.1, end.facing.arrow(), head);
-            }
-        } else if arrow {
-            canvas.put(end.outside.0, end.outside.1, end.facing.arrow(), head);
-        } else if !double {
+        if end.joined(arrow) && !double {
             canvas.put(end.border.0, end.border.1, end.facing.join(), join);
+        }
+        if arrow {
+            canvas.put(end.outside.0, end.outside.1, end.facing.arrow(), head);
         }
     }
     let mut diagram = canvas.finish();
     diagram.keys = chart.nodes.iter().map(|node| key(&node.id)).collect();
-    diagram.links = chart
-        .edges
-        .iter()
-        .filter_map(|edge| Some((u16::try_from(edge.from).ok()?, u16::try_from(edge.to).ok()?)))
-        .collect();
+    diagram.links = pairs(chart.edges.iter().map(|edge| (edge.from, edge.to)));
     Some(diagram)
 }
 

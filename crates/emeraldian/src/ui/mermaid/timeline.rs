@@ -13,7 +13,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::canvas::{Canvas, Stroke};
 use super::label::{self, wrap};
-use super::{Diagram, Ink, Role, key, syntax};
+use super::{Diagram, Ink, Role, key, pairs, syntax};
 
 /// Past these a timeline is too long to read in a terminal.
 const MAX_PERIODS: usize = 300;
@@ -263,9 +263,7 @@ pub fn draw(timeline: &Timeline, width: usize) -> Option<Diagram> {
 
     let mut diagram = canvas.finish();
     diagram.keys = owners.iter().map(|name| key(name)).collect();
-    diagram.links = (1..owners.len())
-        .filter_map(|k| Some((u16::try_from(k - 1).ok()?, u16::try_from(k).ok()?)))
-        .collect();
+    diagram.links = pairs((1..owners.len()).map(|k| (k - 1, k)));
     Some(diagram)
 }
 

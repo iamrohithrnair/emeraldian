@@ -30,7 +30,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::canvas::{Canvas, Stroke};
 use super::label::{self, truncate};
-use super::{Diagram, Ink, Role, key, syntax};
+use super::{Diagram, Ink, Role, key, pairs, syntax};
 
 const MAX_TASKS: usize = 300;
 const MAX_SECTIONS: usize = 60;
@@ -786,9 +786,7 @@ pub fn draw(gantt: &Gantt, width: usize) -> Option<Diagram> {
 
     let mut diagram = canvas.finish();
     diagram.keys = gantt.sections.iter().map(|name| key(name)).collect();
-    diagram.links = (1..gantt.sections.len())
-        .filter_map(|at| Some((u16::try_from(at - 1).ok()?, u16::try_from(at).ok()?)))
-        .collect();
+    diagram.links = pairs((1..gantt.sections.len()).map(|k| (k - 1, k)));
     Some(diagram)
 }
 

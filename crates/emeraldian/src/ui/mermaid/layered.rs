@@ -32,6 +32,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use super::canvas::{Canvas, Stroke};
+use super::label::{self, widest};
 use super::{Ink, Role};
 
 /// Boxes, bends, edge words and the places frames keep in ranks they would
@@ -115,6 +116,18 @@ pub struct Link {
     pub words: Option<(usize, usize)>,
 }
 
+impl Link {
+    /// A link with `words` on it, or none.
+    #[must_use]
+    pub fn new(from: usize, to: usize, words: &[String]) -> Self {
+        Self {
+            from,
+            to,
+            words: (!words.is_empty()).then(|| (widest(words), words.len())),
+        }
+    }
+}
+
 /// What to lay out.
 #[derive(Debug, Clone)]
 pub struct Graph {
@@ -189,6 +202,15 @@ pub struct End {
     pub facing: Facing,
 }
 
+impl End {
+    /// Whether the box's outline is joined to the line here: where the line
+    /// leaves, and where it arrives without a `head` drawn outside.
+    #[must_use]
+    pub fn joined(&self, head: bool) -> bool {
+        self.leaving || !head
+    }
+}
+
 /// Where everything went.
 #[derive(Debug, Clone)]
 pub struct Layout {
@@ -230,6 +252,21 @@ impl Layout {
         }
         self.width += x;
         self.height += y;
+    }
+
+    /// Writes each link's words in the place kept for them, centred, as
+    /// `words` gives them for the link with their ink.
+    pub fn draw_words<'a>(
+        &self,
+        canvas: &mut Canvas,
+        words: impl Fn(usize) -> (&'a [String], Ink),
+    ) {
+        for (link, rect) in self.words.iter().enumerate() {
+            if let Some(rect) = rect {
+                let (lines, ink) = words(link);
+                label::centred(canvas, rect.x, rect.y, rect.width, lines, ink);
+            }
+        }
     }
 
     /// Draws every line, each in the stroke and colour `style` gives its
@@ -306,9 +343,19 @@ impl Layout {
             && length >= 4
             && !label.is_empty()
         {
-            let cut = super::label::truncate(label, length - 2);
+            let cut = label::truncate(label, length - 2);
             canvas.text(x, y, &format!(" {cut} "), ink);
         }
+    }
+}
+
+/// A rule across a box `width` wide whose left side is at `x`, joined to
+/// both sides, as between a box's compartments.
+pub fn rule(canvas: &mut Canvas, x: usize, y: usize, width: usize, ink: Ink) {
+    canvas.put(x, y, '├', ink);
+    canvas.put(x + width - 1, y, '┤', ink);
+    for column in x + 1..x + width - 1 {
+        canvas.put(column, y, '─', ink);
     }
 }
 

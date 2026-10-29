@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use super::canvas::{Canvas, Stroke};
 use super::label::{self, widest};
-use super::{Diagram, Ink, Role, key, syntax};
+use super::{Diagram, Ink, ROUND, Role, SQUARE, key, pairs, syntax};
 
 const MAX_ACTORS: usize = 40;
 const MAX_EVENTS: usize = 400;
@@ -368,19 +368,19 @@ pub fn draw(sequence: &Sequence) -> Option<Diagram> {
     // messages it sends are drawn in.
     for (k, actor) in actors.iter().enumerate() {
         let column = x(centre[k] - boxes[k] as i64 / 2);
-        let corners = if actor.person {
-            ['╭', '╮', '╰', '╯']
-        } else {
-            ['┌', '┐', '└', '┘']
-        };
+        let corners = if actor.person { ROUND } else { SQUARE };
         let outline = Ink::of(Role::Border, k);
         for top in [0, height - tall] {
             canvas.outline(column, top, boxes[k], tall, corners, false, outline);
-            for (row, line) in actor.label.iter().enumerate() {
-                let indent = (boxes[k] - 2 - line.width()) / 2;
-                let words = Ink::plain(Role::Text);
-                canvas.text(column + 1 + indent, top + 1 + row, line, words);
-            }
+            let words = Ink::plain(Role::Text);
+            label::centred(
+                &mut canvas,
+                column + 1,
+                top + 1,
+                boxes[k] - 2,
+                &actor.label,
+                words,
+            );
         }
     }
     let mut row = tall;
@@ -436,15 +436,7 @@ pub fn draw(sequence: &Sequence) -> Option<Diagram> {
                 let (from, to) = notes.next()?;
                 let (column, wide) = (x(from), usize::try_from(to - from).ok()?);
                 let note = Ink::plain(Role::Note);
-                canvas.outline(
-                    column,
-                    row,
-                    wide,
-                    label.len() + 2,
-                    ['┌', '┐', '└', '┘'],
-                    false,
-                    note,
-                );
+                canvas.outline(column, row, wide, label.len() + 2, SQUARE, false, note);
                 // Filled with blanks first, so the lifelines don't run
                 // through it.
                 for inside in row + 1..row + 1 + label.len() {
@@ -497,19 +489,15 @@ pub fn draw(sequence: &Sequence) -> Option<Diagram> {
 /// Participants side by side, and those that message each other, which
 /// should differ in colour.
 fn links(sequence: &Sequence) -> Vec<(u16, u16)> {
-    let pair =
-        |a: usize, b: usize| Some((u16::try_from(a.min(b)).ok()?, u16::try_from(a.max(b)).ok()?));
-    let mut links: Vec<(u16, u16)> = (1..sequence.actors.len())
-        .filter_map(|k| pair(k - 1, k))
-        .collect();
-    for event in &sequence.events {
-        if let Event::Message { from, to, .. } = event
-            && from != to
-            && let Some(link) = pair(*from, *to)
-        {
-            links.push(link);
-        }
-    }
+    let talking = sequence.events.iter().filter_map(|event| match *event {
+        Event::Message { from, to, .. } if from != to => Some((from.min(to), from.max(to))),
+        _ => None,
+    });
+    let mut links = pairs(
+        (1..sequence.actors.len())
+            .map(|k| (k - 1, k))
+            .chain(talking),
+    );
     links.sort_unstable();
     links.dedup();
     links

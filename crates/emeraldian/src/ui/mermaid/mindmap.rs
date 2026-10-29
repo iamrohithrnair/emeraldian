@@ -17,7 +17,7 @@
 
 use super::canvas::Canvas;
 use super::label::{self, widest};
-use super::{Diagram, Ink, Role, key, syntax};
+use super::{Diagram, Ink, ROUND, Role, key, pairs, syntax};
 
 /// Past these a map is too big to read in a terminal.
 const MAX_NODES: usize = 500;
@@ -161,8 +161,6 @@ fn words(raw: &str) -> Vec<String> {
 
 /// Draws a mind map, or `None` when it is too big.
 pub fn draw(map: &Mindmap) -> Option<Diagram> {
-    use unicode_width::UnicodeWidthStr;
-
     let root = map.nodes.first()?;
     let branches = &root.children;
     let box_width = widest(&root.label) + 4;
@@ -199,19 +197,9 @@ pub fn draw(map: &Mindmap) -> Option<Diagram> {
     let mut canvas = Canvas::new(width, height)?;
 
     let quiet = Ink::plain(Role::Border);
-    canvas.outline(
-        0,
-        0,
-        box_width,
-        box_rows,
-        ['╭', '╮', '╰', '╯'],
-        false,
-        quiet,
-    );
-    for (row, line) in root.label.iter().enumerate() {
-        let indent = (box_width - 2 - line.width()) / 2;
-        canvas.text(1 + indent, 1 + row, line, Ink::plain(Role::Text));
-    }
+    canvas.outline(0, 0, box_width, box_rows, ROUND, false, quiet);
+    let words = Ink::plain(Role::Text);
+    label::centred(&mut canvas, 1, 1, box_width - 2, &root.label, words);
     if !branches.is_empty() {
         canvas.put(2, box_rows - 1, '┬', quiet);
     }
@@ -252,9 +240,7 @@ pub fn draw(map: &Mindmap) -> Option<Diagram> {
         .filter_map(|&at| map.nodes.get(at))
         .map(|node| key(&node.id))
         .collect();
-    diagram.links = (1..branches.len())
-        .filter_map(|k| Some((u16::try_from(k - 1).ok()?, u16::try_from(k).ok()?)))
-        .collect();
+    diagram.links = pairs((1..branches.len()).map(|k| (k - 1, k)));
     Some(diagram)
 }
 

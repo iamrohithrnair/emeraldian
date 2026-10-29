@@ -20,7 +20,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::canvas::{Canvas, Stroke};
 use super::label::{self, truncate, widest};
-use super::{Diagram, Ink, Role, key, syntax};
+use super::{Diagram, Ink, Role, key, pairs, syntax};
 
 const MAX_SERIES: usize = 20;
 const MAX_POINTS: usize = 500;
@@ -398,13 +398,8 @@ pub fn draw(chart: &Chart, width: usize) -> Option<Diagram> {
         })
         .collect();
     // Every series differs from every other, where there are colours enough.
-    for a in 0..chart.series.len() {
-        for b in a + 1..chart.series.len() {
-            if let (Ok(a), Ok(b)) = (u16::try_from(a), u16::try_from(b)) {
-                diagram.links.push((a, b));
-            }
-        }
-    }
+    let count = chart.series.len();
+    diagram.links = pairs((0..count).flat_map(|a| (a + 1..count).map(move |b| (a, b))));
     Some(diagram)
 }
 

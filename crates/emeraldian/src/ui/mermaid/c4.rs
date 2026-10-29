@@ -28,7 +28,7 @@ use unicode_width::UnicodeWidthStr;
 use super::canvas::{Canvas, Stroke};
 use super::label::{self, truncate, widest};
 use super::layered::{self, Direction, Graph, Link};
-use super::{Diagram, Ink, Role, key, syntax};
+use super::{Diagram, Ink, ROUND, Role, SQUARE, key, pairs, syntax};
 
 const MAX_ELEMENTS: usize = 120;
 const MAX_RELS: usize = 240;
@@ -522,11 +522,7 @@ pub fn draw(c4: &C4, width: usize) -> Option<Diagram> {
     graph.links = c4
         .rels
         .iter()
-        .map(|rel| Link {
-            from: rel.from,
-            to: rel.to,
-            words: (!rel.words.is_empty()).then(|| (widest(&rel.words), rel.words.len())),
-        })
+        .map(|rel| Link::new(rel.from, rel.to, &rel.words))
         .collect();
     graph.frames = c4.frames.iter().map(|frame| frame.parent).collect();
     graph.framed = c4.elements.iter().map(|element| element.frame).collect();
@@ -543,12 +539,10 @@ pub fn draw(c4: &C4, width: usize) -> Option<Diagram> {
     for (at, (element, rect)) in c4.elements.iter().zip(&placed.boxes).enumerate() {
         draw_element(&mut canvas, element, at, *rect);
     }
-    for (rel, rect) in c4.rels.iter().zip(&placed.words) {
-        if let Some(rect) = rect {
-            let ink = c4.elements[rel.from].ink(Role::Label, rel.from);
-            label::centred(&mut canvas, rect.x, rect.y, rect.width, &rel.words, ink);
-        }
-    }
+    placed.draw_words(&mut canvas, |rel| {
+        let rel = &c4.rels[rel];
+        (&rel.words, c4.elements[rel.from].ink(Role::Label, rel.from))
+    });
     placed.draw_lines(&mut canvas, |rel| {
         let from = c4.rels[rel].from;
         (Stroke::Solid, c4.elements[from].ink(Role::Line, from).owner)
@@ -558,23 +552,12 @@ pub fn draw(c4: &C4, width: usize) -> Option<Diagram> {
         let arrow = end.to || rel.both;
         let head = c4.elements[rel.from].ink(Role::Arrow, rel.from);
         let join = c4.elements[end.node].ink(Role::Border, end.node);
-        if end.leaving {
-            canvas.put(
-                end.border.0,
-                end.border.1,
-                layered::join(&canvas, end),
-                join,
-            );
+        if end.joined(arrow) {
+            let glyph = layered::join(&canvas, end);
+            canvas.put(end.border.0, end.border.1, glyph, join);
         }
         if arrow {
             canvas.put(end.outside.0, end.outside.1, end.facing.arrow(), head);
-        } else if !end.leaving {
-            canvas.put(
-                end.border.0,
-                end.border.1,
-                layered::join(&canvas, end),
-                join,
-            );
         }
     }
     for (at, frame) in c4.frames.iter().enumerate() {
@@ -587,11 +570,7 @@ pub fn draw(c4: &C4, width: usize) -> Option<Diagram> {
         .iter()
         .map(|element| key(&element.alias))
         .collect();
-    diagram.links = c4
-        .rels
-        .iter()
-        .filter_map(|rel| Some((u16::try_from(rel.from).ok()?, u16::try_from(rel.to).ok()?)))
-        .collect();
+    diagram.links = pairs(c4.rels.iter().map(|rel| (rel.from, rel.to)));
     Some(diagram)
 }
 
@@ -599,15 +578,11 @@ fn draw_element(canvas: &mut Canvas, element: &Element, at: usize, rect: layered
     let (x, y, w, h) = (rect.x, rect.y, rect.width, rect.height);
     let outline = element.ink(Role::Border, at);
     match element.shape {
-        Shape::Person => canvas.outline(x, y, w, h, ['╭', '╮', '╰', '╯'], false, outline),
-        Shape::Box => canvas.outline(x, y, w, h, ['┌', '┐', '└', '┘'], false, outline),
+        Shape::Person => canvas.outline(x, y, w, h, ROUND, false, outline),
+        Shape::Box => canvas.outline(x, y, w, h, SQUARE, false, outline),
         Shape::Database => {
-            canvas.outline(x, y, w, h, ['╭', '╮', '╰', '╯'], false, outline);
-            canvas.put(x, y + 1, '├', outline);
-            canvas.put(x + w - 1, y + 1, '┤', outline);
-            for column in x + 1..x + w - 1 {
-                canvas.put(column, y + 1, '─', outline);
-            }
+            canvas.outline(x, y, w, h, ROUND, false, outline);
+            layered::rule(canvas, x, y + 1, w, outline);
         }
         Shape::Queue => {
             canvas.outline(x, y, w, h, ['╓', '╖', '╙', '╜'], false, outline);

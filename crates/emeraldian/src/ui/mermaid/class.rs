@@ -22,7 +22,7 @@ use unicode_width::UnicodeWidthStr;
 use super::canvas::{Canvas, Stroke};
 use super::label::{self, truncate, widest};
 use super::layered::{self, Direction, Facing, Graph, Link};
-use super::{Diagram, Ink, Role, key, syntax};
+use super::{Diagram, Ink, ROUND, Role, SQUARE, key, pairs, syntax};
 
 const MAX_CLASSES: usize = 150;
 const MAX_MEMBERS: usize = 60;
@@ -610,12 +610,7 @@ pub fn draw(diagram: &ClassDiagram) -> Option<Diagram> {
     graph.links = diagram
         .relations
         .iter()
-        .map(|relation| Link {
-            from: relation.from,
-            to: relation.to,
-            words: (!relation.words.is_empty())
-                .then(|| (widest(&relation.words), relation.words.len())),
-        })
+        .map(|relation| Link::new(relation.from, relation.to, &relation.words))
         .collect();
     graph.frames = diagram.namespaces.iter().map(|n| n.parent).collect();
     graph.framed = classes.iter().map(|class| class.frame).collect();
@@ -635,19 +630,10 @@ pub fn draw(diagram: &ClassDiagram) -> Option<Diagram> {
             Ink::of(role, at)
         }
     };
-    for (relation, rect) in diagram.relations.iter().zip(&placed.words) {
-        if let Some(rect) = rect {
-            let words = ink(Role::Label, relation.from);
-            label::centred(
-                &mut canvas,
-                rect.x,
-                rect.y,
-                rect.width,
-                &relation.words,
-                words,
-            );
-        }
-    }
+    placed.draw_words(&mut canvas, |at| {
+        let relation = &diagram.relations[at];
+        (&relation.words, ink(Role::Label, relation.from))
+    });
     placed.draw_lines(&mut canvas, |at| {
         let relation = &diagram.relations[at];
         (relation.stroke, ink(Role::Line, relation.from).owner)
@@ -656,7 +642,7 @@ pub fn draw(diagram: &ClassDiagram) -> Option<Diagram> {
         let relation = &diagram.relations[end.link];
         let mark = if end.to { relation.head } else { relation.tail };
         let join = ink(Role::Border, end.node);
-        if end.leaving || mark.is_none() {
+        if end.joined(mark.is_some()) {
             let glyph = layered::join(&canvas, end);
             canvas.put(end.border.0, end.border.1, glyph, join);
         }
@@ -672,11 +658,7 @@ pub fn draw(diagram: &ClassDiagram) -> Option<Diagram> {
 
     let mut drawn = canvas.finish();
     drawn.keys = classes.iter().map(|class| key(&class.id)).collect();
-    drawn.links = diagram
-        .relations
-        .iter()
-        .filter_map(|r| Some((u16::try_from(r.from).ok()?, u16::try_from(r.to).ok()?)))
-        .collect();
+    drawn.links = pairs(diagram.relations.iter().map(|r| (r.from, r.to)));
     Some(drawn)
 }
 
@@ -692,40 +674,29 @@ fn glyph(mark: Mark, facing: Facing) -> char {
 
 fn draw_class(canvas: &mut Canvas, class: &Class, at: usize, rect: layered::Rect) {
     let (x, y, w, h) = (rect.x, rect.y, rect.width, rect.height);
-    let (outline, words) = if class.note {
-        (Ink::plain(Role::Note), Ink::plain(Role::Note))
+    let (outline, words, corners) = if class.note {
+        (Ink::plain(Role::Note), Ink::plain(Role::Note), ROUND)
     } else {
-        (Ink::of(Role::Border, at), Ink::plain(Role::Text))
-    };
-    let corners = if class.note {
-        ['╭', '╮', '╰', '╯']
-    } else {
-        ['┌', '┐', '└', '┘']
+        (Ink::of(Role::Border, at), Ink::plain(Role::Text), SQUARE)
     };
     canvas.outline(x, y, w, h, corners, false, outline);
     let mut row = y + 1;
     let header = class.header();
-    if class.annotation.is_some() && !class.note {
-        let annotation = std::slice::from_ref(&header[0]);
-        label::centred(
-            canvas,
-            x + 1,
-            row,
-            w - 2,
-            annotation,
-            Ink::of(Role::Label, at),
-        );
-        label::centred(canvas, x + 1, row + 1, w - 2, &header[1..], words);
-    } else {
-        label::centred(canvas, x + 1, row, w - 2, &header, words);
-    }
+    // An annotation is written in the class's colour, over its name.
+    let annotated = usize::from(class.annotation.is_some() && !class.note);
+    let (annotation, name) = header.split_at(annotated);
+    label::centred(
+        canvas,
+        x + 1,
+        row,
+        w - 2,
+        annotation,
+        Ink::of(Role::Label, at),
+    );
+    label::centred(canvas, x + 1, row + annotated, w - 2, name, words);
     row += header.len();
     for part in class.compartments() {
-        canvas.put(x, row, '├', outline);
-        canvas.put(x + w - 1, row, '┤', outline);
-        for column in x + 1..x + w - 1 {
-            canvas.put(column, row, '─', outline);
-        }
+        layered::rule(canvas, x, row, w, outline);
         row += 1;
         for member in part {
             canvas.text(x + 2, row, member, words);

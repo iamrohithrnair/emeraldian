@@ -11,7 +11,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::canvas::Canvas;
 use super::label::{self, wrap};
-use super::{Diagram, Ink, Role, key, syntax};
+use super::{Diagram, Ink, Role, key, pairs, syntax};
 
 /// Past this a journey is too long to read in a terminal.
 const MAX_TASKS: usize = 300;
@@ -233,9 +233,7 @@ pub fn draw(journey: &Journey, width: usize) -> Option<Diagram> {
         .iter()
         .map(|section| key(section.name.as_deref().unwrap_or("")))
         .collect();
-    diagram.links = (1..journey.sections.len())
-        .filter_map(|k| Some((u16::try_from(k - 1).ok()?, u16::try_from(k).ok()?)))
-        .collect();
+    diagram.links = pairs((1..journey.sections.len()).map(|k| (k - 1, k)));
     Some(diagram)
 }
 

@@ -22,7 +22,7 @@ use unicode_width::UnicodeWidthStr;
 use super::canvas::{Canvas, Stroke};
 use super::label::{self, widest};
 use super::layered::{self, Direction, Facing, Graph, Link};
-use super::{Diagram, Ink, Role, key, syntax};
+use super::{Diagram, Ink, ROUND, Role, SQUARE, key, pairs, syntax};
 
 const MAX_STATES: usize = 200;
 const MAX_TRANSITIONS: usize = 400;
@@ -470,11 +470,7 @@ pub fn draw(diagram: &StateDiagram, width: usize) -> Option<Diagram> {
     }
     graph.links = transitions
         .iter()
-        .map(|&(from, to, t)| Link {
-            from,
-            to,
-            words: (!t.words.is_empty()).then(|| (widest(&t.words), t.words.len())),
-        })
+        .map(|&(from, to, t)| Link::new(from, to, &t.words))
         .collect();
     graph.frames = diagram.composites.iter().map(|c| c.parent).collect();
     graph.framed = boxes.iter().map(|&s| states[s].frame).collect();
@@ -508,18 +504,10 @@ pub fn draw(diagram: &StateDiagram, width: usize) -> Option<Diagram> {
             across,
         );
     }
-    for (&(from, _, t), rect) in transitions.iter().zip(&placed.words) {
-        if let Some(rect) = rect {
-            label::centred(
-                &mut canvas,
-                rect.x,
-                rect.y,
-                rect.width,
-                &t.words,
-                ink(Role::Label, from),
-            );
-        }
-    }
+    placed.draw_words(&mut canvas, |link| {
+        let (from, _, t) = transitions[link];
+        (&t.words, ink(Role::Label, from))
+    });
     placed.draw_lines(&mut canvas, |link| {
         let (from, _, t) = transitions[link];
         let stroke = if t.note {
@@ -534,17 +522,16 @@ pub fn draw(diagram: &StateDiagram, width: usize) -> Option<Diagram> {
         let state = &states[boxes[end.node]];
         let arrow = end.to && !t.note;
         // A start or end has no outline to join, and a bar is joined below.
-        let joins = !matches!(state.kind, Kind::Start | Kind::End);
-        if joins && (end.leaving || !arrow) {
+        let joins = !matches!(state.kind, Kind::Start | Kind::End)
+            && joinable(state, end.border, placed.boxes[end.node], across);
+        if joins && end.joined(arrow) {
             let glyph = join(state.kind, &canvas, end);
-            if joinable(state, end.border, placed.boxes[end.node], across) {
-                canvas.put(
-                    end.border.0,
-                    end.border.1,
-                    glyph,
-                    ink(Role::Border, end.node),
-                );
-            }
+            canvas.put(
+                end.border.0,
+                end.border.1,
+                glyph,
+                ink(Role::Border, end.node),
+            );
         }
         if arrow {
             canvas.put(
@@ -561,10 +548,7 @@ pub fn draw(diagram: &StateDiagram, width: usize) -> Option<Diagram> {
 
     let mut drawn = canvas.finish();
     drawn.keys = boxes.iter().map(|&s| key(&states[s].id)).collect();
-    drawn.links = transitions
-        .iter()
-        .filter_map(|&(from, to, _)| Some((u16::try_from(from).ok()?, u16::try_from(to).ok()?)))
-        .collect();
+    drawn.links = pairs(transitions.iter().map(|&(from, to, _)| (from, to)));
     Some(drawn)
 }
 
@@ -637,31 +621,26 @@ fn draw_state(canvas: &mut Canvas, state: &State, rect: layered::Rect, outline: 
             }
         }
         Kind::State | Kind::Note => {
-            let corners = if state.kind == Kind::Note {
-                ['┌', '┐', '└', '┘']
-            } else {
-                ['╭', '╮', '╰', '╯']
-            };
-            canvas.outline(x, y, w, h, corners, false, outline);
-            let words = if state.kind == Kind::Note {
-                outline
-            } else {
-                Ink::plain(Role::Text)
-            };
+            // A note's words are written as they are, from the left.
             if state.kind == Kind::Note {
+                canvas.outline(x, y, w, h, SQUARE, false, outline);
                 for (row, line) in state.name.iter().enumerate() {
-                    canvas.text(x + 2, y + 1 + row, line, words);
+                    canvas.text(x + 2, y + 1 + row, line, outline);
                 }
             } else {
-                label::centred(canvas, x + 1, y + 1, w - 2, &state.name, words);
+                canvas.outline(x, y, w, h, ROUND, false, outline);
+                label::centred(
+                    canvas,
+                    x + 1,
+                    y + 1,
+                    w - 2,
+                    &state.name,
+                    Ink::plain(Role::Text),
+                );
             }
             if !state.description.is_empty() {
                 let rule = y + 1 + state.name.len();
-                canvas.put(x, rule, '├', outline);
-                canvas.put(x + w - 1, rule, '┤', outline);
-                for column in x + 1..x + w - 1 {
-                    canvas.put(column, rule, '─', outline);
-                }
+                layered::rule(canvas, x, rule, w, outline);
                 for (row, line) in state.description.iter().enumerate() {
                     canvas.text(x + 2, rule + 1 + row, line, Ink::plain(Role::Text));
                 }
