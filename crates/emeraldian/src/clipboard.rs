@@ -291,23 +291,17 @@ mod system {
         PASTE.iter().find_map(|command| read_from(command))
     }
 
-    fn pipe_into(command: &[&str], text: &str) -> bool {
-        let child = Command::new(command[0])
-            .args(&command[1..])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-        let Ok(mut child) = child else {
-            return false;
+    /// Pipes `text` into a clipboard tool, with the same time limit as a
+    /// picture: a tool that never exits, as `xclip` can on a forwarded
+    /// display that has gone, must not freeze the app with it.
+    fn pipe_into(command: &'static [&'static str], text: &str) -> bool {
+        let tool = super::Tool {
+            program: command[0].to_string(),
+            args: &command[1..],
+            wait: std::time::Duration::from_secs(5),
+            says: false,
         };
-        // Taken so it is dropped — closing the pipe is what tells the tool the
-        // text has ended.
-        let written = child
-            .stdin
-            .take()
-            .is_some_and(|mut stdin| stdin.write_all(text.as_bytes()).is_ok());
-        child.wait().is_ok_and(|status| status.success()) && written
+        run(&tool, text.as_bytes()).is_ok()
     }
 
     fn read_from(command: &[&str]) -> Option<String> {

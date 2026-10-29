@@ -254,7 +254,7 @@ mod tests {
                 false,
             );
             assert!(
-                pixels.chunks_exact(3).any(|pixel| pixel == colour),
+                pixels.as_chunks::<3>().0.contains(&colour),
                 "box {owner} is outlined in {colour:?}"
             );
         }
