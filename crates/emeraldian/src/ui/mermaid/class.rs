@@ -473,6 +473,8 @@ fn generics(text: &str) -> String {
     let chars: Vec<char> = rest.chars().collect();
     let mut out = String::from(lead);
     let mut depth = 0usize;
+    // The tildes from here on, this one included.
+    let mut left = chars.iter().filter(|&&c| c == '~').count();
     for (at, &c) in chars.iter().enumerate() {
         if c != '~' {
             out.push(c);
@@ -485,8 +487,9 @@ fn generics(text: &str) -> String {
         let names = chars
             .get(at + 1)
             .is_some_and(|&n| n.is_alphanumeric() || n == '_');
-        let left = chars[at..].iter().filter(|&&c| c == '~').count();
-        if names && (depth == 0 || left > depth) {
+        let tildes = left;
+        left -= 1;
+        if names && (depth == 0 || tildes > depth) {
             out.push('<');
             depth += 1;
         } else if depth > 0 {
