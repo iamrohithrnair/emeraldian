@@ -34,9 +34,12 @@ mod canvas;
 mod class;
 mod er;
 mod flowchart;
+mod journey;
 mod layered;
+mod mindmap;
 mod sequence;
 mod state;
+mod timeline;
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -225,6 +228,9 @@ fn draw(lines: &[String], width: usize) -> Option<Diagram> {
         "classDiagram" | "classDiagram-v2" => class::draw(&class::parse(rest)?),
         "stateDiagram" | "stateDiagram-v2" => state::draw(&state::parse(rest)?, width),
         "erDiagram" => er::draw(&er::parse(rest)?, width),
+        "mindmap" => mindmap::draw(&mindmap::parse(rest)?),
+        "timeline" => timeline::draw(&timeline::parse(rest)?, width),
+        "journey" => journey::draw(&journey::parse(rest)?, width),
         _ => None,
     }
 }
@@ -456,7 +462,7 @@ mod tests {
     fn unknown_kinds_and_empty_blocks_are_left_as_code() {
         assert!(render(&[], 80).is_none());
         assert!(render(&lines("\n\n"), 80).is_none());
-        assert!(render(&lines("pie title Pets\n  \"Dogs\" : 3"), 80).is_none());
+        assert!(render(&lines("gitGraph\n  commit\n  branch develop"), 80).is_none());
         assert!(render(&lines("graph TD\n  A -->"), 80).is_none());
         assert!(render(&lines("not mermaid at all"), 80).is_none());
     }
@@ -485,6 +491,13 @@ mod tests {
             "graph TD\n  A[Christmas] -->|Get money| B(Go shopping)\n  B --> C{Let me think}\n  C -->|One| D[Laptop]\n  C -. Two .-> E[\"iPhone [x]\"]\n  C == Three ==> F((Car))\n  F --> F\n  D & E --- A",
             "flowchart RL; a([x]) <--> b[[y]]; b --x c[(z)]; c ~~~ d{{w}}; d --o a; e>f] --> g[/h/]",
             "sequenceDiagram\n  autonumber\n  participant A as Alice<br>Smith\n  actor B\n  A->>+B: Hello 日本\n  B-->>-A: Hi\n  loop Every minute\n    A-)B: ping\n  else never\n    B--xA: no\n  end\n  Note left of A: 🙂\n  Note over A,B: both\n  A->>A: self",
+            "C4Container\n  title Bank 日本\n  Person(c, \"Customer\", \"Has accounts\")\n  Container_Boundary(b, \"App\") {\n    Container(w, \"Web\", \"Rust, Axum\", \"Serves pages\")\n    ContainerDb_Ext(d, \"DB\", \"Postgres\")\n  }\n  BiRel(c, w, \"Uses\", \"HTTPS\")\n  Rel_Back(d, w, \"Reads\")\n  Rel(w, w, \"Self\")\n  UpdateElementStyle(c, $fontColor=\"red\")",
+            "classDiagram\n  direction LR\n  class Animal~T~ {\n    <<abstract>>\n    +int age\n    +mate() List~int~\n  }\n  namespace Zoo.Pens {\n    class Duck\n  }\n  Animal <|-- Duck\n  Duck \"1\" *-- \"many\" Egg : lays 🥚\n  Duck ..|> Swims\n  Animal --> Animal\n  note for Duck \"quacks\"",
+            "stateDiagram-v2\n  [*] --> Still\n  state Moving {\n    [*] --> Slow\n    Slow --> Fast : 加速\n    --\n    [*] --> Loud\n  }\n  state pick <<choice>>\n  Still --> pick\n  pick --> Moving : go\n  pick --> [*]\n  Moving --> Moving : again\n  note right of Still : resting",
+            "erDiagram\n  direction LR\n  CUSTOMER ||--o{ ORDER : places\n  CUSTOMER {\n    string name PK \"the 名前\"\n  }\n  ORDER }|..|{ ITEM : has\n  p[Person] ||--o| CUSTOMER : is\n  CAR 1 to zero or more ORDER : drives\n  ORDER ||--o{ ORDER : splits",
+            "mindmap\n  root((mindmap))\n    Origins\n      Long history\n      ::icon(fa fa-book)\n      Popularisation\n    Research\n      On effectiveness<br/>and features\n      id2[\"`**Bold** and *italic*\nover two lines`\"]\n    Tools{{Tools}}:::urgent\n      Pen and paper",
+            "timeline\n  title England's History\n  section Stone Age\n    7600 BC : Britain's oldest known house : Orkney\n    6000 BC : Sea levels rise.<br> People hunt.\n  section Bronze Age\n    2300 BC : People arrive from Europe\n            : New styles of pottery\n  accTitle: Ages",
+            "journey\n  title My working day\n  section Go to work\n    Make tea: 5: Me\n    Do work: 1: Me, Cat\n  section Go home\n    Sit down: 4.5: Me\n  accTitle: Day",
         ];
         for sample in samples {
             let mut cuts: Vec<String> = sample
