@@ -18,7 +18,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::canvas::Canvas;
 use super::label::{self, truncate, widest};
-use super::{Diagram, Ink, Role, key, pairs, syntax};
+use super::{Diagram, EIGHTHS, Ink, Role, key, pairs, syntax};
 
 /// Past this a pie is a list, and no longer one anyone reads as a pie.
 const MAX_SLICES: usize = 60;
@@ -37,8 +37,6 @@ const GAP: usize = 3;
 const QUADRANTS: [char; 16] = [
     ' ', '▘', '▝', '▀', '▖', '▌', '▞', '▛', '▗', '▚', '▐', '▜', '▄', '▙', '▟', '█',
 ];
-/// A bar's last cell, by the eighths of it filled.
-const EIGHTHS: [char; 8] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Slice {
@@ -303,12 +301,9 @@ fn bars(pie: &Pie, legend: &[(String, String)], width: usize, title: &[String]) 
         // Anything at all shows as at least a sliver.
         let eighths = if slice.value > 0.0 { eighths.max(1) } else { 0 };
         let x = label_width + 2;
-        let full = eighths / 8;
-        for column in 0..full {
-            canvas.put(x + column, y, '█', Ink::of(Role::Border, at));
-        }
-        if eighths % 8 > 0 {
-            canvas.put(x + full, y, EIGHTHS[eighths % 8], Ink::of(Role::Border, at));
+        for column in 0..eighths.div_ceil(8) {
+            let block = EIGHTHS[(eighths - 8 * column).min(8)];
+            canvas.put(x + column, y, block, Ink::of(Role::Border, at));
         }
         canvas.text(x + bar + 2, y, tail, Ink::plain(Role::Label));
     }

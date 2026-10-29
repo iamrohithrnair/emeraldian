@@ -183,6 +183,10 @@ fn pairs(pairs: impl IntoIterator<Item = (usize, usize)>) -> Vec<(u16, u16)> {
 const SQUARE: [char; 4] = ['┌', '┐', '└', '┘'];
 const ROUND: [char; 4] = ['╭', '╮', '╰', '╯'];
 
+/// Blocks filled from the left by eighths, from none to all, which a bar
+/// ends in so bars close in length still look different.
+const EIGHTHS: [char; 9] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'];
+
 /// A key for a node's or participant's id, the same on every run and every
 /// machine: FNV-1a, then mixed with SplitMix64's finaliser so ids that differ
 /// only in their last letter, as `A`, `B` and `C` do, still land far apart.

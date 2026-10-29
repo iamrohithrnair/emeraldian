@@ -30,7 +30,7 @@ use unicode_width::UnicodeWidthStr;
 
 use super::canvas::{Canvas, Stroke};
 use super::label::{self, truncate};
-use super::{Diagram, Ink, Role, key, pairs, syntax};
+use super::{Diagram, EIGHTHS, Ink, Role, key, pairs, syntax};
 
 const MAX_TASKS: usize = 300;
 const MAX_SECTIONS: usize = 60;
@@ -80,9 +80,6 @@ const STEPS: [i64; 27] = [
     100 * YEAR,
     1000 * YEAR,
 ];
-
-/// A bar's last cell, by the eighths of it filled.
-const EIGHTHS: [char; 8] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Task {
