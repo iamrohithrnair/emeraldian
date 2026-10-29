@@ -4,6 +4,35 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.2]
+
+Diagrams draw words in every script whole, and emoji joined into one at the
+width they take. Notes and a `config.toml` from an earlier version work
+unchanged.
+
+### Fixed
+
+- **Thai, Hindi, Vietnamese and other words with marks are drawn whole in
+  diagrams.** A label lost every mark above or below its letters, so `ที่นี่`
+  came out as `ทน`, `हिन्दी` as `हिनदी`, and Vietnamese typed with separate
+  accents lost its accents. Each letter now keeps its marks, on screen and when
+  you copy a diagram as text. A copy as a picture draws a letter without the
+  marks typed after it, since the font it is lettered from has none to add.
+
+- **Emoji joined into one, like 👨‍💻, keep diagrams in shape.** They were
+  measured at two columns but drawn as two separate emoji, four columns wide,
+  so bars ran over names in pies, Gantt charts and journeys, names ran over
+  the edges of their boxes in class and state diagrams and mind maps, and a
+  pie could lose the share at the end of a row. They now take exactly the two
+  columns they were measured at, and a long label that wraps never splits one
+  in half. Flags, emoji with a skin tone and hearts drawn in colour are kept
+  whole the same way.
+
+- **The `y copy diagram` hint shows up with the diagram.** It appeared only
+  after the next key press once a diagram came on screen, and stayed for a
+  key after it scrolled away. Now it comes and goes on the same frame as the
+  diagram, just as `h/l pan` does.
+
 ## [0.10.1] — 2026-10-29
 
 C4, class, state and entity relationship diagrams, pie and Gantt charts, mind
