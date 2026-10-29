@@ -266,7 +266,8 @@ fn readable(pane: Rect) -> Rect {
 ///
 /// `pan` is how far the note on screen can pan sideways. Panning is offered
 /// only while there is a wide block in view to pan, which is exactly when
-/// someone looks for how to reach the rest of it.
+/// someone looks for how to reach the rest of it. Copying a diagram is
+/// offered the same way, while one is on screen.
 fn hints(app: &App, pan: usize) -> Vec<(&'static str, &'static str)> {
     let mut hints = hints_for(app).to_vec();
     if app.modal.is_none() {
@@ -276,9 +277,14 @@ fn hints(app: &App, pan: usize) -> Vec<(&'static str, &'static str)> {
             "focus"
         };
         hints.insert(hints.len().min(2), ("F8", label));
-        let reading = app.active().is_some_and(|tab| tab.mode == Mode::Reading);
-        if pan > 0 && reading && app.focus == Focus::Note && app.view == View::Notes {
+        let reading = app.active().is_some_and(|tab| tab.mode == Mode::Reading)
+            && app.focus == Focus::Note
+            && app.view == View::Notes;
+        if pan > 0 && reading {
             hints.insert(hints.len().min(3), ("h/l", "pan"));
+        }
+        if reading && !app.regions.diagrams.is_empty() {
+            hints.insert(hints.len().min(3), ("y", "copy diagram"));
         }
     }
     // There is only the one pane to be in.

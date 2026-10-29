@@ -1,0 +1,23 @@
+# Draws the glyph sheet a diagram copied as a picture is lettered from:
+# crates/emeraldian/assets/glyphs.png and glyphs.txt. Not part of the
+# workspace, so the app never builds or links the font rasteriser; run it only
+# to change the font or the characters:
+#
+#   cargo run --release --manifest-path scripts/glyph-atlas/Cargo.toml -- \
+#       JetBrainsMono-Regular.ttf crates/emeraldian/assets
+#
+# The font is JetBrains Mono 2.304, JetBrainsMono-Regular.ttf from
+# https://github.com/JetBrains/JetBrainsMono/releases (SIL OFL 1.1).
+
+[package]
+name = "glyph-atlas"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "GPL-3.0-or-later"
+
+[dependencies]
+ab_glyph = "0.2"
+png = "0.18"
+
+[workspace]

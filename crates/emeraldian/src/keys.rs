@@ -684,6 +684,10 @@ fn handle_reading(app: &mut App, key: KeyEvent) {
         // Following the first link on the page is the reading-mode equivalent
         // of clicking one.
         KeyCode::Enter => follow_first_link(app),
+        // Yank, as in vim: the diagram nearest the top of the pane, as a
+        // picture, or with Shift as its text.
+        KeyCode::Char('y') => dispatch(app, Action::CopyDiagramAsImage),
+        KeyCode::Char('Y') => dispatch(app, Action::CopyDiagramAsText),
         KeyCode::Char('?') => dispatch(app, Action::OpenHelp),
         KeyCode::Char('q') => dispatch(app, Action::Quit),
         _ => {}
@@ -1430,6 +1434,47 @@ mod tests {
         handle(&mut app, key(KeyCode::Char('l')));
         app.open_note(b);
         assert_eq!(app.active().unwrap().hscroll, 0);
+    }
+
+    #[test]
+    fn y_copies_the_diagram_on_screen_as_a_picture_and_shift_y_as_text() {
+        let vault = TempVault::new("keys-diagram");
+        vault.write(
+            "Flow.md",
+            "# Flow\n\n```mermaid\ngraph TD\n  A[Start] --> B[End]\n```\n",
+        );
+        let mut app = App::new(vault.vault(), Config::default()).expect("app");
+        let flow = app.index.id_of_rel("Flow.md").expect("indexed");
+        app.open_note(flow);
+        let (clipboard, copied) = crate::clipboard::stand_in::StandIn::new();
+        app.clipboard = clipboard;
+
+        // Nothing has been drawn yet, so nothing is on screen to copy.
+        handle(&mut app, key(KeyCode::Char('y')));
+        assert!(app.status.is_error, "{}", app.status.text);
+        assert!(copied.borrow().images.is_empty());
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).expect("terminal");
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .expect("frame");
+        handle(&mut app, key(KeyCode::Char('y')));
+        assert_eq!(copied.borrow().images.len(), 1, "{}", app.status.text);
+        assert!(copied.borrow().images[0].starts_with(b"\x89PNG"));
+
+        handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::SHIFT),
+        );
+        let texts = &copied.borrow().texts;
+        assert_eq!(texts.len(), 1);
+        assert!(
+            texts[0].contains("Start") && texts[0].contains('▼'),
+            "{}",
+            texts[0]
+        );
+        assert_eq!(app.status.text, "copied the diagram as text");
     }
 
     #[test]

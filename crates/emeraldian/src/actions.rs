@@ -28,6 +28,8 @@ pub fn commands() -> Vec<Entry> {
         Entry::new("Rename note", "F2", Action::RenameNote),
         Entry::new("Delete note", "", Action::DeleteNote),
         Entry::new("Toggle reading / editing", "Ctrl+E", Action::ToggleMode),
+        Entry::new("Copy diagram as image", "y", Action::CopyDiagramAsImage),
+        Entry::new("Copy diagram as text", "Y", Action::CopyDiagramAsText),
         Entry::new("Close tab", "Ctrl+W", Action::CloseTab),
         Entry::new("Reopen closed tab", "Ctrl+Shift+T", Action::ReopenClosedTab),
         Entry::new("Next tab", "Ctrl+Tab", Action::NextTab),
@@ -730,6 +732,10 @@ pub fn dispatch(app: &mut App, action: Action) {
             app.config.graph.show_orphans = !app.config.graph.show_orphans;
             app.refresh_graph();
         }
+
+        // ---- diagrams ---------------------------------------------------
+        Action::CopyDiagramAsImage => crate::copy::diagram(app, None, crate::copy::Format::Image),
+        Action::CopyDiagramAsText => crate::copy::diagram(app, None, crate::copy::Format::Text),
 
         // ---- vault ------------------------------------------------------
         Action::OpenInObsidian => open_in_obsidian(app),

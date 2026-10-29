@@ -314,6 +314,12 @@ pub enum Action {
     ToggleGraphAttachments,
     ToggleGraphOrphans,
 
+    // Diagrams
+    /// Copies the diagram nearest the top of the reading pane as a picture.
+    CopyDiagramAsImage,
+    /// Copies it as its box-drawing text.
+    CopyDiagramAsText,
+
     // Vault
     /// Hand the open note to the Obsidian desktop app, via its CLI.
     OpenInObsidian,
@@ -357,6 +363,12 @@ pub struct Regions {
     /// How far the wide blocks on screen in the reading pane can pan
     /// sideways, in columns. Nothing to pan is 0.
     pub pan: usize,
+    /// The copy mark at the top right of each diagram in the reading pane,
+    /// with the diagram it copies, by its place in the note.
+    pub diagram_marks: Vec<(Rect, usize)>,
+    /// The diagrams on screen in the reading pane, top first, by their place
+    /// in the note: the first is the one `y` copies.
+    pub diagrams: Vec<usize>,
     pub main: Option<Rect>,
     pub chat: Option<Rect>,
     /// The graph canvas with its coordinate bounds, for hit-testing nodes.
@@ -419,6 +431,9 @@ pub struct App {
     /// A model list on its way back from a provider.
     pub lookup: crate::agent::Lookup,
     pub status: Status,
+    /// Where a copied diagram goes. Tests put a stand-in here, so copying in
+    /// a test never touches the clipboard of the machine it runs on.
+    pub clipboard: Box<dyn crate::clipboard::Clipboard>,
     /// Pictures drawn in the reading pane. Starts switched off, and is replaced
     /// once the terminal has been asked what it can draw — a question that has
     /// to be put before the alternate screen is entered.
@@ -514,6 +529,7 @@ impl App {
             auth: crate::auth::Auth::load(),
             lookup: crate::agent::Lookup::default(),
             status: Status::default(),
+            clipboard: Box::new(crate::clipboard::System),
             images: crate::images::Images::disabled(),
             scenes: crate::ui::drawing::Scenes::default(),
             reading: crate::ui::note::ReadingCache::default(),
