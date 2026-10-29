@@ -17,7 +17,8 @@
 use unicode_width::UnicodeWidthStr;
 
 use super::canvas::Canvas;
-use super::{Diagram, Ink, Role, key, label_lines, truncate, widest};
+use super::label::{self, truncate, widest};
+use super::{Diagram, Ink, Role, key};
 
 /// Past this a pie is a list, and no longer one anyone reads as a pie.
 const MAX_SLICES: usize = 60;
@@ -69,7 +70,9 @@ pub fn parse(header: &str, lines: &[&str]) -> Option<Pie> {
         rest = after;
     }
     if let Some(title) = word(rest, "title") {
-        pie.title = Some(title.to_string()).filter(|title| !title.is_empty());
+        pie.title = Some(title)
+            .filter(|title| !title.is_empty())
+            .map(label::joined);
     } else if !rest.is_empty() {
         return None;
     }
@@ -85,7 +88,9 @@ pub fn parse(header: &str, lines: &[&str]) -> Option<Pie> {
             continue;
         }
         if let Some(title) = word(line, "title") {
-            pie.title = Some(title.to_string()).filter(|title| !title.is_empty());
+            pie.title = Some(title)
+                .filter(|title| !title.is_empty())
+                .map(label::joined);
         } else if word(line, "showData").is_some_and(str::is_empty) {
             pie.show_data = true;
         } else if line.starts_with("accTitle") || line.starts_with("accDescr") {
@@ -124,7 +129,7 @@ fn slice(line: &str) -> Option<Slice> {
         return None;
     }
     Some(Slice {
-        label: truncate(&label_lines(label).join(" "), LABEL_WIDTH),
+        label: truncate(&label::joined(label), LABEL_WIDTH),
         value,
         text: text.to_string(),
     })
@@ -173,10 +178,7 @@ fn legend(pie: &Pie) -> Vec<(String, String)> {
 pub fn draw(pie: &Pie, width: usize) -> Option<Diagram> {
     let legend = legend(pie);
     // A title wraps only where it is wider than the pane.
-    let mut title = Vec::new();
-    if let Some(text) = &pie.title {
-        super::wrap(&label_lines(text).join(" "), width.max(20), &mut title);
-    }
+    let title = label::title(pie.title.as_deref(), width.max(20));
     let line_width = legend
         .first()
         .map_or(0, |(label, tail)| 3 + label.width() + 1 + tail.width());
@@ -191,9 +193,7 @@ pub fn draw(pie: &Pie, width: usize) -> Option<Diagram> {
         Some(radius) => round(pie, &legend, radius, &title)?,
         None => bars(pie, &legend, width, &title)?,
     };
-    for (row, line) in title.iter().enumerate() {
-        canvas.text(0, row, line, Ink::plain(Role::Text));
-    }
+    label::draw_title(&mut canvas, &title);
     let mut diagram = canvas.finish();
     diagram.keys = pie.slices.iter().map(|slice| key(&slice.label)).collect();
     // Neighbouring slices differ, and so do the first and last, which meet
@@ -212,11 +212,6 @@ pub fn draw(pie: &Pie, width: usize) -> Option<Diagram> {
     Some(diagram)
 }
 
-/// The rows a title takes, with a blank row under it.
-fn above(title: &[String]) -> usize {
-    if title.is_empty() { 0 } else { title.len() + 1 }
-}
-
 /// A round pie of `radius` rows, with the legend beside it.
 fn round(
     pie: &Pie,
@@ -225,7 +220,7 @@ fn round(
     title: &[String],
 ) -> Option<Canvas> {
     let (columns, rows) = (4 * radius, 2 * radius);
-    let above = above(title);
+    let above = label::above(title);
     let total: f64 = pie.slices.iter().map(|slice| slice.value).sum();
     // Where each slice ends, as a share of a turn.
     let mut seen = 0.0;
@@ -294,7 +289,7 @@ fn round(
 /// A bar for each slice, as long against the longest as the slice is
 /// against the largest, each beside its label and its share.
 fn bars(pie: &Pie, legend: &[(String, String)], width: usize, title: &[String]) -> Option<Canvas> {
-    let above = above(title);
+    let above = label::above(title);
     let label_width = legend.first().map_or(0, |(label, _)| label.width());
     let tail_width = legend.first().map_or(0, |(_, tail)| tail.width());
     let bar = width

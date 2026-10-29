@@ -26,8 +26,9 @@ use std::collections::HashMap;
 use unicode_width::UnicodeWidthStr;
 
 use super::canvas::{Canvas, Stroke};
+use super::label::{self, truncate, widest};
 use super::layered::{self, Direction, Graph, Link};
-use super::{Diagram, Ink, Role, key, label_lines, truncate, widest};
+use super::{Diagram, Ink, Role, key};
 
 const MAX_ELEMENTS: usize = 120;
 const MAX_RELS: usize = 240;
@@ -136,7 +137,7 @@ pub fn parse(lines: &[&str], numbered: bool) -> Option<C4> {
             continue;
         }
         if let Some(title) = line.strip_prefix("title ") {
-            reader.c4.title = Some(label_lines(title).join(" "));
+            reader.c4.title = Some(label::joined(title));
             continue;
         }
         if line.starts_with("accTitle") || line.starts_with("accDescr") || line == "title" {
@@ -233,21 +234,17 @@ impl Reader {
         };
         let mut kind = format!("{}{named}", if external { "External " } else { "" });
         if technical && let Some(techn) = args.get(slots, "techn") {
-            kind = format!("{kind}: {}", label_lines(&techn).join(" "));
+            kind = format!("{kind}: {}", label::joined(&techn));
         }
         let element = Element {
             alias: alias.clone(),
             shape,
             external,
-            name: clip(label_lines(&label), NAME_LINES),
-            kind: {
-                let mut lines = Vec::new();
-                super::wrap(&format!("[{kind}]"), KIND_WIDTH, &mut lines);
-                clip(lines, KIND_LINES)
-            },
+            name: clip(label::lines(&label), NAME_LINES),
+            kind: clip(label::wrapped(&format!("[{kind}]"), KIND_WIDTH), KIND_LINES),
             description: args
                 .get(slots, "descr")
-                .map(|text| clip(label_lines(&text), DESCRIPTION_LINES))
+                .map(|text| clip(label::lines(&text), DESCRIPTION_LINES))
                 .unwrap_or_default(),
             frame: self.frame(),
             looped: false,
@@ -271,12 +268,11 @@ impl Reader {
             || name.starts_with("node");
         let slots: &[&str] = &["alias", "label", "type", "descr"];
         let alias = args.get(slots, "alias")?;
-        let label =
-            label_lines(&args.get(slots, "label").unwrap_or_else(|| alias.clone())).join(" ");
+        let label = label::joined(&args.get(slots, "label").unwrap_or_else(|| alias.clone()));
         let kind = args
             .get(slots, "type")
             .filter(|_| typed)
-            .map(|kind| label_lines(&kind).join(" "));
+            .map(|kind| label::joined(&kind));
         if self.c4.frames.len() >= MAX_FRAMES {
             return None;
         }
@@ -311,15 +307,13 @@ impl Reader {
             Some(number) => format!("{number}. {label}"),
             None => label,
         };
-        let mut words: Vec<String> = label_lines(&label)
+        let mut words: Vec<String> = label::lines(&label)
             .into_iter()
             .filter(|line| !line.is_empty())
             .collect();
         if let Some(techn) = args.get(slots, "techn") {
-            let techn = format!("[{}]", label_lines(&techn).join(" "));
-            let mut lines = Vec::new();
-            super::wrap(&techn, KIND_WIDTH, &mut lines);
-            words.extend(clip(lines, KIND_LINES));
+            let techn = format!("[{}]", label::joined(&techn));
+            words.extend(clip(label::wrapped(&techn, KIND_WIDTH), KIND_LINES));
         }
         self.c4.rels.push(Rel {
             from,
@@ -499,7 +493,7 @@ fn clip(mut lines: Vec<String>, most: usize) -> Vec<String> {
     if lines.len() > most {
         lines.truncate(most);
         if let Some(last) = lines.last_mut() {
-            *last = truncate(&format!("{last}…"), super::LABEL_WIDTH);
+            *last = truncate(&format!("{last}…"), label::WIDTH);
             if !last.ends_with('…') {
                 last.push('…');
             }
@@ -564,16 +558,10 @@ pub fn draw(c4: &C4, width: usize) -> Option<Diagram> {
     graph.room = width;
     graph.spread = true;
     let mut placed = layered::layout(&graph)?;
-    let mut title = Vec::new();
-    if let Some(text) = &c4.title {
-        super::wrap(text, TITLE_WIDTH, &mut title);
-    }
-    let above = if title.is_empty() { 0 } else { title.len() + 1 };
-    placed.moved(0, above);
+    let title = label::title(c4.title.as_deref(), TITLE_WIDTH);
+    placed.moved(0, label::above(&title));
     let mut canvas = Canvas::new(placed.width.max(widest(&title)), placed.height)?;
-    for (row, line) in title.iter().enumerate() {
-        canvas.text(0, row, line, Ink::plain(Role::Text));
-    }
+    label::draw_title(&mut canvas, &title);
 
     placed.draw_frames(&mut canvas, Stroke::Dotted);
     for (at, (element, rect)) in c4.elements.iter().zip(&placed.boxes).enumerate() {
@@ -582,7 +570,7 @@ pub fn draw(c4: &C4, width: usize) -> Option<Diagram> {
     for (rel, rect) in c4.rels.iter().zip(&placed.words) {
         if let Some(rect) = rect {
             let ink = c4.elements[rel.from].ink(Role::Label, rel.from);
-            layered::centred(&mut canvas, rect.x, rect.y, rect.width, &rel.words, ink);
+            label::centred(&mut canvas, rect.x, rect.y, rect.width, &rel.words, ink);
         }
     }
     placed.draw_lines(&mut canvas, |rel| {
@@ -656,13 +644,13 @@ fn draw_element(canvas: &mut Canvas, element: &Element, at: usize, rect: layered
     let mut row = y + 1 + usize::from(element.shape == Shape::Database);
     let inside = w - 2;
     let name = element.name();
-    layered::centred(canvas, x + 1, row, inside, &name, Ink::plain(Role::Text));
+    label::centred(canvas, x + 1, row, inside, &name, Ink::plain(Role::Text));
     row += name.len();
     let kind = element.ink(Role::Label, at);
-    layered::centred(canvas, x + 1, row, inside, &element.kind, kind);
+    label::centred(canvas, x + 1, row, inside, &element.kind, kind);
     row += element.kind.len();
     let quiet = Ink::plain(Role::Label);
-    layered::centred(canvas, x + 1, row, inside, &element.description, quiet);
+    label::centred(canvas, x + 1, row, inside, &element.description, quiet);
 }
 
 #[cfg(test)]

@@ -29,7 +29,8 @@ use std::collections::HashMap;
 use unicode_width::UnicodeWidthStr;
 
 use super::canvas::{Canvas, Stroke};
-use super::{Diagram, Ink, Role, key, label_lines, truncate};
+use super::label::{self, truncate};
+use super::{Diagram, Ink, Role, key};
 
 const MAX_TASKS: usize = 300;
 const MAX_SECTIONS: usize = 60;
@@ -186,14 +187,14 @@ pub fn parse(lines: &[&str]) -> Option<Gantt> {
             continue;
         }
         if let Some(text) = keyword(line, "title") {
-            title = Some(label_lines(text).join(" ")).filter(|text| !text.is_empty());
+            title = Some(label::joined(text)).filter(|text| !text.is_empty());
             continue;
         }
         if let Some(name) = keyword(line, "section") {
             if sections.len() >= MAX_SECTIONS {
                 return None;
             }
-            sections.push(truncate(&label_lines(name).join(" "), 2 * NAME_WIDTH));
+            sections.push(truncate(&label::joined(name), 2 * NAME_WIDTH));
             continue;
         }
         let first = line
@@ -280,7 +281,7 @@ fn task(line: &str, section: usize, format: &Format, inclusive: bool) -> Option<
         End::At(if inclusive { at.checked_add(DAY)? } else { at })
     };
     Some(Spec {
-        name: truncate(&label_lines(name).join(" "), NAME_WIDTH),
+        name: truncate(&label::joined(name), NAME_WIDTH),
         section,
         id: id.filter(|id| !id.is_empty()).map(str::to_string),
         start,
@@ -720,19 +721,14 @@ pub fn draw(gantt: &Gantt, width: usize) -> Option<Diagram> {
     let marks = ticks(from, from + span, step, gantt.axis);
     let column = |at: i64| (at - from) as f64 / span as f64 * axis as f64;
 
-    let mut title = Vec::new();
-    if let Some(text) = &gantt.title {
-        super::wrap(text, left + axis + 1, &mut title);
-    }
-    let above = if title.is_empty() { 0 } else { title.len() + 1 };
+    let title = label::title(gantt.title.as_deref(), left + axis + 1);
+    let above = label::above(&title);
     let headings = if named { gantt.sections.len() } else { 0 };
     let rows = gantt.tasks.iter().filter(|task| !task.vert).count();
     let verts = gantt.tasks.iter().any(|task| task.vert);
     let height = above + 2 + headings + rows + usize::from(verts);
     let mut canvas = Canvas::new(left + axis + 1, height)?;
-    for (row, line) in title.iter().enumerate() {
-        canvas.text(0, row, line, Ink::plain(Role::Text));
-    }
+    label::draw_title(&mut canvas, &title);
 
     // The axis, marked at each step and labelled where a label fits.
     let (labels, rule) = (above, above + 1);

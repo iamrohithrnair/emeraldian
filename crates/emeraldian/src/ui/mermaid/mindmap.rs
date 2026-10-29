@@ -16,7 +16,8 @@
 //! over several lines of the source, as Mermaid allows.
 
 use super::canvas::Canvas;
-use super::{Diagram, Ink, Role, key, label_lines, widest};
+use super::label::{self, widest};
+use super::{Diagram, Ink, Role, key};
 
 /// Past these a map is too big to read in a terminal.
 const MAX_NODES: usize = 500;
@@ -162,7 +163,7 @@ fn outside_quotes(text: &str, needle: &str) -> Option<usize> {
 fn words(raw: &str) -> Vec<String> {
     let raw = raw.trim();
     let markdown = raw.starts_with("\"`") || raw.starts_with('`');
-    let mut lines = label_lines(raw);
+    let mut lines = label::lines(raw);
     if markdown {
         for line in &mut lines {
             *line = line.replace('*', "");

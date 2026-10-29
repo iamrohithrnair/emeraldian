@@ -20,8 +20,9 @@ use std::collections::HashMap;
 use unicode_width::UnicodeWidthStr;
 
 use super::canvas::{Canvas, Stroke};
+use super::label::{self, widest};
 use super::layered::{self, Direction, Facing, Graph, Link};
-use super::{Diagram, Ink, Role, key, label_lines, widest};
+use super::{Diagram, Ink, Role, key};
 
 const MAX_STATES: usize = 200;
 const MAX_TRANSITIONS: usize = 400;
@@ -200,7 +201,7 @@ impl Reader {
         self.add(State {
             id: id.to_string(),
             kind: Kind::State,
-            name: label_lines(id),
+            name: label::lines(id),
             description: Vec::new(),
             frame: self.frame(),
             composite: None,
@@ -248,7 +249,7 @@ impl Reader {
 
     fn transition(&mut self, from: usize, to: usize, label: &str) -> Option<()> {
         if from == to {
-            let words = label_lines(label).join(" ");
+            let words = label::joined(label);
             let line = if words.is_empty() {
                 "↻".to_string()
             } else {
@@ -262,7 +263,7 @@ impl Reader {
         let words = if label.is_empty() {
             Vec::new()
         } else {
-            label_lines(label)
+            label::lines(label)
         };
         self.diagram.transitions.push(Transition {
             from,
@@ -278,7 +279,7 @@ impl Reader {
         if description.len() >= MAX_DESCRIPTION {
             return Some(());
         }
-        description.extend(label_lines(text));
+        description.extend(label::lines(text));
         Some(())
     }
 
@@ -311,7 +312,7 @@ impl Reader {
         };
         let state = self.state(id)?;
         if let Some(name) = name {
-            self.diagram.states[state].name = label_lines(name);
+            self.diagram.states[state].name = label::lines(name);
         }
         if let Some(description) = description {
             self.describe(state, description)?;
@@ -372,7 +373,7 @@ impl Reader {
         self.add(State {
             id: format!("note {at}"),
             kind: Kind::Note,
-            name: label_lines(text),
+            name: label::lines(text),
             description: Vec::new(),
             frame,
             composite: None,
@@ -542,7 +543,7 @@ pub fn draw(diagram: &StateDiagram, width: usize) -> Option<Diagram> {
     }
     for (&(from, _, t), rect) in transitions.iter().zip(&placed.words) {
         if let Some(rect) = rect {
-            layered::centred(
+            label::centred(
                 &mut canvas,
                 rect.x,
                 rect.y,
@@ -685,7 +686,7 @@ fn draw_state(canvas: &mut Canvas, state: &State, rect: layered::Rect, outline: 
                     canvas.text(x + 2, y + 1 + row, line, words);
                 }
             } else {
-                layered::centred(canvas, x + 1, y + 1, w - 2, &state.name, words);
+                label::centred(canvas, x + 1, y + 1, w - 2, &state.name, words);
             }
             if !state.description.is_empty() {
                 let rule = y + 1 + state.name.len();

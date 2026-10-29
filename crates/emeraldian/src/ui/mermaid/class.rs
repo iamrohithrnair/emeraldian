@@ -20,8 +20,9 @@ use std::collections::HashMap;
 use unicode_width::UnicodeWidthStr;
 
 use super::canvas::{Canvas, Stroke};
+use super::label::{self, truncate, widest};
 use super::layered::{self, Direction, Facing, Graph, Link};
-use super::{Diagram, Ink, Role, key, label_lines, truncate, widest};
+use super::{Diagram, Ink, Role, key};
 
 const MAX_CLASSES: usize = 150;
 const MAX_MEMBERS: usize = 60;
@@ -210,7 +211,7 @@ impl Reader {
             return None;
         }
         self.diagram.classes.push(Class {
-            name: label_lines(&display_name(name))
+            name: label::lines(&display_name(name))
                 .iter()
                 .map(|line| generics(line))
                 .collect(),
@@ -256,7 +257,7 @@ impl Reader {
             self.diagram.classes[class].frame = self.frame();
         }
         if let Some(label) = label {
-            self.diagram.classes[class].name = label_lines(label);
+            self.diagram.classes[class].name = label::lines(label);
         }
         if annotation.is_some() {
             self.diagram.classes[class].annotation = annotation;
@@ -338,7 +339,7 @@ impl Reader {
                     }
                     let last = at + 1 == parts.len();
                     let shown = match label {
-                        Some(label) if last => label_lines(label).join(" "),
+                        Some(label) if last => label::joined(label),
                         _ => (*part).to_string(),
                     };
                     self.diagram.namespaces.push(Namespace {
@@ -380,7 +381,7 @@ impl Reader {
         let at = self.diagram.classes.len();
         self.diagram.classes.push(Class {
             id: format!("note {at}"),
-            name: label_lines(text),
+            name: label::lines(text),
             annotation: None,
             attributes: Vec::new(),
             methods: Vec::new(),
@@ -408,7 +409,7 @@ impl Reader {
             self.diagram.classes[from].looped = true;
             return Some(());
         }
-        let label = label_lines(parts.label).join(" ");
+        let label = label::joined(parts.label);
         let text = match (parts.tail_count, label.is_empty(), parts.head_count) {
             (None, _, None) => label,
             (Some(a), true, Some(b)) => format!("{a} to {b}"),
@@ -422,7 +423,7 @@ impl Reader {
         let words = if text.is_empty() {
             Vec::new()
         } else {
-            label_lines(&text)
+            label::lines(&text)
         };
         self.push(Relation {
             from,
@@ -711,7 +712,7 @@ pub fn draw(diagram: &ClassDiagram) -> Option<Diagram> {
     for (relation, rect) in diagram.relations.iter().zip(&placed.words) {
         if let Some(rect) = rect {
             let words = ink(Role::Label, relation.from);
-            layered::centred(
+            label::centred(
                 &mut canvas,
                 rect.x,
                 rect.y,
@@ -780,7 +781,7 @@ fn draw_class(canvas: &mut Canvas, class: &Class, at: usize, rect: layered::Rect
     let header = class.header();
     if class.annotation.is_some() && !class.note {
         let annotation = std::slice::from_ref(&header[0]);
-        layered::centred(
+        label::centred(
             canvas,
             x + 1,
             row,
@@ -788,9 +789,9 @@ fn draw_class(canvas: &mut Canvas, class: &Class, at: usize, rect: layered::Rect
             annotation,
             Ink::of(Role::Label, at),
         );
-        layered::centred(canvas, x + 1, row + 1, w - 2, &header[1..], words);
+        label::centred(canvas, x + 1, row + 1, w - 2, &header[1..], words);
     } else {
-        layered::centred(canvas, x + 1, row, w - 2, &header, words);
+        label::centred(canvas, x + 1, row, w - 2, &header, words);
     }
     row += header.len();
     for part in class.compartments() {

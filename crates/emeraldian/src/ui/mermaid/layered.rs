@@ -306,7 +306,7 @@ impl Layout {
             && length >= 4
             && !label.is_empty()
         {
-            let cut = super::truncate(label, length - 2);
+            let cut = super::label::truncate(label, length - 2);
             canvas.text(x, y, &format!(" {cut} "), ink);
         }
     }
@@ -321,16 +321,6 @@ pub fn join(canvas: &Canvas, end: &End) -> char {
     match (canvas.glyph(x, y), end.facing) {
         (Some('├' | '┤'), Facing::Left | Facing::Right) => '┼',
         _ => end.facing.join(),
-    }
-}
-
-/// Writes lines of text centred in a band `width` columns wide.
-pub fn centred(canvas: &mut Canvas, x: usize, y: usize, width: usize, lines: &[String], ink: Ink) {
-    use unicode_width::UnicodeWidthStr;
-
-    for (row, line) in lines.iter().enumerate() {
-        let indent = width.saturating_sub(line.width()) / 2;
-        canvas.text(x + indent, y + row, line, ink);
     }
 }
 

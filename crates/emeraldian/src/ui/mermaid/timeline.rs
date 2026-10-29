@@ -12,7 +12,8 @@
 use unicode_width::UnicodeWidthStr;
 
 use super::canvas::{Canvas, Stroke};
-use super::{Diagram, Ink, Role, key, wrap};
+use super::label::{self, wrap};
+use super::{Diagram, Ink, Role, key};
 
 /// Past these a timeline is too long to read in a terminal.
 const MAX_PERIODS: usize = 300;
@@ -63,11 +64,11 @@ pub fn parse(lines: &[&str]) -> Option<Timeline> {
             continue;
         }
         if let Some(rest) = keyword(line, "title") {
-            timeline.title = Some(clean(rest).join(" "));
+            timeline.title = Some(label::unwrapped(rest).join(" "));
             continue;
         }
         if let Some(rest) = keyword(line, "section") {
-            timeline.sections.push(clean(rest));
+            timeline.sections.push(label::unwrapped(rest));
             continue;
         }
         if line.starts_with("accTitle") || line.starts_with("accDescr") {
@@ -84,7 +85,7 @@ pub fn parse(lines: &[&str]) -> Option<Timeline> {
         };
         let found: Vec<Vec<String>> = rest
             .split(':')
-            .map(clean)
+            .map(label::unwrapped)
             .filter(|event| !event.is_empty())
             .collect();
         events += found.len();
@@ -97,7 +98,7 @@ pub fn parse(lines: &[&str]) -> Option<Timeline> {
                     return None;
                 }
                 timeline.periods.push(Period {
-                    name: clean(name),
+                    name: label::unwrapped(name),
                     events: found,
                     section: timeline.sections.len().checked_sub(1),
                 });
@@ -116,57 +117,6 @@ pub fn parse(lines: &[&str]) -> Option<Timeline> {
 fn keyword<'a>(line: &'a str, word: &str) -> Option<&'a str> {
     let rest = line.strip_prefix(word)?;
     (rest.is_empty() || rest.starts_with(char::is_whitespace)).then(|| rest.trim())
-}
-
-/// Text as the lines `<br>` breaks it into, each without its markup, and
-/// none blank: what [`super::label_lines`] reads from a label, left unwrapped so it
-/// can be wrapped to the pane. Journeys read their words with it too.
-pub(super) fn clean(raw: &str) -> Vec<String> {
-    let raw = raw.trim();
-    let raw = raw
-        .strip_prefix('"')
-        .and_then(|inner| inner.strip_suffix('"'))
-        .unwrap_or(raw)
-        .trim_matches('`');
-    let mut plain = String::with_capacity(raw.len());
-    let mut rest = raw;
-    while let Some(open) = rest.find('<') {
-        plain.push_str(&rest[..open]);
-        let tag = &rest[open..];
-        match tag.find('>') {
-            Some(close) if super::is_tag(&tag[1..close]) => {
-                if tag[1..close].trim().to_ascii_lowercase().starts_with("br") {
-                    plain.push('\n');
-                }
-                rest = &tag[close + 1..];
-            }
-            _ => {
-                plain.push('<');
-                rest = &tag[1..];
-            }
-        }
-    }
-    plain.push_str(rest);
-    let plain = plain
-        .replace("**", "")
-        .replace("&quot;", "\"")
-        .replace("#quot;", "\"")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&nbsp;", " ")
-        .replace("&amp;", "&")
-        .replace("\\n", "\n");
-    plain
-        .lines()
-        .map(|line| {
-            let line: String = line
-                .chars()
-                .map(|c| if c.is_control() { ' ' } else { c })
-                .collect();
-            line.split_whitespace().collect::<Vec<_>>().join(" ")
-        })
-        .filter(|line| !line.is_empty())
-        .collect()
 }
 
 /// Lines wrapped to fit `width` columns.
@@ -225,11 +175,8 @@ pub fn draw(timeline: &Timeline, width: usize) -> Option<Diagram> {
 
     let mut row = 0;
     let mut width = 0;
-    let mut title = Vec::new();
-    if let Some(text) = &timeline.title {
-        wrap(text, room, &mut title);
-        row += title.len() + 1;
-    }
+    let title = label::title(timeline.title.as_deref(), room);
+    row += label::above(&title);
     let mut headings: Vec<(usize, Vec<String>, usize)> = Vec::new();
     let mut placed: Vec<Placed> = Vec::new();
     for (group, (section, members)) in groups.iter().enumerate() {
@@ -297,9 +244,7 @@ pub fn draw(timeline: &Timeline, width: usize) -> Option<Diagram> {
     }
     let mut canvas = Canvas::new(width, row)?;
 
-    for (at, line) in title.iter().enumerate() {
-        canvas.text(0, at, line, Ink::plain(Role::Text));
-    }
+    label::draw_title(&mut canvas, &title);
     for (row, lines, owner) in &headings {
         for (at, line) in lines.iter().enumerate() {
             canvas.text(0, row + at, line, Ink::of(Role::Label, *owner));

@@ -8,7 +8,8 @@
 use std::collections::HashMap;
 
 use super::canvas::{Canvas, Stroke};
-use super::{Diagram, Ink, Role, key, label_lines, widest};
+use super::label::{self, widest};
+use super::{Diagram, Ink, Role, key};
 
 const MAX_ACTORS: usize = 40;
 const MAX_EVENTS: usize = 400;
@@ -107,7 +108,7 @@ impl Builder {
         }
         self.sequence.actors.push(Actor {
             id: id.to_string(),
-            label: label_lines(id),
+            label: label::lines(id),
             person: false,
         });
         self.ids
@@ -146,7 +147,7 @@ pub fn parse(lines: &[&str]) -> Option<Sequence> {
                 let actor = &mut builder.sequence.actors[at];
                 actor.person = word.eq_ignore_ascii_case("actor");
                 if let Some(label) = label {
-                    actor.label = label_lines(label);
+                    actor.label = label::lines(label);
                 }
             }
             "autonumber" => numbered = true,
@@ -176,7 +177,7 @@ pub fn parse(lines: &[&str]) -> Option<Sequence> {
                     first: first.min(last),
                     last: first.max(last),
                     side,
-                    label: label_lines(text),
+                    label: label::lines(text),
                 });
             }
             "end" => {
@@ -207,7 +208,7 @@ pub fn parse(lines: &[&str]) -> Option<Sequence> {
                 let (from, to, stroke, head, text) = message(line)?;
                 let from = builder.actor(from)?;
                 let to = builder.actor(to)?;
-                let mut label = label_lines(text).join(" ");
+                let mut label = label::joined(text);
                 if numbered {
                     number += 1;
                     label = format!("{number}. {label}").trim_end().to_string();
@@ -233,7 +234,7 @@ pub fn parse(lines: &[&str]) -> Option<Sequence> {
 }
 
 fn rule_text(word: &str, rest: &str) -> String {
-    let text = label_lines(rest).join(" ");
+    let text = label::joined(rest);
     if text.is_empty() {
         word.to_string()
     } else {

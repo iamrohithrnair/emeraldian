@@ -8,8 +8,9 @@
 use std::collections::HashMap;
 
 use super::canvas::{Canvas, Stroke};
+use super::label::{self, widest};
 use super::layered::{self, Graph};
-use super::{Diagram, Ink, Role, key, label_lines, widest};
+use super::{Diagram, Ink, Role, key};
 
 pub use super::layered::Direction;
 
@@ -224,7 +225,7 @@ impl Builder {
                 }
                 self.chart.nodes.push(Node {
                     id: id.to_string(),
-                    label: label_lines(id),
+                    label: label::lines(id),
                     shape: Shape::Rect,
                     looped: false,
                 });
@@ -233,7 +234,7 @@ impl Builder {
             }
         };
         if let Some((label, shape)) = shaped {
-            self.chart.nodes[at].label = label_lines(&label);
+            self.chart.nodes[at].label = label::lines(&label);
             self.chart.nodes[at].shape = shape;
         }
         Some(at)
@@ -366,7 +367,7 @@ fn link(scan: &mut Scan) -> Option<Option<Link>> {
     if !head && matches!(body, "--" | "==" | "-.") && scan.rest().starts_with(char::is_whitespace) {
         let close = if body == "-." { ".-" } else { body };
         let end = scan.rest().find(close)?;
-        label = label_lines(&scan.rest()[..end]);
+        label = label::lines(&scan.rest()[..end]);
         scan.at += end;
         let closing = self::body(scan);
         stroke = stroke_of(closing);
@@ -378,7 +379,7 @@ fn link(scan: &mut Scan) -> Option<Option<Link>> {
     scan.skip_space();
     if scan.eat("|") {
         let end = scan.rest().find('|')?;
-        label = label_lines(&scan.rest()[..end]);
+        label = label::lines(&scan.rest()[..end]);
         scan.at += end + 1;
     } else {
         scan.at = at;
@@ -488,12 +489,12 @@ fn layout(chart: &Chart, direction: Direction) -> Option<Diagram> {
         let (x, y, w, h) = (rect.x, rect.y, rect.width, rect.height);
         canvas.outline(x, y, w, h, corners, double, Ink::of(Role::Border, at));
         let words = Ink::plain(Role::Text);
-        layered::centred(&mut canvas, x + 1, y + 1, w - 2, &labels[at], words);
+        label::centred(&mut canvas, x + 1, y + 1, w - 2, &labels[at], words);
     }
     for (edge, rect) in chart.edges.iter().zip(&placed.words) {
         if let Some(rect) = rect {
             let ink = Ink::of(Role::Label, edge.from);
-            layered::centred(&mut canvas, rect.x, rect.y, rect.width, &edge.label, ink);
+            label::centred(&mut canvas, rect.x, rect.y, rect.width, &edge.label, ink);
         }
     }
 

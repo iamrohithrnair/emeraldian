@@ -10,7 +10,8 @@
 use unicode_width::UnicodeWidthStr;
 
 use super::canvas::Canvas;
-use super::{Diagram, Ink, Role, key, wrap};
+use super::label::{self, wrap};
+use super::{Diagram, Ink, Role, key};
 
 /// Past this a journey is too long to read in a terminal.
 const MAX_TASKS: usize = 300;
@@ -123,7 +124,7 @@ fn keyword<'a>(line: &'a str, word: &str) -> Option<&'a str> {
 
 /// Text without its markup, on one line.
 fn words(raw: &str) -> String {
-    super::timeline::clean(raw).join(" ")
+    super::label::unwrapped(raw).join(" ")
 }
 
 /// Where a task goes: the row it starts on, its name and the people in it
@@ -153,11 +154,8 @@ pub fn draw(journey: &Journey, width: usize) -> Option<Diagram> {
     let actors = score + 3;
     let actor_width = room.saturating_sub(actors).clamp(10, ACTOR_WIDTH);
 
-    let mut title = Vec::new();
-    if let Some(text) = &journey.title {
-        wrap(text, room, &mut title);
-    }
-    let mut row = if title.is_empty() { 0 } else { title.len() + 1 };
+    let title = label::title(journey.title.as_deref(), room);
+    let mut row = label::above(&title);
     let mut width = title.iter().map(|line| line.width()).max().unwrap_or(0);
     // What goes on each row: a section's heading, or a task's name and the
     // people in it, line by line, with its score on the first.
@@ -200,9 +198,7 @@ pub fn draw(journey: &Journey, width: usize) -> Option<Diagram> {
     }
     let mut canvas = Canvas::new(width, row)?;
 
-    for (at, line) in title.iter().enumerate() {
-        canvas.text(0, at, line, Ink::plain(Role::Text));
-    }
+    label::draw_title(&mut canvas, &title);
     for (row, line, owner) in &headings {
         canvas.text(0, *row, line, Ink::of(Role::Label, *owner));
     }

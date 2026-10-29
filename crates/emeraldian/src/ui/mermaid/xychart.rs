@@ -19,7 +19,8 @@
 use unicode_width::UnicodeWidthStr;
 
 use super::canvas::{Canvas, Stroke};
-use super::{Diagram, Ink, Role, key, label_lines, truncate, widest};
+use super::label::{self, truncate, widest};
+use super::{Diagram, Ink, Role, key};
 
 const MAX_SERIES: usize = 20;
 const MAX_POINTS: usize = 500;
@@ -133,7 +134,7 @@ fn text(raw: &str) -> String {
         .strip_prefix('"')
         .and_then(|inner| inner.strip_suffix('"'))
         .unwrap_or(raw);
-    label_lines(inner).join(" ")
+    label::joined(inner)
 }
 
 /// A quoted title, or a single word, at the start of `rest`, and what
@@ -384,10 +385,7 @@ pub fn draw(chart: &Chart, width: usize) -> Option<Diagram> {
         .map(|s| s.values.len())
         .chain([chart.categories.len(), 1])
         .max()?;
-    let mut title = Vec::new();
-    if let Some(text) = &chart.title {
-        super::wrap(text, width.max(20), &mut title);
-    }
+    let title = label::title(chart.title.as_deref(), width.max(20));
     let parts = Parts {
         scale: value_scale(chart)?,
         names: names(chart, count),
@@ -489,7 +487,7 @@ fn upright(chart: &Chart, parts: &Parts, width: usize) -> Option<Diagram> {
     };
 
     let legend = legend(chart);
-    let mut row = if title.is_empty() { 0 } else { title.len() + 1 };
+    let mut row = label::above(title);
     let y_title = chart.y_title.as_ref().map(|_| row);
     row += usize::from(y_title.is_some());
     let top = row;
@@ -517,9 +515,7 @@ fn upright(chart: &Chart, parts: &Parts, width: usize) -> Option<Diagram> {
         .max(chart.x_title.as_ref().map_or(0, |t| t.width()))
         .max(chart.y_title.as_ref().map_or(0, |t| t.width()));
     let mut canvas = Canvas::new(canvas_width, row)?;
-    for (at, line) in title.iter().enumerate() {
-        canvas.text(0, at, line, Ink::plain(Role::Text));
-    }
+    label::draw_title(&mut canvas, title);
     let quiet = Ink::plain(Role::Label);
     if let (Some(row), Some(text)) = (y_title, &chart.y_title) {
         canvas.text(0, row, text, quiet);
@@ -698,7 +694,7 @@ fn sideways(chart: &Chart, parts: &Parts, width: usize) -> Option<Diagram> {
     let plot_rows = count * slot;
 
     let legend = legend(chart);
-    let mut row = if title.is_empty() { 0 } else { title.len() + 1 };
+    let mut row = label::above(title);
     let x_title = chart.x_title.as_ref().map(|_| row);
     row += usize::from(x_title.is_some());
     let top = row;
@@ -718,9 +714,7 @@ fn sideways(chart: &Chart, parts: &Parts, width: usize) -> Option<Diagram> {
         .max(chart.x_title.as_ref().map_or(0, |t| t.width()))
         .max(chart.y_title.as_ref().map_or(0, |t| t.width()));
     let mut canvas = Canvas::new(canvas_width, row)?;
-    for (at, line) in title.iter().enumerate() {
-        canvas.text(0, at, line, Ink::plain(Role::Text));
-    }
+    label::draw_title(&mut canvas, title);
     let quiet = Ink::plain(Role::Label);
     if let (Some(row), Some(text)) = (x_title, &chart.x_title) {
         canvas.text(0, row, text, quiet);

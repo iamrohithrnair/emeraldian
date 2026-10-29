@@ -18,8 +18,9 @@ use std::collections::HashMap;
 use unicode_width::UnicodeWidthStr;
 
 use super::canvas::{Canvas, Stroke};
+use super::label::{self, truncate, widest};
 use super::layered::{self, Direction, Graph, Link};
-use super::{Diagram, Ink, Role, key, label_lines, truncate, widest};
+use super::{Diagram, Ink, Role, key};
 
 const MAX_ENTITIES: usize = 150;
 const MAX_ATTRIBUTES: usize = 60;
@@ -204,7 +205,7 @@ impl Reader {
                 }
                 self.diagram.entities.push(Entity {
                     id: id.to_string(),
-                    name: label_lines(id),
+                    name: label::lines(id),
                     attributes: Vec::new(),
                     loops: Vec::new(),
                 });
@@ -214,7 +215,7 @@ impl Reader {
             }
         };
         if let Some(shown) = shown {
-            self.diagram.entities[at].name = label_lines(unquote(shown));
+            self.diagram.entities[at].name = label::lines(unquote(shown));
         }
         Some(at)
     }
@@ -255,7 +256,7 @@ impl Reader {
     fn relationship(&mut self, parts: Parts) -> Option<()> {
         let from = self.entity(parts.from)?;
         let to = self.entity(parts.to)?;
-        let label = label_lines(parts.label).join(" ");
+        let label = label::joined(parts.label);
         let text = if label.is_empty() {
             format!("{} to {}", parts.left, parts.right)
         } else {
@@ -274,7 +275,7 @@ impl Reader {
         self.diagram.relationships.push(Relationship {
             from,
             to,
-            words: label_lines(&text),
+            words: label::lines(&text),
             stroke: parts.stroke,
         });
         Some(())
@@ -458,7 +459,7 @@ pub fn draw(diagram: &ErDiagram, width: usize) -> Option<Diagram> {
     for (r, rect) in diagram.relationships.iter().zip(&placed.words) {
         if let Some(rect) = rect {
             let ink = Ink::of(Role::Label, r.from);
-            layered::centred(&mut canvas, rect.x, rect.y, rect.width, &r.words, ink);
+            label::centred(&mut canvas, rect.x, rect.y, rect.width, &r.words, ink);
         }
     }
     placed.draw_lines(&mut canvas, |at| {
@@ -485,7 +486,7 @@ fn draw_entity(canvas: &mut Canvas, entity: &Entity, at: usize, rect: layered::R
     let (x, y, w, h) = (rect.x, rect.y, rect.width, rect.height);
     let outline = Ink::of(Role::Border, at);
     canvas.outline(x, y, w, h, ['┌', '┐', '└', '┘'], false, outline);
-    layered::centred(
+    label::centred(
         canvas,
         x + 1,
         y + 1,
@@ -494,7 +495,7 @@ fn draw_entity(canvas: &mut Canvas, entity: &Entity, at: usize, rect: layered::R
         Ink::plain(Role::Text),
     );
     let loops = y + 1 + entity.name.len();
-    layered::centred(
+    label::centred(
         canvas,
         x + 1,
         loops,
