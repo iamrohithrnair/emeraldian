@@ -46,7 +46,7 @@ pub struct Slice {
     pub text: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Pie {
     pub title: Option<String>,
     /// Whether each slice's value is shown beside its share.
@@ -57,11 +57,7 @@ pub struct Pie {
 /// Reads a pie from what follows `pie` on its first line, which may say
 /// `showData` and give a title, and the lines after it.
 pub fn parse(header: &str, lines: &[&str]) -> Option<Pie> {
-    let mut pie = Pie {
-        title: None,
-        show_data: false,
-        slices: Vec::new(),
-    };
+    let mut pie = Pie::default();
     let mut rest = header.trim();
     if let Some(after) = syntax::keyword(rest, "showData") {
         pie.show_data = true;

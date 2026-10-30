@@ -56,7 +56,7 @@ pub struct Relationship {
     pub stroke: Stroke,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ErDiagram {
     pub direction: Direction,
     pub entities: Vec<Entity>,
@@ -94,6 +94,7 @@ const WORDS: &[(&str, &str)] = &[
     ("1", "1"),
 ];
 
+#[derive(Default)]
 struct Reader {
     diagram: ErDiagram,
     ids: HashMap<String, usize>,
@@ -104,16 +105,7 @@ struct Reader {
 
 /// Reads the lines after `erDiagram`.
 pub fn parse(lines: &[&str]) -> Option<ErDiagram> {
-    let mut reader = Reader {
-        diagram: ErDiagram {
-            direction: Direction::Down,
-            entities: Vec::new(),
-            relationships: Vec::new(),
-        },
-        ids: HashMap::new(),
-        open: None,
-        described: syntax::Descriptions::default(),
-    };
+    let mut reader = Reader::default();
     for line in lines {
         reader.line(line.trim())?;
     }

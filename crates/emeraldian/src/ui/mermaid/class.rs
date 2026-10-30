@@ -79,7 +79,7 @@ pub struct Namespace {
     pub parent: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ClassDiagram {
     pub direction: Direction,
     pub classes: Vec<Class>,
@@ -95,6 +95,7 @@ enum Open {
     Namespace(usize),
 }
 
+#[derive(Default)]
 struct Reader {
     diagram: ClassDiagram,
     ids: HashMap<String, usize>,
@@ -111,18 +112,7 @@ const IGNORED: &[&str] = &[
 
 /// Reads the lines after `classDiagram`.
 pub fn parse(lines: &[&str]) -> Option<ClassDiagram> {
-    let mut reader = Reader {
-        diagram: ClassDiagram {
-            direction: Direction::Down,
-            classes: Vec::new(),
-            relations: Vec::new(),
-            namespaces: Vec::new(),
-        },
-        ids: HashMap::new(),
-        namespace_ids: HashMap::new(),
-        open: Vec::new(),
-        described: syntax::Descriptions::default(),
-    };
+    let mut reader = Reader::default();
     for line in lines {
         reader.line(line.trim())?;
     }

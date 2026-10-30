@@ -36,7 +36,7 @@ pub struct Period {
     pub section: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Timeline {
     pub title: Option<String>,
     pub sections: Vec<Vec<String>>,
@@ -45,11 +45,7 @@ pub struct Timeline {
 
 /// Reads the lines after `timeline`.
 pub fn parse(lines: &[&str]) -> Option<Timeline> {
-    let mut timeline = Timeline {
-        title: None,
-        sections: Vec::new(),
-        periods: Vec::new(),
-    };
+    let mut timeline = Timeline::default();
     let mut events = 0;
     let mut described = syntax::Descriptions::default();
     for line in lines {

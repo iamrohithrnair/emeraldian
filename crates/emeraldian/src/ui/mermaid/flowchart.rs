@@ -47,7 +47,7 @@ pub struct Edge {
     pub tail: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Chart {
     pub direction: Direction,
     pub nodes: Vec<Node>,
@@ -67,15 +67,8 @@ pub fn parse(header: &str, lines: &[&str]) -> Option<Chart> {
         "" => Direction::Down,
         named => syntax::direction(named)?,
     };
-    let mut builder = Builder {
-        chart: Chart {
-            direction,
-            nodes: Vec::new(),
-            edges: Vec::new(),
-        },
-        ids: HashMap::new(),
-        described: syntax::Descriptions::default(),
-    };
+    let mut builder = Builder::default();
+    builder.chart.direction = direction;
     for line in first.into_iter().chain(lines.iter().copied()) {
         for statement in statements(line) {
             builder.statement(statement)?;
@@ -114,6 +107,7 @@ fn statements(line: &str) -> Vec<&str> {
         .collect()
 }
 
+#[derive(Default)]
 struct Builder {
     chart: Chart,
     ids: HashMap<String, usize>,

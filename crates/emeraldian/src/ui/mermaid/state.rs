@@ -70,7 +70,7 @@ pub struct Transition {
     pub note: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct StateDiagram {
     pub direction: Direction,
     pub states: Vec<State>,
@@ -85,6 +85,7 @@ const IGNORED: &[&str] = &[
     "classDef", "class", "style", "click", "scale", "hide", "title",
 ];
 
+#[derive(Default)]
 struct Reader {
     diagram: StateDiagram,
     ids: HashMap<String, usize>,
@@ -99,19 +100,7 @@ struct Reader {
 
 /// Reads the lines after `stateDiagram`.
 pub fn parse(lines: &[&str]) -> Option<StateDiagram> {
-    let mut reader = Reader {
-        diagram: StateDiagram {
-            direction: Direction::Down,
-            states: Vec::new(),
-            composites: Vec::new(),
-            transitions: Vec::new(),
-        },
-        ids: HashMap::new(),
-        open: Vec::new(),
-        region: HashMap::new(),
-        note: None,
-        described: syntax::Descriptions::default(),
-    };
+    let mut reader = Reader::default();
     for line in lines {
         reader.line(line.trim())?;
     }

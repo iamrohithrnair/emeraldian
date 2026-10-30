@@ -39,7 +39,7 @@ pub struct Section {
     pub tasks: Vec<Task>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Journey {
     pub title: Option<String>,
     pub sections: Vec<Section>,
@@ -47,10 +47,7 @@ pub struct Journey {
 
 /// Reads the lines after `journey`.
 pub fn parse(lines: &[&str]) -> Option<Journey> {
-    let mut journey = Journey {
-        title: None,
-        sections: Vec::new(),
-    };
+    let mut journey = Journey::default();
     let mut tasks = 0;
     let mut described = syntax::Descriptions::default();
     for line in lines {

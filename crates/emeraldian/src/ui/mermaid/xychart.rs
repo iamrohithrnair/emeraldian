@@ -41,7 +41,7 @@ pub struct Series {
     pub values: Vec<f64>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Chart {
     pub title: Option<String>,
     /// Laid on its side, with the bars running along the rows.
@@ -67,14 +67,8 @@ pub fn parse(header: &str, lines: &[&str]) -> Option<Chart> {
         _ => return None,
     };
     let mut chart = Chart {
-        title: None,
         horizontal,
-        x_title: None,
-        categories: Vec::new(),
-        x_range: None,
-        y_title: None,
-        y_range: None,
-        series: Vec::new(),
+        ..Chart::default()
     };
     let mut described = syntax::Descriptions::default();
     for line in lines {

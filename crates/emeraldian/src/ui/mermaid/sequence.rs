@@ -57,7 +57,7 @@ pub enum Event {
     Rule(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Sequence {
     pub actors: Vec<Actor>,
     pub events: Vec<Event>,
@@ -90,6 +90,7 @@ const BLOCKS: &[(&str, bool)] = &[
     ("box", false),
 ];
 
+#[derive(Default)]
 struct Builder {
     sequence: Sequence,
     ids: HashMap<String, usize>,
@@ -111,13 +112,7 @@ impl Builder {
 
 /// Reads the lines after `sequenceDiagram`.
 pub fn parse(lines: &[&str]) -> Option<Sequence> {
-    let mut builder = Builder {
-        sequence: Sequence {
-            actors: Vec::new(),
-            events: Vec::new(),
-        },
-        ids: HashMap::new(),
-    };
+    let mut builder = Builder::default();
     let mut open: Vec<bool> = Vec::new();
     let mut numbered = false;
     let mut number = 0;

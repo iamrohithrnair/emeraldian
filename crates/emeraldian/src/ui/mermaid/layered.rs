@@ -47,8 +47,9 @@ pub const MAX_DEPTH: usize = 16;
 const LABEL_ROOM: usize = 48;
 
 /// Which way a graph flows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Direction {
+    #[default]
     Down,
     Up,
     Right,

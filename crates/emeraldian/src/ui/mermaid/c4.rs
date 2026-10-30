@@ -96,7 +96,7 @@ pub struct Rel {
     pub both: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct C4 {
     pub title: Option<String>,
     pub elements: Vec<Element>,
@@ -118,19 +118,7 @@ pub fn is_kind(kind: &str) -> bool {
 /// Reads the lines after the line naming the diagram. `numbered` numbers the
 /// relationships, as a dynamic diagram does.
 pub fn parse(lines: &[&str], numbered: bool) -> Option<C4> {
-    let mut reader = Reader {
-        c4: C4 {
-            title: None,
-            elements: Vec::new(),
-            frames: Vec::new(),
-            rels: Vec::new(),
-        },
-        aliases: HashMap::new(),
-        frame_aliases: HashMap::new(),
-        open: Vec::new(),
-        pending: None,
-        rels: Vec::new(),
-    };
+    let mut reader = Reader::default();
     let mut described = syntax::Descriptions::default();
     for line in lines {
         let line = line.trim();
@@ -165,6 +153,7 @@ pub fn parse(lines: &[&str], numbered: bool) -> Option<C4> {
     Some(reader.c4)
 }
 
+#[derive(Default)]
 struct Reader {
     c4: C4,
     aliases: HashMap<String, usize>,
