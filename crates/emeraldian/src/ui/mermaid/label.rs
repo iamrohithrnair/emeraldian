@@ -3,7 +3,7 @@
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use super::canvas::Canvas;
+use super::canvas::{self, Canvas};
 use super::{Ink, Role};
 
 /// Widest a line of a box's or an edge's words may be before it wraps.
@@ -103,7 +103,7 @@ fn is_tag(inside: &str) -> bool {
 }
 
 /// Breaks text at spaces into lines no wider than `width`, splitting a word
-/// that is wider on its own.
+/// that is wider on its own, though never inside a cluster drawn as one.
 pub fn wrap(text: &str, width: usize, out: &mut Vec<String>) {
     let mut line = Line::default();
     for word in text.split_whitespace() {
@@ -114,8 +114,7 @@ pub fn wrap(text: &str, width: usize, out: &mut Vec<String>) {
         if !line.text.is_empty() {
             line.push(' ');
         }
-        // Each character as a string of its own.
-        for piece in word.split_inclusive(|_: char| true) {
+        for piece in canvas::clusters(word) {
             if line.width + piece.width() > width && !line.text.is_empty() {
                 out.push(line.take());
             }
@@ -257,12 +256,12 @@ pub fn truncate(text: &str, width: usize) -> String {
     }
     let mut out = String::new();
     let mut used = 0;
-    for c in text.chars() {
-        let wide = c.width().unwrap_or(0);
+    for cluster in canvas::clusters(text) {
+        let wide = canvas::columns(cluster);
         if used + wide + 1 > width {
             break;
         }
-        out.push(c);
+        out.push_str(cluster);
         used += wide;
     }
     if width > 0 {

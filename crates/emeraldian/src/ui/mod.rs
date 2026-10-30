@@ -117,7 +117,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let show_hints = app.config.ui.show_hints && area.height >= 8;
     let hint_rows = if show_hints {
         hint_lines(
-            &hints(app, app.regions.pan),
+            &hints(app, app.regions.pan, !app.regions.diagrams.is_empty()),
             &palette,
             area.width as usize,
             if area.height >= 10 { 2 } else { 1 },
@@ -201,13 +201,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if show_hints {
         // Laid out again now the note is drawn, since whether there is
-        // anything to pan is only known once it is. The rows were counted
-        // from the last frame's answer, which is nearly always the same one.
-        let hint_rows = if (regions.pan > 0) == (app.regions.pan > 0) {
+        // anything to pan, or a diagram to copy, is only known once it is.
+        // The rows were counted from the last frame's answers, which are
+        // nearly always the same ones.
+        let offered = |regions: &Regions| (regions.pan > 0, !regions.diagrams.is_empty());
+        let hint_rows = if offered(&regions) == offered(&app.regions) {
             hint_rows
         } else {
             hint_lines(
-                &hints(app, regions.pan),
+                &hints(app, regions.pan, !regions.diagrams.is_empty()),
                 &palette,
                 area.width as usize,
                 hint_rows.len(),
@@ -267,8 +269,8 @@ fn readable(pane: Rect) -> Rect {
 /// `pan` is how far the note on screen can pan sideways. Panning is offered
 /// only while there is a wide block in view to pan, which is exactly when
 /// someone looks for how to reach the rest of it. Copying a diagram is
-/// offered the same way, while one is on screen.
-fn hints(app: &App, pan: usize) -> Vec<(&'static str, &'static str)> {
+/// offered the same way, while `diagrams` says one is on screen.
+fn hints(app: &App, pan: usize, diagrams: bool) -> Vec<(&'static str, &'static str)> {
     let mut hints = hints_for(app).to_vec();
     if app.modal.is_none() {
         let label = if app.focus_mode {
@@ -283,7 +285,7 @@ fn hints(app: &App, pan: usize) -> Vec<(&'static str, &'static str)> {
         if pan > 0 && reading {
             hints.insert(hints.len().min(3), ("h/l", "pan"));
         }
-        if reading && !app.regions.diagrams.is_empty() {
+        if reading && diagrams {
             hints.insert(hints.len().min(3), ("y", "copy diagram"));
         }
     }
@@ -1380,6 +1382,38 @@ mod tests {
         assert!(!screen.contains("h/l pan"), "{screen}");
     }
 
+    /// Frames are drawn as keys come in, so a hint that waited for the next
+    /// frame would be missing until a key was pressed, and stay on after.
+    #[test]
+    fn copying_a_diagram_is_offered_on_the_frame_it_comes_into_view() {
+        let vault = TempVault::new("hint-diagram");
+        vault.write(
+            "Flow.md",
+            &format!(
+                "# Flow\n\n```mermaid\ngraph LR\n  A[Start] --> B[End]\n```\n\n{}",
+                "Filler line.\n\n".repeat(60)
+            ),
+        );
+        let mut app = App::new(vault.vault(), Config::default()).expect("app");
+        let flow = app.index.id_of_rel("Flow.md").expect("indexed");
+        app.open_note(flow);
+        app.active_mut().expect("tab").mode = Mode::Reading;
+        app.focus = Focus::Note;
+        let screen = render(&mut app, 120, 30).join("\n");
+        assert!(
+            screen.contains("y copy diagram"),
+            "the first frame: {screen}"
+        );
+
+        app.active_mut().expect("tab").scroll = 40;
+        let screen = render(&mut app, 120, 30).join("\n");
+        assert!(!screen.contains("copy diagram"), "scrolled away: {screen}");
+
+        app.active_mut().expect("tab").scroll = 0;
+        let screen = render(&mut app, 120, 30).join("\n");
+        assert!(screen.contains("y copy diagram"), "and back: {screen}");
+    }
+
     #[test]
     fn the_graph_records_its_canvas_bounds_for_hit_testing() {
         let (_vault, mut app) = demo_app();
@@ -1985,11 +2019,11 @@ mod tests {
     #[test]
     fn the_hint_bar_offers_focus_mode_and_the_way_back_out() {
         let (_vault, mut app) = demo_app();
-        assert!(hints(&app, 0).contains(&("F8", "focus")));
+        assert!(hints(&app, 0, false).contains(&("F8", "focus")));
         crate::actions::dispatch(&mut app, crate::app::Action::ToggleFocusMode);
-        assert!(hints(&app, 0).contains(&("F8", "exit focus")));
+        assert!(hints(&app, 0, false).contains(&("F8", "exit focus")));
         assert!(
-            !hints(&app, 0).iter().any(|(key, _)| *key == "Tab"),
+            !hints(&app, 0, false).iter().any(|(key, _)| *key == "Tab"),
             "Tab has no other pane to go to"
         );
         let bar = render(&mut app, 100, 40).join("\n");
