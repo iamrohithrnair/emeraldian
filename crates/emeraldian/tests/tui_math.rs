@@ -10,6 +10,17 @@
 //! Everything here is deterministic: fixed terminal sizes, unique temporary
 //! vaults and config directories, and bounded waits on screen content rather
 //! than sleeps.
+//!
+//! The suite runs on Linux and macOS. On Windows it would not be isolated: the
+//! app resolves its config, state and cache directories through `dirs`, whose
+//! Windows backend asks the Known Folder API and ignores `%APPDATA%`,
+//! `%LOCALAPPDATA%` and `%USERPROFILE%`, and there is no config-path override
+//! to fall back on. The fixture could not keep a run out of the developer's
+//! real profile — it would read their settings and write their state — so the
+//! suite is gated rather than left to depend on the machine it runs on. Nothing
+//! in the app is Unix-specific; the rest of the workspace tests cover Windows.
+
+#![cfg(unix)]
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -52,22 +63,42 @@ impl Fixture {
         for dir in [&vault, &config_home, &home] {
             std::fs::create_dir_all(dir).expect("create fixture directory");
         }
+        let fixture = Self {
+            root,
+            vault,
+            config_home,
+            home,
+        };
         // Pictures off: a probe would ask the terminal what it can draw, and
         // this one has no graphics protocol to offer. Sidebars and the ribbon
         // off so the reading pane gets the width an equation needs.
-        std::fs::create_dir_all(config_home.join("emeraldian")).expect("config dir");
+        let config_dir = fixture.config_dir();
+        std::fs::create_dir_all(&config_dir).expect("config dir");
         std::fs::write(
-            config_home.join("emeraldian/config.toml"),
+            config_dir.join("config.toml"),
             "[images]\nenabled = false\n\n\
              [ui]\nshow_left_sidebar = false\nshow_right_sidebar = false\n\
              show_ribbon = false\nshow_hints = false\n",
         )
         .expect("write config");
-        Self {
-            root,
-            vault,
-            config_home,
-            home,
+        fixture
+    }
+
+    /// The directory the app reads `config.toml` from, under this fixture.
+    ///
+    /// The app asks `dirs::config_dir()`, which follows each platform's own
+    /// convention: `$XDG_CONFIG_HOME` (or `~/.config`) on Linux, but
+    /// `~/Library/Application Support` on macOS, which ignores the XDG
+    /// variables. The file has to land where the app actually looks, or the
+    /// run would silently use the defaults, sidebars up and images probed.
+    fn config_dir(&self) -> PathBuf {
+        #[cfg(target_os = "macos")]
+        {
+            self.home.join("Library/Application Support/emeraldian")
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.config_home.join("emeraldian")
         }
     }
 

@@ -679,10 +679,17 @@ same state.
 ## Development
 
 ```sh
-cargo test --workspace          # 722 tests
+cargo test --workspace          # 1122 tests
 cargo clippy --workspace --all-targets
 cargo fmt --all --check
 ```
+
+`cargo test --workspace` now includes the end-to-end reading-mode maths suite,
+which drives the real binary in an emulated terminal via `tui-test-rs`
+([microsoft/tui-test](https://github.com/microsoft/tui-test)) and needs no
+display; the focused command is `cargo test -p emeraldian --test tui_math`.
+It runs on Linux and macOS: on Windows the fixture cannot redirect the app's
+config directory, so the suite is skipped there.
 
 Behind a corporate proxy that re-signs TLS, point cargo at your CA bundle:
 
