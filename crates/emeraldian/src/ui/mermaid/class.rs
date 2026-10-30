@@ -100,12 +100,13 @@ struct Reader {
     ids: HashMap<String, usize>,
     namespace_ids: HashMap<String, usize>,
     open: Vec<Open>,
+    described: syntax::Descriptions,
 }
 
 /// Statements about how things look, or what happens on a click, which a
 /// drawing in text has no use for.
 const IGNORED: &[&str] = &[
-    "style", "classDef", "cssClass", "click", "link", "callback", "accTitle", "accDescr", "title",
+    "style", "classDef", "cssClass", "click", "link", "callback", "title",
 ];
 
 /// Reads the lines after `classDiagram`.
@@ -120,6 +121,7 @@ pub fn parse(lines: &[&str]) -> Option<ClassDiagram> {
         ids: HashMap::new(),
         namespace_ids: HashMap::new(),
         open: Vec::new(),
+        described: syntax::Descriptions::default(),
     };
     for line in lines {
         reader.line(line.trim())?;
@@ -145,6 +147,9 @@ impl Reader {
             if closed {
                 self.open.pop();
             }
+            return Some(());
+        }
+        if self.described.skip(line) {
             return Some(());
         }
         if line == "}" {

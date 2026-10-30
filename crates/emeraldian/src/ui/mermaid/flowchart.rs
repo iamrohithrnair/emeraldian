@@ -74,6 +74,7 @@ pub fn parse(header: &str, lines: &[&str]) -> Option<Chart> {
             edges: Vec::new(),
         },
         ids: HashMap::new(),
+        described: syntax::Descriptions::default(),
     };
     for line in first.into_iter().chain(lines.iter().copied()) {
         for statement in statements(line) {
@@ -116,6 +117,7 @@ fn statements(line: &str) -> Vec<&str> {
 struct Builder {
     chart: Chart,
     ids: HashMap<String, usize>,
+    described: syntax::Descriptions,
 }
 
 /// Statements about how things look, or how the chart is grouped, which a
@@ -129,14 +131,12 @@ const IGNORED: &[&str] = &[
     "direction",
     "subgraph",
     "end",
-    "accTitle",
-    "accDescr",
     "title",
 ];
 
 impl Builder {
     fn statement(&mut self, statement: &str) -> Option<()> {
-        if IGNORED.contains(&syntax::first_word(statement)) {
+        if self.described.skip(statement) || IGNORED.contains(&syntax::first_word(statement)) {
             return Some(());
         }
         let mut scan = Scan {

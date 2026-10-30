@@ -52,16 +52,10 @@ pub fn parse(lines: &[&str]) -> Option<Journey> {
         sections: Vec::new(),
     };
     let mut tasks = 0;
-    // Inside an `accDescr { … }` block, which describes the journey for a
-    // screen reader in a browser.
-    let mut skipping = false;
+    let mut described = syntax::Descriptions::default();
     for line in lines {
         let line = line.trim();
-        if skipping {
-            skipping = !line.contains('}');
-            continue;
-        }
-        if line.is_empty() {
+        if line.is_empty() || described.skip(line) {
             continue;
         }
         if let Some(rest) = syntax::keyword(line, "title") {
@@ -73,10 +67,6 @@ pub fn parse(lines: &[&str]) -> Option<Journey> {
                 name: Some(words(rest)),
                 tasks: Vec::new(),
             });
-            continue;
-        }
-        if line.starts_with("accTitle") || line.starts_with("accDescr") {
-            skipping = line.contains('{') && !line.contains('}');
             continue;
         }
         // `Task name: score: actor, actor`.

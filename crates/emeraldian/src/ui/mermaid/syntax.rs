@@ -6,6 +6,37 @@ use std::collections::HashMap;
 
 use super::layered::Direction;
 
+/// Passes over what describes a diagram to a screen reader in a browser:
+/// `accTitle: …`, `accDescr: …`, and an `accDescr { … }` block, which may
+/// run over several lines. Each kind asks of the statements it reads at the
+/// top level, so a line in a class's body is still a member.
+#[derive(Default)]
+pub struct Descriptions {
+    block: bool,
+}
+
+impl Descriptions {
+    /// Whether `line` is, or is part of, a description.
+    pub fn skip(&mut self, line: &str) -> bool {
+        let line = line.trim();
+        if self.block {
+            self.block = !line.contains('}');
+            return true;
+        }
+        match line
+            .split(|c: char| c.is_whitespace() || c == ':' || c == '{')
+            .next()
+        {
+            Some("accTitle") => true,
+            Some("accDescr") => {
+                self.block = line.contains('{') && !line.contains('}');
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
 /// What follows `word` at the start of a line, when the line starts with it
 /// as a word of its own.
 #[must_use]

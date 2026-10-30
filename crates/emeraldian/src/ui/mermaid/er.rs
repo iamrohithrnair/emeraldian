@@ -67,9 +67,7 @@ pub struct ErDiagram {
 
 /// Statements about how entities look, which a drawing in text has no use
 /// for.
-const IGNORED: &[&str] = &[
-    "style", "classDef", "class", "accTitle", "accDescr", "title",
-];
+const IGNORED: &[&str] = &["style", "classDef", "class", "title"];
 
 /// Mermaid's marks for each cardinality, as written on the left of the line
 /// and on its right, and how it is shown.
@@ -101,6 +99,7 @@ struct Reader {
     ids: HashMap<String, usize>,
     /// The entity whose attributes are being read.
     open: Option<usize>,
+    described: syntax::Descriptions,
 }
 
 /// Reads the lines after `erDiagram`.
@@ -113,6 +112,7 @@ pub fn parse(lines: &[&str]) -> Option<ErDiagram> {
         },
         ids: HashMap::new(),
         open: None,
+        described: syntax::Descriptions::default(),
     };
     for line in lines {
         reader.line(line.trim())?;
@@ -139,6 +139,9 @@ impl Reader {
             if closed {
                 self.open = None;
             }
+            return Some(());
+        }
+        if self.described.skip(line) {
             return Some(());
         }
         let first = line.split_whitespace().next().unwrap_or("");

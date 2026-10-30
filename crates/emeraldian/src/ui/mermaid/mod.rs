@@ -386,6 +386,37 @@ mod tests {
         assert!(render(&lines(source), 80).is_some());
     }
 
+    /// What describes a diagram to a screen reader, on a line or in a block,
+    /// is passed over by every kind but a mind map, where it is a node.
+    #[test]
+    fn descriptions_for_screen_readers_are_passed_over() {
+        let described = "  accTitle: For a screen reader\n  accDescr: Briefly\n  accDescr{\n    Hidden : 1\n  }";
+        for source in [
+            "graph TD\n  A --> B",
+            "sequenceDiagram\n  A->>B: hi",
+            "classDiagram\n  A <|-- B",
+            "stateDiagram-v2\n  [*] --> A",
+            "erDiagram\n  A ||--o{ B : has",
+            "C4Context\n  Person(a, \"A\")",
+            "pie\n  \"A\" : 1",
+            "gantt\n  A : 2024-01-01, 1d",
+            "xychart-beta\n  bar [1, 2]",
+            "timeline\n  2003 : real",
+            "journey\n  Tea: 5: Me",
+        ] {
+            let (header, body) = source.split_once('\n').unwrap();
+            let source = format!("{header}\n{described}\n{body}");
+            let drawn = draw(&lines(&source), 80).expect(&source);
+            let text = plain(&drawn);
+            assert!(
+                !text.contains("Hidden") && !text.contains("screen"),
+                "{text}"
+            );
+        }
+        let map = draw(&lines("mindmap\n  Root\n    accTitle: a node"), 80).unwrap();
+        assert!(plain(&map).contains("accTitle: a node"));
+    }
+
     #[test]
     fn huge_sources_are_refused_without_parsing() {
         let mut source = String::from("graph TD\n");

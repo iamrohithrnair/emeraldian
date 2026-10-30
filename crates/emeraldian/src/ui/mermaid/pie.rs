@@ -74,15 +74,10 @@ pub fn parse(header: &str, lines: &[&str]) -> Option<Pie> {
     } else if !rest.is_empty() {
         return None;
     }
-    let mut described = false;
+    let mut described = syntax::Descriptions::default();
     for line in lines {
         let line = line.trim();
-        // A long description in braces runs over several lines.
-        if described {
-            described = !line.contains('}');
-            continue;
-        }
-        if line.is_empty() {
+        if line.is_empty() || described.skip(line) {
             continue;
         }
         if let Some(title) = syntax::keyword(line, "title") {
@@ -91,8 +86,6 @@ pub fn parse(header: &str, lines: &[&str]) -> Option<Pie> {
                 .map(label::joined);
         } else if syntax::keyword(line, "showData").is_some_and(str::is_empty) {
             pie.show_data = true;
-        } else if line.starts_with("accTitle") || line.starts_with("accDescr") {
-            described = line.starts_with("accDescr") && line.contains('{') && !line.contains('}');
         } else {
             if pie.slices.len() >= MAX_SLICES {
                 return None;
@@ -339,7 +332,8 @@ mod tests {
         assert_eq!(labels, ["Dogs", "Cats", "Rats"]);
         assert_eq!(p.slices[0].value, 386.0);
 
-        let p = pie("pie showData\n  title Key elements\n  accTitle: Elements\n  accDescr {\n    long\n  }\n  \"Calcium\" : 42.96\n  \"Iron\" : .5").unwrap();
+        let p = pie("pie showData\n  title Key elements\n  \"Calcium\" : 42.96\n  \"Iron\" : .5")
+            .unwrap();
         assert!(p.show_data);
         assert_eq!(p.title.as_deref(), Some("Key elements"));
         assert_eq!(p.slices[1].text, ".5");

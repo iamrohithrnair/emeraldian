@@ -76,14 +76,10 @@ pub fn parse(header: &str, lines: &[&str]) -> Option<Chart> {
         y_range: None,
         series: Vec::new(),
     };
-    let mut described = false;
+    let mut described = syntax::Descriptions::default();
     for line in lines {
         let line = line.trim();
-        if described {
-            described = !line.contains('}');
-            continue;
-        }
-        if line.is_empty() {
+        if line.is_empty() || described.skip(line) {
             continue;
         }
         let (word, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
@@ -113,9 +109,6 @@ pub fn parse(header: &str, lines: &[&str]) -> Option<Chart> {
                     return None;
                 }
                 chart.series.push(series(rest, word == "line")?);
-            }
-            w if w.starts_with("accTitle") || w.starts_with("accDescr") => {
-                described = w.starts_with("accDescr") && line.contains('{') && !line.contains('}');
             }
             _ => return None,
         }

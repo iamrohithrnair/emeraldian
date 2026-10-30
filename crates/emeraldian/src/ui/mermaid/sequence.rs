@@ -121,10 +121,11 @@ pub fn parse(lines: &[&str]) -> Option<Sequence> {
     let mut open: Vec<bool> = Vec::new();
     let mut numbered = false;
     let mut number = 0;
+    let mut described = syntax::Descriptions::default();
     for line in lines {
         let line = line.trim();
         let line = line.strip_prefix("create ").unwrap_or(line).trim();
-        if line.is_empty() {
+        if line.is_empty() || described.skip(line) {
             continue;
         }
         let (word, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));

@@ -131,16 +131,17 @@ pub fn parse(lines: &[&str], numbered: bool) -> Option<C4> {
         pending: None,
         rels: Vec::new(),
     };
+    let mut described = syntax::Descriptions::default();
     for line in lines {
         let line = line.trim();
-        if line.is_empty() {
+        if line.is_empty() || described.skip(line) {
             continue;
         }
         if let Some(title) = line.strip_prefix("title ") {
             reader.c4.title = Some(label::joined(title));
             continue;
         }
-        if line.starts_with("accTitle") || line.starts_with("accDescr") || line == "title" {
+        if line == "title" {
             continue;
         }
         for piece in pieces(line) {

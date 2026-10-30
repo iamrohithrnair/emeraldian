@@ -82,7 +82,7 @@ pub struct StateDiagram {
 
 /// Statements about how states look, which a drawing in text has no use for.
 const IGNORED: &[&str] = &[
-    "classDef", "class", "style", "click", "scale", "hide", "accTitle", "accDescr", "title",
+    "classDef", "class", "style", "click", "scale", "hide", "title",
 ];
 
 struct Reader {
@@ -94,6 +94,7 @@ struct Reader {
     region: HashMap<Option<usize>, usize>,
     /// A note being read up to its `end note`: its state, and its lines.
     note: Option<(usize, Vec<String>)>,
+    described: syntax::Descriptions,
 }
 
 /// Reads the lines after `stateDiagram`.
@@ -109,6 +110,7 @@ pub fn parse(lines: &[&str]) -> Option<StateDiagram> {
         open: Vec::new(),
         region: HashMap::new(),
         note: None,
+        described: syntax::Descriptions::default(),
     };
     for line in lines {
         reader.line(line.trim())?;
@@ -134,7 +136,7 @@ impl Reader {
             lines.push(line.to_string());
             return Some(());
         }
-        if line.is_empty() {
+        if line.is_empty() || self.described.skip(line) {
             return Some(());
         }
         if line == "}" {

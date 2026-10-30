@@ -51,16 +51,10 @@ pub fn parse(lines: &[&str]) -> Option<Timeline> {
         periods: Vec::new(),
     };
     let mut events = 0;
-    // Inside an `accDescr { … }` block, which describes the timeline for a
-    // screen reader in a browser.
-    let mut skipping = false;
+    let mut described = syntax::Descriptions::default();
     for line in lines {
         let line = line.trim();
-        if skipping {
-            skipping = !line.contains('}');
-            continue;
-        }
-        if line.is_empty() {
+        if line.is_empty() || described.skip(line) {
             continue;
         }
         if let Some(rest) = syntax::keyword(line, "title") {
@@ -69,10 +63,6 @@ pub fn parse(lines: &[&str]) -> Option<Timeline> {
         }
         if let Some(rest) = syntax::keyword(line, "section") {
             timeline.sections.push(label::unwrapped(rest));
-            continue;
-        }
-        if line.starts_with("accTitle") || line.starts_with("accDescr") {
-            skipping = line.contains('{') && !line.contains('}');
             continue;
         }
         // `period : event : event`, or `: event` for more of the one before.
@@ -337,14 +327,6 @@ mod tests {
         ] {
             assert!(timeline(source).is_none(), "{source:?} should not parse");
         }
-        assert!(timeline("accDescr {\n  2002 : not a period\n}\n2003 : real").is_some());
-        assert_eq!(
-            timeline("accDescr {\n2002 : hidden\n}\n2003 : real")
-                .unwrap()
-                .periods
-                .len(),
-            1
-        );
     }
 
     #[test]

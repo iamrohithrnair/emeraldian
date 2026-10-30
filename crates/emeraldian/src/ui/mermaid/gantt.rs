@@ -130,8 +130,6 @@ const IGNORED: &[&str] = &[
     "topAxis",
     "displayMode",
     "click",
-    "accTitle",
-    "accDescr",
 ];
 
 enum Start {
@@ -171,10 +169,9 @@ pub fn parse(lines: &[&str]) -> Option<Gantt> {
     let mut title = None;
     let mut sections: Vec<String> = Vec::new();
     let mut specs: Vec<Spec> = Vec::new();
-    let mut described = false;
+    let mut described = syntax::Descriptions::default();
     for &line in &lines {
-        if described {
-            described = !line.contains('}');
+        if described.skip(line) {
             continue;
         }
         if line.is_empty()
@@ -194,9 +191,7 @@ pub fn parse(lines: &[&str]) -> Option<Gantt> {
             sections.push(truncate(&label::joined(name), 2 * NAME_WIDTH));
             continue;
         }
-        let first = syntax::first_word(line);
-        if IGNORED.contains(&first) {
-            described = first == "accDescr" && line.contains('{') && !line.contains('}');
+        if IGNORED.contains(&syntax::first_word(line)) {
             continue;
         }
         if specs.len() >= MAX_TASKS {
