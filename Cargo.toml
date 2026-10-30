@@ -26,8 +26,10 @@ emeraldian-agent = { path = "crates/emeraldian-agent", version = "0.10.2" }
 ratatui = "0.30"
 crossterm = "0.29"
 # Kitty, iTerm2 and sixel with a halfblocks fallback. Default features are off
-# to keep the optional C bindings (libchafa, libsixel) out of the build, so the
-# binary stays pure Rust and cross-compiles.
+# so the optional image bindings (libchafa, libsixel) stay out: nothing here
+# links against a system image library. The only C in the build is the vendored
+# utftex engine, compiled by build.rs, so the binary still cross-compiles
+# wherever a C toolchain is installed.
 ratatui-image = { version = "11", default-features = false, features = [
     "crossterm",
     "image-defaults",
@@ -57,6 +59,9 @@ unicode-width = "0.2"
 unicode-segmentation = "1.13"
 ureq = { version = "3", features = ["json"] }
 lz-str = "0.2"
+# Builds the vendored libtexprintf that typesets maths in the reading pane.
+# A build dependency only: the C library is linked in, not run.
+cc = "1"
 rustix = { version = "1", features = ["event", "pty", "std", "termios"] }
 
 [profile.release]

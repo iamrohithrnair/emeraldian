@@ -4,6 +4,33 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Maths is typeset by utftex in the reading pane.** `$…$`, `$$…$$` and
+  fenced blocks tagged `math`, `latex` or `tex` (in any case) are set by
+  [libtexprintf](https://github.com/bartp5/libtexprintf) v1.31 — the C engine
+  behind the `utftex` command — rather than only by the built-in Unicode
+  renderer. The library is vendored under `crates/emeraldian/vendor` and
+  built into the binary by `build.rs`, so there is no external program to
+  install and nothing is fetched at run time.
+
+  Inline maths uses utftex's setting when it comes out on one row, and falls
+  back to the built-in renderer when the formula needs several rows (a
+  fraction, a root, an integral), so a paragraph never breaks apart around
+  one. The built-in renderer also takes over whenever utftex reports an error
+  or sets nothing, so an unknown command is still shown as typed. Display
+  maths keeps its centring, panning, and `\tag` number at the right margin.
+  The editor still shows the TeX itself, and non-maths fences are unchanged.
+
+  The engine is built on every platform, Windows/MSVC included; the vendored
+  sources were checked against MSVC 19.43. Formulas the engine cannot set
+  safely are refused before the call and left to the built-in renderer:
+  `\over` or `\choose` as the first token (version 1.31 segfaults on those),
+  a leading `\over`/`\choose` after whitespace, deeply nested groups, more
+  than a handful of `\over`/`\choose` commands, and inputs over 4 KiB.
+
 ## [0.10.2] — 2026-10-30
 
 Diagrams draw words in every script whole and joined emoji at the width they

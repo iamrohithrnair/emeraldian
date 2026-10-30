@@ -1,10 +1,10 @@
 //! emeraldian — a terminal UI for your Obsidian vault.
 
-// Nothing here needs `unsafe`, and the one thing that reached for it —
-// writing to the environment from a test — was undefined behaviour rather
-// than a shortcut. `forbid` rather than `deny` so it cannot be waved through
-// locally: re-introducing it should be a deliberate change to this line.
-#![forbid(unsafe_code)]
+// Nothing here needs `unsafe` except the wrapper around the C typesetting
+// library, `ui::utftex`, which opts back in by name. `deny` rather than
+// `forbid` so that one module can, and nothing else: every other module is
+// still checked, and reaching for `unsafe` in one of them is an error.
+#![deny(unsafe_code)]
 
 mod actions;
 mod agent;
@@ -514,11 +514,9 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> io::Res
                 Event::Resize(_, _) => needs_redraw = true,
                 // A click can say something too, as copying a diagram does,
                 // and what it says gets the same time on screen as a key's.
-                Event::Mouse(mouse) => {
-                    if handle_mouse(app, mouse) {
-                        needs_redraw = true;
-                        last_status = Instant::now();
-                    }
+                Event::Mouse(mouse) if handle_mouse(app, mouse) => {
+                    needs_redraw = true;
+                    last_status = Instant::now();
                 }
                 Event::Paste(text) => {
                     keys::paste(app, &text);

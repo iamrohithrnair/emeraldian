@@ -33,6 +33,13 @@ serde_json.workspace = true
 [target.'cfg(unix)'.dependencies]
 rustix.workspace = true
 
+[build-dependencies]
+# Compiles the vendored libtexprintf, the C engine behind `utftex`.
+cc.workspace = true
+
 [dev-dependencies]
 lz-str.workspace = true
 emeraldian-core = { workspace = true, features = ["test-support"] }
+# Drives the real binary in an emulated terminal: the reading pane's maths is
+# only proven by what reaches the screen, not by the layout functions.
+tui-test-rs = "0.1.1"

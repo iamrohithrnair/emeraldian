@@ -23,7 +23,7 @@ use emeraldian_theme::{Hues, Palette, STROKE_CONTRAST, TEXT_CONTRAST, readable};
 use crate::app::{App, Mode, Regions};
 use crate::editor::{Cursor, Row};
 use crate::images::{self, Images};
-use crate::ui::{drawing, icons, math, mermaid, scrollbar, truncate};
+use crate::ui::{drawing, icons, math, mermaid, scrollbar, truncate, utftex};
 
 /// Left padding inside the note pane, matching Obsidian's generous margins.
 const PADDING: u16 = 2;
@@ -1078,6 +1078,14 @@ fn render_block(
         }
 
         BlockKind::Code { lang, lines: code } => {
+            // A `math`, `latex` or `tex` fence is an equation in reading mode,
+            // as Obsidian shows it. The editor keeps showing the TeX itself.
+            if is_math_fence(lang) {
+                let start = out.len();
+                display_math(&code.join("\n"), palette, inner_width, &pad, out);
+                note_pan(ctx, out, start, indent, width);
+                return;
+            }
             // A Mermaid block is drawn as its diagram when it can be, and
             // shown as code otherwise.
             let start = out.len();
@@ -1398,7 +1406,7 @@ fn style_spans(
                 SpanKind::Math { .. } => {
                     style = style.fg(palette.text_accent);
                     return (
-                        math::inline(&span.text),
+                        inline_math(&span.text),
                         emphasis(style, span.style, palette),
                     );
                 }
@@ -1416,10 +1424,50 @@ fn shown_text(spans: &[markdown::Span]) -> String {
     spans
         .iter()
         .map(|span| match span.kind {
-            SpanKind::Math { .. } => math::inline(&span.text),
+            SpanKind::Math { .. } => inline_math(&span.text),
             _ => span.text.clone(),
         })
         .collect()
+}
+
+/// Inline maths as a line of prose shows it.
+///
+/// utftex's setting is used when it comes out on a single row. A fraction, a
+/// root or an integral takes several rows, and a paragraph has nowhere to put
+/// them, so the hand renderer flattens the formula onto the line instead —
+/// `\frac{a}{b}` reads as `a/b` rather than breaking the paragraph apart. The
+/// same fallback covers a formula utftex rejects or cannot set.
+///
+/// Spaces in the result are non-breaking, as [`math::inline`] makes them:
+/// [`wrap_spans`] breaks only on an ASCII space, so a formula stays whole and
+/// moves to the next row rather than being split mid-expression.
+fn inline_math(tex: &str) -> String {
+    if let Some(set) = utftex::typeset(tex, utftex::Mode::Inline)
+        && set.is_single_row()
+    {
+        return set.rows()[0].replace(' ', "\u{a0}");
+    }
+    math::inline(tex)
+}
+
+/// The equation as utftex sets it, or `None` to leave it to [`math::display`].
+///
+/// utftex has no `\tag`: it reports the command as unknown and drops what
+/// follows. The number is therefore taken out of the TeX before the engine
+/// sees it and put back from the hand renderer's parse, which is also where
+/// the margin placement comes from. utftex reports no baseline, so the middle
+/// row is used, as [`math::display`] does for an equation of several rows.
+fn typeset_display(tex: &str, hand: &math::Display) -> Option<math::Display> {
+    let body = utftex::without_tag(tex);
+    let set = utftex::typeset(&body, utftex::Mode::Display)?;
+    let rows = set.rows().to_vec();
+    let baseline = rows.len().saturating_sub(1) / 2;
+    Some(math::Display {
+        rows,
+        width: set.width(),
+        baseline,
+        tag: hand.tag.clone(),
+    })
 }
 
 /// Sets an equation on rows of its own, centred as Obsidian centres it.
@@ -1434,7 +1482,8 @@ fn display_math(
     pad: &str,
     out: &mut Vec<Line<'static>>,
 ) {
-    let set = math::display(tex);
+    let hand = math::display(tex);
+    let set = typeset_display(tex, &hand).unwrap_or(hand);
     let style = Style::default().fg(palette.text_accent);
     let room = width.saturating_sub(pad.width());
     let tag = set.tag.as_deref().map(|tag| (tag, tag.width()));
@@ -1465,6 +1514,17 @@ fn display_math(
         }
         out.push(Line::from(spans));
     }
+}
+
+/// Whether a fence's info string asks for maths: `math`, `latex` or `tex`, in
+/// any case. Anything after the first word, such as an Obsidian block id, is
+/// ignored, as it is for a language name.
+fn is_math_fence(lang: &str) -> bool {
+    lang.split_whitespace().next().is_some_and(|word| {
+        word.eq_ignore_ascii_case("math")
+            || word.eq_ignore_ascii_case("latex")
+            || word.eq_ignore_ascii_case("tex")
+    })
 }
 
 /// Wraps styled spans to `width`, breaking on spaces and keeping styles intact.
@@ -3085,7 +3145,8 @@ mod tests {
         );
         assert!(rows[0].starts_with("Such as π,"), "{rows:?}");
         assert!(
-            rows.iter().any(|row| row.trim() == "π = 4 arctan(1)"),
+            // utftex sets the relation tight: `π= 4arctan(1)`.
+            rows.iter().any(|row| row.trim() == "π= 4arctan(1)"),
             "the display maths has a row of its own: {rows:?}"
         );
         assert!(
@@ -3159,7 +3220,8 @@ mod tests {
     fn inline_maths_is_typeset_in_the_line() {
         assert_eq!(
             shown("Energy is $E=mc^2$, roughly.\n", 60),
-            ["Energy is E = mc², roughly."]
+            // utftex's own spacing, not the hand renderer's.
+            ["Energy is E=mc², roughly."]
         );
         // A price is still a price.
         assert_eq!(shown("From $5 to $10.\n", 60), ["From $5 to $10."]);
@@ -3190,8 +3252,8 @@ mod tests {
             [
                 "Before",
                 "",
-                "        a + b",
-                "        ─────",
+                "         a+b",
+                "         ───",
                 "          2",
                 "",
                 "After"
@@ -3205,6 +3267,10 @@ mod tests {
             shown("so that $$x^2 = 4$$ which means\n", 20),
             ["so that", "       x² = 4", "which means"]
         );
+        // A display span is set by utftex too, tight `+` and all, not by the
+        // hand renderer that would write `x² + 1`.
+        let rows = shown("so that $$x^2+1$$ which means\n", 20);
+        assert!(rows.iter().any(|row| row.trim() == "x²+1"), "{rows:?}");
     }
 
     #[test]
@@ -3237,6 +3303,95 @@ mod tests {
             .collect();
         assert!(widths.windows(2).all(|pair| pair[0] == pair[1]), "{rows:?}");
         assert!(rows.iter().any(|row| row.contains("x²")), "{rows:?}");
+    }
+
+    #[test]
+    fn inline_maths_comes_from_utftex_when_it_fits_on_one_row() {
+        // utftex sets a sum tight, where the hand renderer spaces it out, so
+        // this row can only have come from the engine.
+        assert_eq!(shown("$x^2+1$\n", 40), ["x²+1"]);
+        // A fraction takes three rows, which a paragraph has nowhere to put,
+        // so the hand renderer flattens it onto the line instead.
+        assert_eq!(shown("$\\frac{a+b}{2}$\n", 40), ["(a + b)/2"]);
+    }
+
+    #[test]
+    fn maths_utftex_rejects_falls_back_to_the_hand_renderer() {
+        // The engine reports an unknown command as an error, so the formula is
+        // set by `math::inline` rather than dropped.
+        let hand = math::inline(r"\notacommand{x}").replace('\u{a0}', " ");
+        assert_eq!(shown("$\\notacommand{x}$\n", 40), [hand]);
+    }
+
+    #[test]
+    fn a_math_fence_is_typeset_in_reading_mode() {
+        for lang in ["math", "LaTeX", "TEX"] {
+            let rows = shown(&format!("```{lang}\n\\frac{{a+b}}{{2}}\n```\n"), 21);
+            let body: Vec<&str> = rows.iter().map(|row| row.trim()).collect();
+            assert!(body.contains(&"a+b"), "{lang}: {rows:?}");
+            assert!(body.contains(&"───"), "{lang}: {rows:?}");
+            assert!(body.contains(&"2"), "{lang}: {rows:?}");
+            assert!(
+                !rows
+                    .iter()
+                    .any(|row| row.contains("frac") || row.contains('`')),
+                "{lang}: the TeX is not shown as code: {rows:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_fences_are_still_code() {
+        let rows = shown("```rust\nlet x = 1;\n```\n", 40);
+        assert!(
+            rows.iter().any(|row| row.contains("let x = 1;")),
+            "{rows:?}"
+        );
+        assert!(rows.iter().any(|row| row.trim() == "rust"), "{rows:?}");
+    }
+
+    #[test]
+    fn a_tagged_equation_is_set_by_utftex_with_its_number_kept() {
+        let rows = shown("$$\\pi = 4\\arctan(1) \\tag{2}$$\n", 40);
+        assert!(
+            rows.iter().any(|row| row.contains("π= 4arctan(1)")),
+            "{rows:?}"
+        );
+        assert!(rows.iter().any(|row| row.ends_with("(2)")), "{rows:?}");
+    }
+
+    #[test]
+    fn a_leading_relation_is_set_by_hand_as_an_empty_numerator() {
+        // What `$\over a b$` shows in reading mode. utftex 1.31 segfaults on
+        // a leading `\over`, so `inline_math` falls through to this: an empty
+        // numerator over a parenthesised product. Asserted on the hand
+        // renderer directly, so a guard regression cannot take down the test
+        // runner (the guard itself is tested in `ui::utftex`).
+        assert_eq!(math::inline(r"\over a b").replace('\u{a0}', " "), "/(ab)");
+    }
+
+    #[test]
+    fn a_math_fence_is_still_tex_in_the_editor() {
+        let lines: Vec<String> = ["```math", "\\frac{a}{b}", "```"]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            fenced_lines(&lines),
+            [Fence::Code, Fence::Code, Fence::Code]
+        );
+        let palette = palette();
+        let painted = paint_line(&lines[1], false, Fence::Code, &palette);
+        assert_eq!(
+            painted.iter().map(|(ch, _)| *ch).collect::<String>(),
+            "\\frac{a}{b}",
+            "the editor shows the TeX itself"
+        );
+        assert!(
+            painted
+                .iter()
+                .all(|(_, style)| style.bg == Some(palette.code_bg))
+        );
     }
 
     #[test]

@@ -13,6 +13,7 @@ pub mod mermaid;
 pub mod modal;
 pub mod note;
 pub mod panes;
+pub mod utftex;
 
 use emeraldian_theme::Palette;
 use ratatui::Frame;
@@ -1716,6 +1717,50 @@ mod tests {
         assert!(
             rows.iter().filter(|row| row.contains("alpha")).count() == 1,
             "and it is drawn once, not repeated"
+        );
+    }
+
+    #[test]
+    fn reading_mode_typesets_maths_with_utftex_where_editing_shows_the_tex() {
+        // The whole draw path, not just the layout: a note with inline maths,
+        // a `$$` equation and a `math` fence is typeset while reading, and the
+        // TeX itself is still what the editor shows.
+        let vault = TempVault::new("render-utftex");
+        vault.write(
+            "Maths.md",
+            "Inline $x^2+1$ here.\n\n$$\\frac{a+b}{2}$$\n\n```math\n\\frac{1}{x}\n```\n",
+        );
+        let mut app = App::new(vault.vault(), Config::default()).expect("app");
+        let maths = app.index.id_of_rel("Maths.md").expect("indexed");
+        app.open_note(maths);
+
+        let reading = note_pane(&mut app, 60, 20).join("\n");
+        // utftex sets a sum tight; the hand renderer writes `x² + 1`.
+        assert!(reading.contains("x²+1"), "inline maths is set: {reading}");
+        assert!(reading.contains("a+b"), "display maths is set: {reading}");
+        // Two fractions stack over two rules, one per equation.
+        assert!(
+            reading.matches('─').count() >= 4,
+            "the display equation and the fence are stacked: {reading}"
+        );
+        assert!(
+            !reading.contains("frac") && !reading.contains("```"),
+            "reading mode shows no TeX source: {reading}"
+        );
+
+        crate::actions::dispatch(&mut app, crate::app::Action::ToggleMode);
+        let editing = note_pane(&mut app, 60, 20).join("\n");
+        assert!(
+            editing.contains("\\frac{a+b}{2}"),
+            "the editor shows the TeX: {editing}"
+        );
+        assert!(
+            editing.contains("```math"),
+            "the fence is still a fence: {editing}"
+        );
+        assert!(
+            !editing.contains("x²+1") && !editing.contains('─'),
+            "nothing is typeset while editing: {editing}"
         );
     }
 

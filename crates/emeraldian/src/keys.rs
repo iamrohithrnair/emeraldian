@@ -619,11 +619,9 @@ fn handle_explorer(app: &mut App, key: KeyEvent) {
                 PromptIntent::FilterExplorer,
             )));
         }
-        KeyCode::Esc => {
-            if !app.explorer.filter.is_empty() {
-                app.explorer.filter.clear();
-                app.explorer.rebuild(&app.index);
-            }
+        KeyCode::Esc if !app.explorer.filter.is_empty() => {
+            app.explorer.filter.clear();
+            app.explorer.rebuild(&app.index);
         }
         KeyCode::Char('?') => dispatch(app, Action::OpenHelp),
         KeyCode::Char('q') => dispatch(app, Action::Quit),
