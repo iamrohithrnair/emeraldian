@@ -19,7 +19,8 @@
 use unicode_width::UnicodeWidthStr;
 
 use super::canvas::{Canvas, Stroke};
-use super::{Diagram, Ink, Role, key, label_lines, truncate, widest};
+use super::label::{self, truncate, widest};
+use super::{Diagram, EIGHTHS, Ink, Role, key, pairs, syntax};
 
 const MAX_SERIES: usize = 20;
 const MAX_POINTS: usize = 500;
@@ -29,9 +30,8 @@ const PLOT_ROWS: usize = 12;
 const PLOT_COLUMNS: (usize, usize) = (20, 80);
 /// Columns of a category's label, at most.
 const LABEL_WIDTH: usize = 12;
-/// A bar's top cell, by the eighths of it filled, and a sideways bar's end.
+/// A bar's top cell, by the eighths of it filled.
 const RISING: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-const GROWING: [char; 9] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Series {
@@ -41,7 +41,7 @@ pub struct Series {
     pub values: Vec<f64>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Chart {
     pub title: Option<String>,
     /// Laid on its side, with the bars running along the rows.
@@ -67,23 +67,13 @@ pub fn parse(header: &str, lines: &[&str]) -> Option<Chart> {
         _ => return None,
     };
     let mut chart = Chart {
-        title: None,
         horizontal,
-        x_title: None,
-        categories: Vec::new(),
-        x_range: None,
-        y_title: None,
-        y_range: None,
-        series: Vec::new(),
+        ..Chart::default()
     };
-    let mut described = false;
+    let mut described = syntax::Descriptions::default();
     for line in lines {
         let line = line.trim();
-        if described {
-            described = !line.contains('}');
-            continue;
-        }
-        if line.is_empty() {
+        if line.is_empty() || described.skip(line) {
             continue;
         }
         let (word, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
@@ -114,9 +104,6 @@ pub fn parse(header: &str, lines: &[&str]) -> Option<Chart> {
                 }
                 chart.series.push(series(rest, word == "line")?);
             }
-            w if w.starts_with("accTitle") || w.starts_with("accDescr") => {
-                described = w.starts_with("accDescr") && line.contains('{') && !line.contains('}');
-            }
             _ => return None,
         }
     }
@@ -128,12 +115,7 @@ pub fn parse(header: &str, lines: &[&str]) -> Option<Chart> {
 
 /// Words, without the quotes they may be in, and without markup.
 fn text(raw: &str) -> String {
-    let raw = raw.trim();
-    let inner = raw
-        .strip_prefix('"')
-        .and_then(|inner| inner.strip_suffix('"'))
-        .unwrap_or(raw);
-    label_lines(inner).join(" ")
+    label::joined(syntax::unquote(raw))
 }
 
 /// A quoted title, or a single word, at the start of `rest`, and what
@@ -203,24 +185,8 @@ fn items(inside: &str) -> Option<Vec<&str>> {
     if inside.trim().is_empty() {
         return Some(Vec::new());
     }
-    let mut out = Vec::new();
-    let mut quoted = false;
-    let mut start = 0;
-    for (at, c) in inside.char_indices() {
-        match c {
-            '"' => quoted = !quoted,
-            ',' if !quoted => {
-                out.push(inside[start..at].trim());
-                start = at + 1;
-            }
-            _ => {}
-        }
-    }
-    if quoted || out.len() >= MAX_POINTS {
-        return None;
-    }
-    out.push(inside[start..].trim());
-    Some(out)
+    let items = syntax::split_outside_quotes(inside, ',')?;
+    (items.len() <= MAX_POINTS).then(|| items.into_iter().map(str::trim).collect())
 }
 
 /// A finite number, such as `+1.3`, `.6` or `-3.4`.
@@ -384,10 +350,7 @@ pub fn draw(chart: &Chart, width: usize) -> Option<Diagram> {
         .map(|s| s.values.len())
         .chain([chart.categories.len(), 1])
         .max()?;
-    let mut title = Vec::new();
-    if let Some(text) = &chart.title {
-        super::wrap(text, width.max(20), &mut title);
-    }
+    let title = label::title(chart.title.as_deref(), width.max(20));
     let parts = Parts {
         scale: value_scale(chart)?,
         names: names(chart, count),
@@ -421,13 +384,8 @@ pub fn draw(chart: &Chart, width: usize) -> Option<Diagram> {
         })
         .collect();
     // Every series differs from every other, where there are colours enough.
-    for a in 0..chart.series.len() {
-        for b in a + 1..chart.series.len() {
-            if let (Ok(a), Ok(b)) = (u16::try_from(a), u16::try_from(b)) {
-                diagram.links.push((a, b));
-            }
-        }
-    }
+    let count = chart.series.len();
+    diagram.links = pairs((0..count).flat_map(|a| (a + 1..count).map(move |b| (a, b))));
     Some(diagram)
 }
 
@@ -462,15 +420,13 @@ fn draw_legend(canvas: &mut Canvas, row: usize, legend: &[(char, usize, String)]
 
 /// Bars standing up from the x-axis, and lines across.
 fn upright(chart: &Chart, parts: &Parts, width: usize) -> Option<Diagram> {
-    let Parts {
-        scale,
-        names,
-        count,
-        bars,
-        lines,
-        title,
-    } = parts;
-    let (scale, count) = (*scale, *count);
+    let (scale, count, names, bars, title) = (
+        parts.scale,
+        parts.count,
+        &parts.names,
+        &parts.bars,
+        &parts.title,
+    );
     let per = (PLOT_ROWS as f64 / scale.steps as f64).round().max(1.0) as usize;
     let plot_rows = per * scale.steps;
     let marks: Vec<String> = (0..=scale.steps).map(|at| scale.mark(at)).collect();
@@ -489,7 +445,7 @@ fn upright(chart: &Chart, parts: &Parts, width: usize) -> Option<Diagram> {
     };
 
     let legend = legend(chart);
-    let mut row = if title.is_empty() { 0 } else { title.len() + 1 };
+    let mut row = label::above(title);
     let y_title = chart.y_title.as_ref().map(|_| row);
     row += usize::from(y_title.is_some());
     let top = row;
@@ -504,36 +460,19 @@ fn upright(chart: &Chart, parts: &Parts, width: usize) -> Option<Diagram> {
 
     let left = gutter + 1;
     let spots = x_labels(left, slot, names);
+    let spot_width = spots.iter().map(|(x, text)| x + text.width()).max();
     let canvas_width = (left + plot_width + 1)
-        .max(
-            spots
-                .iter()
-                .map(|(x, text)| x + text.width())
-                .max()
-                .unwrap_or(0),
-        )
-        .max(widest(title))
-        .max(legend_width(&legend))
-        .max(chart.x_title.as_ref().map_or(0, |t| t.width()))
-        .max(chart.y_title.as_ref().map_or(0, |t| t.width()));
+        .max(spot_width.unwrap_or(0))
+        .max(words_width(chart, title, &legend));
     let mut canvas = Canvas::new(canvas_width, row)?;
-    for (at, line) in title.iter().enumerate() {
-        canvas.text(0, at, line, Ink::plain(Role::Text));
-    }
+    label::draw_title(&mut canvas, title);
     let quiet = Ink::plain(Role::Label);
     if let (Some(row), Some(text)) = (y_title, &chart.y_title) {
         canvas.text(0, row, text, quiet);
     }
 
     // The y-axis, marked and labelled at each step, and the x-axis.
-    let rule = Ink::plain(Role::Line);
-    for r in top..axis {
-        canvas.put(gutter, r, '│', rule);
-    }
-    canvas.put(gutter, axis, '└', rule);
-    for x in left..left + plot_width {
-        canvas.put(x, axis, '─', rule);
-    }
+    let rule = axes(&mut canvas, gutter, top..axis, left + plot_width);
     for (at, mark) in marks.iter().enumerate() {
         let r = axis - at * per;
         if r < axis {
@@ -546,23 +485,12 @@ fn upright(chart: &Chart, parts: &Parts, width: usize) -> Option<Diagram> {
     let height = |value: f64| (scale.share(value) * (plot_rows * 8) as f64).round() as usize;
     let floor = (scale.share(0.0) * plot_rows as f64).round() as usize * 8;
     let base = 0.0f64.clamp(scale.low, scale.high);
-    let paths: Vec<(usize, Vec<(usize, usize)>)> = lines
+    let paths: Vec<(usize, Vec<(usize, usize)>)> = parts
+        .lines
         .iter()
         .map(|&(owner, series)| {
-            let mut points = Vec::new();
-            for (at, &value) in series.values.iter().enumerate() {
-                let up = (height(value) / 8).min(plot_rows - 1);
-                let y = axis - 1 - up;
-                let start = left + at * slot;
-                if at == 0 {
-                    points.push((start, y));
-                } else {
-                    points.push((start, points.last().map_or(y, |p: &(usize, usize)| p.1)));
-                    points.push((start, y));
-                }
-                points.push((start + slot - 1, y));
-            }
-            (owner, points)
+            let y = |value| axis - 1 - (height(value) / 8).min(plot_rows - 1);
+            (owner, steps(&series.values, left, slot, y))
         })
         .collect();
     let crossed = Crossed::new(&paths, canvas_width, row);
@@ -574,19 +502,7 @@ fn upright(chart: &Chart, parts: &Parts, width: usize) -> Option<Diagram> {
             let level = sliver(height(value), floor, value, base, plot_rows * 8);
             for column in x..x + bar_width {
                 for up in 0..plot_rows {
-                    let (cell, cell_top) = (up * 8, up * 8 + 8);
-                    let glyph = if level >= floor {
-                        let lit = level.min(cell_top).saturating_sub(floor.max(cell));
-                        RISING[lit.min(8)]
-                    } else {
-                        let lit = floor.min(cell_top).saturating_sub(level.max(cell));
-                        match lit {
-                            0 => ' ',
-                            1..=3 => '▔',
-                            4..=7 => '▀',
-                            _ => '█',
-                        }
-                    };
+                    let glyph = block(level, floor, up * 8, &RISING, ['▔', '▀']);
                     let y = axis - 1 - up;
                     if glyph != ' ' && !crossed.contains(column, y) {
                         canvas.put(column, y, glyph, ink);
@@ -612,6 +528,68 @@ fn upright(chart: &Chart, parts: &Parts, width: usize) -> Option<Diagram> {
         draw_legend(&mut canvas, row, &legend);
     }
     Some(canvas.finish())
+}
+
+/// The columns the words around a chart's plot need.
+fn words_width(chart: &Chart, title: &[String], legend: &[(char, usize, String)]) -> usize {
+    let titles = [&chart.x_title, &chart.y_title].map(|t| t.as_ref().map_or(0, |t| t.width()));
+    widest(title)
+        .max(legend_width(legend))
+        .max(titles[0])
+        .max(titles[1])
+}
+
+/// Draws the category axis at column `gutter` down `rows`, and the value
+/// axis along the row under them to column `end`, and returns their ink.
+fn axes(canvas: &mut Canvas, gutter: usize, rows: std::ops::Range<usize>, end: usize) -> Ink {
+    let rule = Ink::plain(Role::Line);
+    let axis = rows.end;
+    for r in rows {
+        canvas.put(gutter, r, '│', rule);
+    }
+    canvas.put(gutter, axis, '└', rule);
+    for x in gutter + 1..end {
+        canvas.put(x, axis, '─', rule);
+    }
+    rule
+}
+
+/// The points a line steps through, as the place along the categories and
+/// the place along the values, each value held across its slot.
+fn steps(
+    values: &[f64],
+    start: usize,
+    slot: usize,
+    place: impl Fn(f64) -> usize,
+) -> Vec<(usize, usize)> {
+    let mut points: Vec<(usize, usize)> = Vec::new();
+    for (at, &value) in values.iter().enumerate() {
+        let (from, to) = (start + at * slot, place(value));
+        if let Some(&(_, last)) = points.last() {
+            points.push((from, last));
+        }
+        points.push((from, to));
+        points.push((from + slot - 1, to));
+    }
+    points
+}
+
+/// The block for a bar's cell from `cell` to `cell + 8`, in eighths along
+/// the value axis, for a bar from `floor` to `level`: filled from the axis
+/// as `growing` does, or, for a bar below nought, back to it in `back`'s
+/// thin and half blocks.
+fn block(level: usize, floor: usize, cell: usize, growing: &[char; 9], back: [char; 2]) -> char {
+    if level >= floor {
+        let lit = level.min(cell + 8).saturating_sub(floor.max(cell));
+        growing[lit.min(8)]
+    } else {
+        match floor.min(cell + 8).saturating_sub(level.max(cell)) {
+            0 => ' ',
+            1..=3 => back[0],
+            4..=7 => back[1],
+            _ => '█',
+        }
+    }
 }
 
 /// A bar's end, in eighths of a cell from the axis, made at least an eighth
@@ -679,15 +657,13 @@ fn x_labels(left: usize, slot: usize, names: &[String]) -> Vec<(usize, String)> 
 /// Bars running along the rows from the y-axis, which is on the left, and
 /// lines down.
 fn sideways(chart: &Chart, parts: &Parts, width: usize) -> Option<Diagram> {
-    let Parts {
-        scale,
-        names,
-        count,
-        bars,
-        lines,
-        title,
-    } = parts;
-    let (scale, count) = (*scale, *count);
+    let (scale, count, names, bars, title) = (
+        parts.scale,
+        parts.count,
+        &parts.names,
+        &parts.bars,
+        &parts.title,
+    );
     let gutter = widest(names).min(LABEL_WIDTH) + 1;
     let wanted = width
         .saturating_sub(gutter + 3)
@@ -698,7 +674,7 @@ fn sideways(chart: &Chart, parts: &Parts, width: usize) -> Option<Diagram> {
     let plot_rows = count * slot;
 
     let legend = legend(chart);
-    let mut row = if title.is_empty() { 0 } else { title.len() + 1 };
+    let mut row = label::above(title);
     let x_title = chart.x_title.as_ref().map(|_| row);
     row += usize::from(x_title.is_some());
     let top = row;
@@ -712,29 +688,17 @@ fn sideways(chart: &Chart, parts: &Parts, width: usize) -> Option<Diagram> {
 
     let left = gutter + 1;
     let marks: Vec<String> = (0..=scale.steps).map(|at| scale.mark(at)).collect();
-    let canvas_width = (left + plot_width + widest(&marks) + 1)
-        .max(widest(title))
-        .max(legend_width(&legend))
-        .max(chart.x_title.as_ref().map_or(0, |t| t.width()))
-        .max(chart.y_title.as_ref().map_or(0, |t| t.width()));
+    let canvas_width =
+        (left + plot_width + widest(&marks) + 1).max(words_width(chart, title, &legend));
     let mut canvas = Canvas::new(canvas_width, row)?;
-    for (at, line) in title.iter().enumerate() {
-        canvas.text(0, at, line, Ink::plain(Role::Text));
-    }
+    label::draw_title(&mut canvas, title);
     let quiet = Ink::plain(Role::Label);
     if let (Some(row), Some(text)) = (x_title, &chart.x_title) {
         canvas.text(0, row, text, quiet);
     }
 
     // The category axis down the left, the value axis along the bottom.
-    let rule = Ink::plain(Role::Line);
-    for r in top..axis {
-        canvas.put(gutter, r, '│', rule);
-    }
-    canvas.put(gutter, axis, '└', rule);
-    for x in left..=left + plot_width {
-        canvas.put(x, axis, '─', rule);
-    }
+    let rule = axes(&mut canvas, gutter, top..axis, left + plot_width + 1);
     let mut free = left;
     for (at, mark) in marks.iter().enumerate() {
         let x = left + at * per;
@@ -755,22 +719,13 @@ fn sideways(chart: &Chart, parts: &Parts, width: usize) -> Option<Diagram> {
     let length = |value: f64| (scale.share(value) * (plot_width * 8) as f64).round() as usize;
     let floor = (scale.share(0.0) * plot_width as f64).round() as usize * 8;
     let base = 0.0f64.clamp(scale.low, scale.high);
-    let paths: Vec<(usize, Vec<(usize, usize)>)> = lines
+    let paths: Vec<(usize, Vec<(usize, usize)>)> = parts
+        .lines
         .iter()
         .map(|&(owner, series)| {
-            let mut points = Vec::new();
-            for (at, &value) in series.values.iter().enumerate() {
-                let x = left + (length(value) / 8).min(plot_width - 1);
-                let start = top + at * slot;
-                if at == 0 {
-                    points.push((x, start));
-                } else {
-                    points.push((points.last().map_or(x, |p: &(usize, usize)| p.0), start));
-                    points.push((x, start));
-                }
-                points.push((x, start + slot - 1));
-            }
-            (owner, points)
+            let x = |value| left + (length(value) / 8).min(plot_width - 1);
+            let points = steps(&series.values, top, slot, x);
+            (owner, points.into_iter().map(|(y, x)| (x, y)).collect())
         })
         .collect();
     let crossed = Crossed::new(&paths, canvas_width, row);
@@ -780,19 +735,7 @@ fn sideways(chart: &Chart, parts: &Parts, width: usize) -> Option<Diagram> {
             let y = top + at * slot + index;
             let level = sliver(length(value), floor, value, base, plot_width * 8);
             for along in 0..plot_width {
-                let (cell, cell_end) = (along * 8, along * 8 + 8);
-                let glyph = if level >= floor {
-                    let lit = level.min(cell_end).saturating_sub(floor.max(cell));
-                    GROWING[lit.min(8)]
-                } else {
-                    let lit = floor.min(cell_end).saturating_sub(level.max(cell));
-                    match lit {
-                        0 => ' ',
-                        1..=3 => '▕',
-                        4..=7 => '▐',
-                        _ => '█',
-                    }
-                };
+                let glyph = block(level, floor, along * 8, &EIGHTHS, ['▕', '▐']);
                 let x = left + along;
                 if glyph != ' ' && !crossed.contains(x, y) {
                     canvas.put(x, y, glyph, ink);
@@ -1028,30 +971,5 @@ mod tests {
             60,
         );
         assert!(out.contains("売上") && out.contains("一月"), "{out}");
-    }
-
-    /// Every prefix of a chart, and each with one character dropped, must
-    /// come back drawn or as `None`, never as a panic.
-    #[test]
-    fn mangled_charts_never_panic() {
-        let sample = "xychart-beta horizontal\n  title \"Sales 🙂\"\n  x-axis \"Month\" [jan, \"feb x\", mar]\n  y-axis \"Revenue\" -40 --> 110.5\n  bar \"rain\" [5, -6, 7.5]\n  line [+1, .5, 99]";
-        let mut cuts: Vec<String> = sample
-            .char_indices()
-            .map(|(at, _)| sample[..at].to_string())
-            .collect();
-        cuts.extend(
-            sample
-                .char_indices()
-                .map(|(at, c)| format!("{}{}", &sample[..at], &sample[at + c.len_utf8()..])),
-        );
-        for cut in cuts {
-            if let Some(mut c) = chart(&cut) {
-                for width in [1, 40, 200] {
-                    let _ = draw(&c, width);
-                }
-                c.horizontal = !c.horizontal;
-                let _ = draw(&c, 60);
-            }
-        }
     }
 }

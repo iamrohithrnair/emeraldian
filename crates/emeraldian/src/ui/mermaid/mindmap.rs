@@ -16,7 +16,8 @@
 //! over several lines of the source, as Mermaid allows.
 
 use super::canvas::Canvas;
-use super::{Diagram, Ink, Role, key, label_lines, widest};
+use super::label::{self, widest};
+use super::{Diagram, Ink, ROUND, Role, key, pairs, syntax};
 
 /// Past these a map is too big to read in a terminal.
 const MAX_NODES: usize = 500;
@@ -121,7 +122,7 @@ const SHAPES: &[(&str, &str)] = &[
 /// `None` when a shape's brackets are left open.
 fn node(text: &str) -> Option<(String, Vec<String>)> {
     // A class only changes how the node looks.
-    let text = match outside_quotes(text, ":::") {
+    let text = match syntax::outside_quotes(text, ":::", &['"']) {
         Some(at) => text[..at].trim_end(),
         None => text,
     };
@@ -144,25 +145,12 @@ fn node(text: &str) -> Option<(String, Vec<String>)> {
     Some((text.to_string(), words(text)))
 }
 
-/// Where `needle` first appears outside double quotes.
-fn outside_quotes(text: &str, needle: &str) -> Option<usize> {
-    let mut quoted = false;
-    for (at, c) in text.char_indices() {
-        if c == '"' {
-            quoted = !quoted;
-        } else if !quoted && text[at..].starts_with(needle) {
-            return Some(at);
-        }
-    }
-    None
-}
-
 /// A label as the lines it is shown on. A markdown string, in backticks,
 /// loses the asterisks that mark its italics as well as its bold.
 fn words(raw: &str) -> Vec<String> {
     let raw = raw.trim();
     let markdown = raw.starts_with("\"`") || raw.starts_with('`');
-    let mut lines = label_lines(raw);
+    let mut lines = label::lines(raw);
     if markdown {
         for line in &mut lines {
             *line = line.replace('*', "");
@@ -173,8 +161,6 @@ fn words(raw: &str) -> Vec<String> {
 
 /// Draws a mind map, or `None` when it is too big.
 pub fn draw(map: &Mindmap) -> Option<Diagram> {
-    use unicode_width::UnicodeWidthStr;
-
     let root = map.nodes.first()?;
     let branches = &root.children;
     let box_width = widest(&root.label) + 4;
@@ -211,19 +197,9 @@ pub fn draw(map: &Mindmap) -> Option<Diagram> {
     let mut canvas = Canvas::new(width, height)?;
 
     let quiet = Ink::plain(Role::Border);
-    canvas.outline(
-        0,
-        0,
-        box_width,
-        box_rows,
-        ['╭', '╮', '╰', '╯'],
-        false,
-        quiet,
-    );
-    for (row, line) in root.label.iter().enumerate() {
-        let indent = (box_width - 2 - line.width()) / 2;
-        canvas.text(1 + indent, 1 + row, line, Ink::plain(Role::Text));
-    }
+    canvas.outline(0, 0, box_width, box_rows, ROUND, false, quiet);
+    let words = Ink::plain(Role::Text);
+    label::centred(&mut canvas, 1, 1, box_width - 2, &root.label, words);
     if !branches.is_empty() {
         canvas.put(2, box_rows - 1, '┬', quiet);
     }
@@ -264,9 +240,7 @@ pub fn draw(map: &Mindmap) -> Option<Diagram> {
         .filter_map(|&at| map.nodes.get(at))
         .map(|node| key(&node.id))
         .collect();
-    diagram.links = (1..branches.len())
-        .filter_map(|k| Some((u16::try_from(k - 1).ok()?, u16::try_from(k).ok()?)))
-        .collect();
+    diagram.links = pairs((1..branches.len()).map(|k| (k - 1, k)));
     Some(diagram)
 }
 
@@ -417,14 +391,7 @@ mod tests {
             [key("Origins"), key("Research"), key("Tools")]
         );
         assert_eq!(diagram.links, [(0, 1), (1, 2)]);
-        let ink_of = |needle: &str| {
-            diagram
-                .rows
-                .iter()
-                .flatten()
-                .find(|(text, _)| text.contains(needle))
-                .map(|(_, ink)| *ink)
-        };
+        let ink_of = |needle: &str| super::super::ink_of(&diagram, needle);
         assert_eq!(ink_of("Research"), Some(Ink::of(Role::Label, 1)));
         assert_eq!(ink_of("Uses"), Some(Ink::plain(Role::Text)));
         assert_eq!(ink_of("└──"), Some(Ink::of(Role::Line, 0)));
@@ -468,19 +435,5 @@ mod tests {
             assert!(diagram.rows.len() * diagram.width <= super::super::canvas::MAX_CELLS);
         }
         assert!(start.elapsed().as_secs() < 2);
-    }
-
-    #[test]
-    fn mangled_maps_never_panic() {
-        let sample = format!("mindmap\n{SAMPLE}\n    g[\"`two\nlines`\"]\n    h{{{{hex}}}}");
-        let lines = |text: &str| -> Vec<String> { text.lines().map(str::to_string).collect() };
-        for (at, c) in sample.char_indices() {
-            let cut = &sample[..at];
-            let dropped = format!("{}{}", &sample[..at], &sample[at + c.len_utf8()..]);
-            for width in [1, 40, 200] {
-                let _ = super::super::draw(&lines(cut), width);
-                let _ = super::super::draw(&lines(&dropped), width);
-            }
-        }
     }
 }

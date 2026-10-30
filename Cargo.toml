@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/emeraldian-core", "crates/emeraldian-theme", "crates/emeraldian-agent", "crates/emeraldian"]
 
 [workspace.package]
-version = "0.10.1"
+version = "0.10.2"
 edition = "2024"
 # Set by the dependency chain, not by this code: ratatui-image pulls
 # icy_sixel, which pins quantette 0.5.1, which requires 1.90.
@@ -19,9 +19,9 @@ keywords = ["obsidian", "tui", "notes", "markdown", "graph"]
 categories = ["command-line-utilities", "text-editors"]
 
 [workspace.dependencies]
-emeraldian-core = { path = "crates/emeraldian-core", version = "0.10.1" }
-emeraldian-theme = { path = "crates/emeraldian-theme", version = "0.10.1" }
-emeraldian-agent = { path = "crates/emeraldian-agent", version = "0.10.1" }
+emeraldian-core = { path = "crates/emeraldian-core", version = "0.10.2" }
+emeraldian-theme = { path = "crates/emeraldian-theme", version = "0.10.2" }
+emeraldian-agent = { path = "crates/emeraldian-agent", version = "0.10.2" }
 
 ratatui = "0.30"
 crossterm = "0.29"
@@ -51,6 +51,10 @@ toml_edit = "0.25"
 dirs = "6"
 anyhow = "1"
 unicode-width = "0.2"
+# Splits diagram labels into the clusters a terminal draws as one: a letter
+# with its marks, or emoji joined into one. Already in the tree through
+# ratatui.
+unicode-segmentation = "1.13"
 ureq = { version = "3", features = ["json"] }
 lz-str = "0.2"
 # Snowball's English stemmer, so `hashing` finds `hashed`. Pure Rust, and the

@@ -96,6 +96,53 @@ All notable changes to this project are documented here. The format follows
 - A heading that ends in `#`, such as `## C#`, keeps its `#`. It used to be
   shown, and listed in the outline, as `C`.
 
+## [0.10.2] — 2026-10-30
+
+Diagrams draw words in every script whole and joined emoji at the width they
+take, a diagram's `⧉` no longer covers its last column, and the code behind
+diagrams is smaller with no slow paths left. Notes and a `config.toml` from
+an earlier version work unchanged.
+
+### Changed
+
+- **Diagrams are drawn by less code, and none of them slowly.** The
+  Mermaid diagrams now share one reader for the syntax they have in common
+  and one place for their words, and every diagram is drawn as it was. The
+  only difference you might see is a welcome one: a diagram with an
+  `accDescr { … }` block, which describes it to a screen reader, is drawn
+  now rather than left as code. A few diagrams that took up to a tenth of
+  a second to draw now take a couple of milliseconds at most: thousands of
+  accents, joined emoji or `<` signs in one label, a class member made of
+  thousands of `~`, and a Gantt chart's date format of thousands of dashes.
+
+### Fixed
+
+- **Thai, Hindi, Vietnamese and other words with marks are drawn whole in
+  diagrams.** A label lost every mark above or below its letters, so `ที่นี่`
+  came out as `ทน`, `हिन्दी` as `हिनदी`, and Vietnamese typed with separate
+  accents lost its accents. Each letter now keeps its marks, on screen and when
+  you copy a diagram as text. A copy as a picture draws a letter without the
+  marks typed after it, since the font it is lettered from has none to add.
+
+- **Emoji joined into one, like 👨‍💻, keep diagrams in shape.** They were
+  measured at two columns but drawn as two separate emoji, four columns wide,
+  so bars ran over names in pies, Gantt charts and journeys, names ran over
+  the edges of their boxes in class and state diagrams and mind maps, and a
+  pie could lose the share at the end of a row. They now take exactly the two
+  columns they were measured at, and a long label that wraps never splits one
+  in half. Flags, emoji with a skin tone and hearts drawn in colour are kept
+  whole the same way.
+
+- **The `y copy diagram` hint shows up with the diagram.** It appeared only
+  after the next key press once a diagram came on screen, and stayed for a
+  key after it scrolled away. Now it comes and goes on the same frame as the
+  diagram, just as `h/l pan` does.
+
+- **A diagram's `⧉` no longer covers its last column.** In a narrow pane, a
+  diagram as wide as the pane had the mark drawn over its top row, so a pie
+  could read `75⧉` instead of `75%`. Diagrams now leave two columns clear for
+  the mark and the space before it.
+
 ## [0.10.1] — 2026-10-29
 
 C4, class, state and entity relationship diagrams, pie and Gantt charts, mind
@@ -1044,6 +1091,7 @@ First release.
   permission that usually causes it.
 
 [0.11.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.11.0
+[0.10.2]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.10.2
 [0.10.1]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.10.1
 [0.10.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.10.0
 [0.9.1]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.9.1

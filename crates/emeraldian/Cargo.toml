@@ -25,6 +25,7 @@ toml_edit.workspace = true
 dirs.workspace = true
 anyhow.workspace = true
 unicode-width.workspace = true
+unicode-segmentation.workspace = true
 serde_json.workspace = true
 
 # Asking the terminal questions with a deadline: poll, termios, the window
