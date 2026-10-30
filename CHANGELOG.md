@@ -4,7 +4,12 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.10.2]
+## [0.10.2] — 2026-10-30
+
+Diagrams draw words in every script whole and joined emoji at the width they
+take, a diagram's `⧉` no longer covers its last column, and the code behind
+diagrams is smaller with no slow paths left. Notes and a `config.toml` from
+an earlier version work unchanged.
 
 ### Changed
 
@@ -993,6 +998,7 @@ First release.
 - Unreadable vaults are reported clearly, including the macOS privacy
   permission that usually causes it.
 
+[0.10.2]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.10.2
 [0.10.1]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.10.1
 [0.10.1]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.10.1
 [0.10.0]: https://github.com/iamrohithrnair/emeraldian/releases/tag/v0.10.0
