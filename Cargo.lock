@@ -598,6 +598,7 @@ name = "emeraldian"
 version = "0.10.2"
 dependencies = [
  "anyhow",
+ "cc",
  "crossterm",
  "dirs",
  "emeraldian-agent",

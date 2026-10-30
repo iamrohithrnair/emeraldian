@@ -354,13 +354,32 @@ modes lay prose out in the same column at the same width, `Ctrl+E` restyles the
 page instead of reflowing it. Set `editor.wrap = false` to pan sideways instead.
 
 **Maths.** `$…$` and `$$…$$` are typeset in the reading pane rather than shown
-as TeX: Greek letters and operators, `x²` and `aᵢ`, `ℝ` and `𝔼`, all spaced the
-way TeX spaces them. Inline maths stays on its line, so `\frac{a+b}{2}` reads as
-`(a + b)/2`. Display maths takes the rows it needs: fractions stack over a rule,
+as TeX, by [utftex](https://github.com/bartp5/libtexprintf) — the engine behind
+the `utftex` command, vendored into this repository and built into the binary,
+so there is no program to install and nothing is fetched at run time. Greek
+letters and operators, `x²` and `aᵢ`, `ℝ` and `𝔼`; fractions stack over a rule,
 sums and limits carry their bounds above and below, roots get a bar, and
-matrices, `cases` and `aligned` blocks get brackets as tall as they are. A
-command it doesn't know is shown as typed. In the editor, a `$$` block is
-coloured as maths instead of being read as Markdown.
+matrices, `cases` and `aligned` blocks get brackets as tall as they are.
+
+Inline maths stays on its line: a formula utftex sets on a single row is used
+as it is, and one that needs several rows — a fraction, a root, an integral —
+is flattened onto the line by the built-in renderer instead, so
+`\frac{a+b}{2}` reads as `(a + b)/2` rather than breaking the paragraph apart.
+The built-in renderer also takes over whenever utftex reports an error or sets
+nothing, so an unknown command is still shown as typed. Display maths is
+centred, panned across when it is wider than the pane, and keeps a `\tag`
+number at the right margin.
+
+A fenced block tagged ```` ```math ````, ```` ```latex ```` or ```` ```tex ````
+is typeset as display maths too, in any capitalisation. In the editor, TeX is
+still shown as source: a `$$` block is coloured as maths instead of being read
+as Markdown, and a `math` fence stays code.
+
+A formula the engine cannot set safely or quickly is left to the built-in
+renderer too: one that begins with `\over` or `\choose` (which crashes
+utftex 1.31), one nested or repeated far past anything a note holds, or one
+too large for a single equation. The engine is built on every platform,
+Windows included.
 
 **Mermaid.** A ```` ```mermaid ```` block is drawn in the reading pane in
 box-drawing characters, so it reads the same in every terminal, with each box,
@@ -735,10 +754,11 @@ git push origin v0.3.0
 
 ## Credits
 
-This project exists because four other people published their work first. None
-of their code is in here (Emeraldian is written from scratch), but every one
-of them showed me something I'd otherwise have had to guess at, and the good
-ideas are theirs.
+This project exists because other people published their work first. Almost
+none of their code is in here — Emeraldian is written from scratch — but every
+one of them showed me something I'd otherwise have had to guess at, and the
+good ideas are theirs. The one exception is the typesetting library below,
+which is vendored and built into the binary.
 
 **[shiki](https://github.com/sazardev/shiki)** by Omar (MIT). A personal
 notebook TUI, and the reason the three-pane layout and the theme model look the
@@ -767,9 +787,20 @@ gallery. Where I learned that the terminal has to be asked what it can draw
 loop. Pictures here are drawn by
 [ratatui-image](https://github.com/ratatui/ratatui-image) (MIT).
 
-Licensing note, since two of these are copyleft: nothing was copied, so the
-choice of licence here was a free one rather than an obligation. It went to the
-GPL anyway. The debt is one of ideas, and it's a real one.
+**[libtexprintf / utftex](https://github.com/bartp5/libtexprintf)** by Bart
+Pasteuning (GPL-3.0-only). The C library behind the `utftex` command line tool:
+it parses TeX and draws the result as Unicode boxes, which is what typesets
+maths in the reading pane. Version 1.31 is vendored in
+`crates/emeraldian/vendor/libtexprintf` with its `COPYING` and built by
+`crates/emeraldian/build.rs`; see the `VENDORED.md` beside it for the pinned
+commit and what was left out. This is the only code here that was not written
+for Emeraldian.
+
+Licensing note, since several of these are copyleft: apart from the vendored
+library nothing was copied, so the choice of licence here was a free one rather
+than an obligation. It went to the GPL anyway. The debt is one of ideas, and
+it's a real one. libtexprintf is GPL-3.0-only and Emeraldian is
+GPL-3.0-or-later, which combine: the result is distributed under GPL-3.0.
 
 Diagrams copied as pictures are lettered in
 [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono), drawn ahead of

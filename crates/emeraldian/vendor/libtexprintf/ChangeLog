@@ -1,0 +1,10 @@
+New in version 1.25
+- support for fixedf size big braces (e.g. `\big[`)
+- make dummy commands for `\mathop`, `\mathord` (i.e. ignore without throwing error)
+- added `\relstack`
+
+bug fixes
+- some memory issues
+- allow spaces in things like `\left [`
+- fixed some collisions between symbols and keywords. Keywords take presidence over symbols. For example `\\u` is now interpreted as an endline followed by a u and not as `\˘`
+

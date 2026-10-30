@@ -57,6 +57,9 @@ unicode-width = "0.2"
 unicode-segmentation = "1.13"
 ureq = { version = "3", features = ["json"] }
 lz-str = "0.2"
+# Builds the vendored libtexprintf that typesets maths in the reading pane.
+# A build dependency only: the C library is linked in, not run.
+cc = "1"
 rustix = { version = "1", features = ["event", "pty", "std", "termios"] }
 
 [profile.release]
