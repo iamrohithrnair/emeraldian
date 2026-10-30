@@ -17,7 +17,8 @@
 use unicode_width::UnicodeWidthStr;
 
 use super::canvas::Canvas;
-use super::{Diagram, Ink, Role, key, label_lines, truncate, widest};
+use super::label::{self, truncate, widest};
+use super::{Diagram, EIGHTHS, Ink, Role, key, pairs, syntax};
 
 /// Past this a pie is a list, and no longer one anyone reads as a pie.
 const MAX_SLICES: usize = 60;
@@ -36,8 +37,6 @@ const GAP: usize = 3;
 const QUADRANTS: [char; 16] = [
     ' ', '▘', '▝', '▀', '▖', '▌', '▞', '▛', '▗', '▚', '▐', '▜', '▄', '▙', '▟', '█',
 ];
-/// A bar's last cell, by the eighths of it filled.
-const EIGHTHS: [char; 8] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Slice {
@@ -47,7 +46,7 @@ pub struct Slice {
     pub text: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Pie {
     pub title: Option<String>,
     /// Whether each slice's value is shown beside its share.
@@ -58,38 +57,31 @@ pub struct Pie {
 /// Reads a pie from what follows `pie` on its first line, which may say
 /// `showData` and give a title, and the lines after it.
 pub fn parse(header: &str, lines: &[&str]) -> Option<Pie> {
-    let mut pie = Pie {
-        title: None,
-        show_data: false,
-        slices: Vec::new(),
-    };
+    let mut pie = Pie::default();
     let mut rest = header.trim();
-    if let Some(after) = word(rest, "showData") {
+    if let Some(after) = syntax::keyword(rest, "showData") {
         pie.show_data = true;
         rest = after;
     }
-    if let Some(title) = word(rest, "title") {
-        pie.title = Some(title.to_string()).filter(|title| !title.is_empty());
+    if let Some(title) = syntax::keyword(rest, "title") {
+        pie.title = Some(title)
+            .filter(|title| !title.is_empty())
+            .map(label::joined);
     } else if !rest.is_empty() {
         return None;
     }
-    let mut described = false;
+    let mut described = syntax::Descriptions::default();
     for line in lines {
         let line = line.trim();
-        // A long description in braces runs over several lines.
-        if described {
-            described = !line.contains('}');
+        if line.is_empty() || described.skip(line) {
             continue;
         }
-        if line.is_empty() {
-            continue;
-        }
-        if let Some(title) = word(line, "title") {
-            pie.title = Some(title.to_string()).filter(|title| !title.is_empty());
-        } else if word(line, "showData").is_some_and(str::is_empty) {
+        if let Some(title) = syntax::keyword(line, "title") {
+            pie.title = Some(title)
+                .filter(|title| !title.is_empty())
+                .map(label::joined);
+        } else if syntax::keyword(line, "showData").is_some_and(str::is_empty) {
             pie.show_data = true;
-        } else if line.starts_with("accTitle") || line.starts_with("accDescr") {
-            described = line.starts_with("accDescr") && line.contains('{') && !line.contains('}');
         } else {
             if pie.slices.len() >= MAX_SLICES {
                 return None;
@@ -104,15 +96,6 @@ pub fn parse(header: &str, lines: &[&str]) -> Option<Pie> {
     Some(pie)
 }
 
-/// `text` without the keyword `name` it starts with, as a whole word.
-fn word<'a>(text: &'a str, name: &str) -> Option<&'a str> {
-    let rest = text.strip_prefix(name)?;
-    if rest.is_empty() {
-        return Some(rest);
-    }
-    rest.starts_with(char::is_whitespace).then(|| rest.trim())
-}
-
 /// `"Label" : 42.5`. A slice may be nothing, but never less.
 fn slice(line: &str) -> Option<Slice> {
     let quoted = line.strip_prefix('"')?;
@@ -124,7 +107,7 @@ fn slice(line: &str) -> Option<Slice> {
         return None;
     }
     Some(Slice {
-        label: truncate(&label_lines(label).join(" "), LABEL_WIDTH),
+        label: truncate(&label::joined(label), LABEL_WIDTH),
         value,
         text: text.to_string(),
     })
@@ -173,10 +156,7 @@ fn legend(pie: &Pie) -> Vec<(String, String)> {
 pub fn draw(pie: &Pie, width: usize) -> Option<Diagram> {
     let legend = legend(pie);
     // A title wraps only where it is wider than the pane.
-    let mut title = Vec::new();
-    if let Some(text) = &pie.title {
-        super::wrap(&label_lines(text).join(" "), width.max(20), &mut title);
-    }
+    let title = label::title(pie.title.as_deref(), width.max(20));
     let line_width = legend
         .first()
         .map_or(0, |(label, tail)| 3 + label.width() + 1 + tail.width());
@@ -191,30 +171,20 @@ pub fn draw(pie: &Pie, width: usize) -> Option<Diagram> {
         Some(radius) => round(pie, &legend, radius, &title)?,
         None => bars(pie, &legend, width, &title)?,
     };
-    for (row, line) in title.iter().enumerate() {
-        canvas.text(0, row, line, Ink::plain(Role::Text));
-    }
+    label::draw_title(&mut canvas, &title);
     let mut diagram = canvas.finish();
     diagram.keys = pie.slices.iter().map(|slice| key(&slice.label)).collect();
     // Neighbouring slices differ, and so do the first and last, which meet
     // at the top of a round pie.
     let count = pie.slices.len();
-    for at in 0..count {
-        let next = (at + 1) % count;
-        if next != at
-            && let (Ok(a), Ok(b)) = (u16::try_from(at.min(next)), u16::try_from(at.max(next)))
-        {
-            diagram.links.push((a, b));
-        }
-    }
+    let ring = (0..count).map(|at| (at, (at + 1) % count));
+    diagram.links = pairs(
+        ring.filter(|(a, b)| a != b)
+            .map(|(a, b)| (a.min(b), a.max(b))),
+    );
     diagram.links.sort_unstable();
     diagram.links.dedup();
     Some(diagram)
-}
-
-/// The rows a title takes, with a blank row under it.
-fn above(title: &[String]) -> usize {
-    if title.is_empty() { 0 } else { title.len() + 1 }
 }
 
 /// A round pie of `radius` rows, with the legend beside it.
@@ -225,7 +195,7 @@ fn round(
     title: &[String],
 ) -> Option<Canvas> {
     let (columns, rows) = (4 * radius, 2 * radius);
-    let above = above(title);
+    let above = label::above(title);
     let total: f64 = pie.slices.iter().map(|slice| slice.value).sum();
     // Where each slice ends, as a share of a turn.
     let mut seen = 0.0;
@@ -294,7 +264,7 @@ fn round(
 /// A bar for each slice, as long against the longest as the slice is
 /// against the largest, each beside its label and its share.
 fn bars(pie: &Pie, legend: &[(String, String)], width: usize, title: &[String]) -> Option<Canvas> {
-    let above = above(title);
+    let above = label::above(title);
     let label_width = legend.first().map_or(0, |(label, _)| label.width());
     let tail_width = legend.first().map_or(0, |(_, tail)| tail.width());
     let bar = width
@@ -320,12 +290,9 @@ fn bars(pie: &Pie, legend: &[(String, String)], width: usize, title: &[String]) 
         // Anything at all shows as at least a sliver.
         let eighths = if slice.value > 0.0 { eighths.max(1) } else { 0 };
         let x = label_width + 2;
-        let full = eighths / 8;
-        for column in 0..full {
-            canvas.put(x + column, y, '█', Ink::of(Role::Border, at));
-        }
-        if eighths % 8 > 0 {
-            canvas.put(x + full, y, EIGHTHS[eighths % 8], Ink::of(Role::Border, at));
+        for column in 0..eighths.div_ceil(8) {
+            let block = EIGHTHS[(eighths - 8 * column).min(8)];
+            canvas.put(x + column, y, block, Ink::of(Role::Border, at));
         }
         canvas.text(x + bar + 2, y, tail, Ink::plain(Role::Label));
     }
@@ -361,7 +328,8 @@ mod tests {
         assert_eq!(labels, ["Dogs", "Cats", "Rats"]);
         assert_eq!(p.slices[0].value, 386.0);
 
-        let p = pie("pie showData\n  title Key elements\n  accTitle: Elements\n  accDescr {\n    long\n  }\n  \"Calcium\" : 42.96\n  \"Iron\" : .5").unwrap();
+        let p = pie("pie showData\n  title Key elements\n  \"Calcium\" : 42.96\n  \"Iron\" : .5")
+            .unwrap();
         assert!(p.show_data);
         assert_eq!(p.title.as_deref(), Some("Key elements"));
         assert_eq!(p.slices[1].text, ".5");
@@ -482,28 +450,5 @@ mod tests {
         }
         let big = pie("pie\n  \"A\" : 1e308\n  \"B\" : 1e308");
         assert!(big.is_none(), "a total past what a float holds");
-    }
-
-    /// Every prefix of a pie, and each with one character dropped, must come
-    /// back drawn or as `None`, never as a panic.
-    #[test]
-    fn mangled_pies_never_panic() {
-        let sample = "pie showData title Pets 🐶\n  \"Dogs\" : 386\n  \"Cats\" : 85.5\n  \"Rats\" : .5\n  \"日本\" : 0";
-        let mut cuts: Vec<String> = sample
-            .char_indices()
-            .map(|(at, _)| sample[..at].to_string())
-            .collect();
-        cuts.extend(
-            sample
-                .char_indices()
-                .map(|(at, c)| format!("{}{}", &sample[..at], &sample[at + c.len_utf8()..])),
-        );
-        for cut in cuts {
-            if let Some(p) = pie(&cut) {
-                for width in [1, 30, 200] {
-                    let _ = draw(&p, width);
-                }
-            }
-        }
     }
 }

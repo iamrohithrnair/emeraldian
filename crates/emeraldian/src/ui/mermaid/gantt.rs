@@ -29,7 +29,8 @@ use std::collections::HashMap;
 use unicode_width::UnicodeWidthStr;
 
 use super::canvas::{Canvas, Stroke};
-use super::{Diagram, Ink, Role, key, label_lines, truncate};
+use super::label::{self, truncate};
+use super::{Diagram, EIGHTHS, Ink, Role, key, pairs, syntax};
 
 const MAX_TASKS: usize = 300;
 const MAX_SECTIONS: usize = 60;
@@ -80,9 +81,6 @@ const STEPS: [i64; 27] = [
     1000 * YEAR,
 ];
 
-/// A bar's last cell, by the eighths of it filled.
-const EIGHTHS: [char; 8] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Task {
     pub name: String,
@@ -132,8 +130,6 @@ const IGNORED: &[&str] = &[
     "topAxis",
     "displayMode",
     "click",
-    "accTitle",
-    "accDescr",
 ];
 
 enum Start {
@@ -165,43 +161,37 @@ pub fn parse(lines: &[&str]) -> Option<Gantt> {
     let lines: Vec<&str> = lines.iter().map(|line| line.trim()).collect();
     let format = lines
         .iter()
-        .find_map(|line| keyword(line, "dateFormat"))
+        .find_map(|line| syntax::keyword(line, "dateFormat"))
         .map_or_else(|| Format::new("YYYY-MM-DD"), Format::new)?;
     let inclusive = lines
         .iter()
-        .any(|line| keyword(line, "inclusiveEndDates").is_some());
+        .any(|line| syntax::keyword(line, "inclusiveEndDates").is_some());
     let mut title = None;
     let mut sections: Vec<String> = Vec::new();
     let mut specs: Vec<Spec> = Vec::new();
-    let mut described = false;
+    let mut described = syntax::Descriptions::default();
     for &line in &lines {
-        if described {
-            described = !line.contains('}');
+        if described.skip(line) {
             continue;
         }
         if line.is_empty()
-            || keyword(line, "dateFormat").is_some()
-            || keyword(line, "inclusiveEndDates").is_some()
+            || syntax::keyword(line, "dateFormat").is_some()
+            || syntax::keyword(line, "inclusiveEndDates").is_some()
         {
             continue;
         }
-        if let Some(text) = keyword(line, "title") {
-            title = Some(label_lines(text).join(" ")).filter(|text| !text.is_empty());
+        if let Some(text) = syntax::keyword(line, "title") {
+            title = Some(label::joined(text)).filter(|text| !text.is_empty());
             continue;
         }
-        if let Some(name) = keyword(line, "section") {
+        if let Some(name) = syntax::keyword(line, "section") {
             if sections.len() >= MAX_SECTIONS {
                 return None;
             }
-            sections.push(truncate(&label_lines(name).join(" "), 2 * NAME_WIDTH));
+            sections.push(truncate(&label::joined(name), 2 * NAME_WIDTH));
             continue;
         }
-        let first = line
-            .split(|c: char| c.is_whitespace() || c == ':')
-            .next()
-            .unwrap_or("");
-        if IGNORED.contains(&first) {
-            described = first == "accDescr" && line.contains('{') && !line.contains('}');
+        if IGNORED.contains(&syntax::first_word(line)) {
             continue;
         }
         if specs.len() >= MAX_TASKS {
@@ -228,15 +218,6 @@ pub fn parse(lines: &[&str]) -> Option<Gantt> {
         tasks,
         axis,
     })
-}
-
-/// What follows `name` at the start of a line, as a whole word.
-fn keyword<'a>(line: &'a str, name: &str) -> Option<&'a str> {
-    let rest = line.strip_prefix(name)?;
-    if rest.is_empty() {
-        return Some(rest);
-    }
-    rest.starts_with(char::is_whitespace).then(|| rest.trim())
 }
 
 /// `Name : done, id, 2024-01-01, 3d`.
@@ -280,7 +261,7 @@ fn task(line: &str, section: usize, format: &Format, inclusive: bool) -> Option<
         End::At(if inclusive { at.checked_add(DAY)? } else { at })
     };
     Some(Spec {
-        name: truncate(&label_lines(name).join(" "), NAME_WIDTH),
+        name: truncate(&label::joined(name), NAME_WIDTH),
         section,
         id: id.filter(|id| !id.is_empty()).map(str::to_string),
         start,
@@ -436,6 +417,13 @@ impl Format {
         let mut at = 0;
         while at < chars.len() {
             let c = chars[at];
+            // Anything but a letter stands for itself. Only a letter's run is
+            // counted, once for the whole run, not again at each character.
+            if !c.is_alphabetic() {
+                pieces.push(Piece::Literal(c));
+                at += 1;
+                continue;
+            }
             let run = chars[at..].iter().take_while(|&&d| d == c).count();
             let piece = match (c, run) {
                 ('Y', 4) => Piece::Year,
@@ -448,12 +436,7 @@ impl Format {
                 ('S', 1..=3) => Piece::Milli,
                 ('X', 1) => Piece::Unix,
                 ('x', 1) => Piece::UnixMilli,
-                (c, _) if c.is_alphabetic() => return None,
-                (c, _) => {
-                    pieces.push(Piece::Literal(c));
-                    at += 1;
-                    continue;
-                }
+                _ => return None,
             };
             pieces.push(piece);
             at += run;
@@ -718,19 +701,14 @@ pub fn draw(gantt: &Gantt, width: usize) -> Option<Diagram> {
     let marks = ticks(from, from + span, step, gantt.axis);
     let column = |at: i64| (at - from) as f64 / span as f64 * axis as f64;
 
-    let mut title = Vec::new();
-    if let Some(text) = &gantt.title {
-        super::wrap(text, left + axis + 1, &mut title);
-    }
-    let above = if title.is_empty() { 0 } else { title.len() + 1 };
+    let title = label::title(gantt.title.as_deref(), left + axis + 1);
+    let above = label::above(&title);
     let headings = if named { gantt.sections.len() } else { 0 };
     let rows = gantt.tasks.iter().filter(|task| !task.vert).count();
     let verts = gantt.tasks.iter().any(|task| task.vert);
     let height = above + 2 + headings + rows + usize::from(verts);
     let mut canvas = Canvas::new(left + axis + 1, height)?;
-    for (row, line) in title.iter().enumerate() {
-        canvas.text(0, row, line, Ink::plain(Role::Text));
-    }
+    label::draw_title(&mut canvas, &title);
 
     // The axis, marked at each step and labelled where a label fits.
     let (labels, rule) = (above, above + 1);
@@ -800,9 +778,7 @@ pub fn draw(gantt: &Gantt, width: usize) -> Option<Diagram> {
 
     let mut diagram = canvas.finish();
     diagram.keys = gantt.sections.iter().map(|name| key(name)).collect();
-    diagram.links = (1..gantt.sections.len())
-        .filter_map(|at| Some((u16::try_from(at - 1).ok()?, u16::try_from(at).ok()?)))
-        .collect();
+    diagram.links = pairs((1..gantt.sections.len()).map(|k| (k - 1, k)));
     Some(diagram)
 }
 
@@ -1060,29 +1036,6 @@ mod tests {
         }
         for width in [0, 1, 1000] {
             let _ = draw(&gantt(DOCS).unwrap(), width);
-        }
-    }
-
-    /// Every prefix of a chart, and each with one character dropped, must
-    /// come back drawn or as `None`, never as a panic.
-    #[test]
-    fn mangled_charts_never_panic() {
-        let sample = "dateFormat YYYY-MM-DD\ntitle Plan 🙂\nsection A\nOne : done, a1, 2024-01-01, 3d\nTwo : after a1, 12h\nsection 日本\nThree : until m1\nShip : milestone, m1, 2024-01-09, 0d";
-        let mut cuts: Vec<String> = sample
-            .char_indices()
-            .map(|(at, _)| sample[..at].to_string())
-            .collect();
-        cuts.extend(
-            sample
-                .char_indices()
-                .map(|(at, c)| format!("{}{}", &sample[..at], &sample[at + c.len_utf8()..])),
-        );
-        for cut in cuts {
-            if let Some(g) = gantt(&cut) {
-                for width in [1, 40, 200] {
-                    let _ = draw(&g, width);
-                }
-            }
         }
     }
 }

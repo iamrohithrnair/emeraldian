@@ -8,10 +8,9 @@
 use std::collections::HashMap;
 
 use super::canvas::{Canvas, Stroke};
-use super::layered::{self, Graph};
-use super::{Diagram, Ink, Role, key, label_lines, widest};
-
-pub use super::layered::Direction;
+use super::label::{self, widest};
+use super::layered::{self, Direction, Graph};
+use super::{Diagram, Ink, ROUND, Role, SQUARE, key, pairs, syntax};
 
 /// Past these a chart is too big to read in a terminal, and the layout would
 /// do a lot of work to show it badly.
@@ -48,7 +47,7 @@ pub struct Edge {
     pub tail: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Chart {
     pub direction: Direction,
     pub nodes: Vec<Node>,
@@ -65,20 +64,11 @@ pub fn parse(header: &str, lines: &[&str]) -> Option<Chart> {
         None => (header, None),
     };
     let direction = match direction.trim() {
-        "" | "TD" | "TB" => Direction::Down,
-        "BT" => Direction::Up,
-        "LR" => Direction::Right,
-        "RL" => Direction::Left,
-        _ => return None,
+        "" => Direction::Down,
+        named => syntax::direction(named)?,
     };
-    let mut builder = Builder {
-        chart: Chart {
-            direction,
-            nodes: Vec::new(),
-            edges: Vec::new(),
-        },
-        ids: HashMap::new(),
-    };
+    let mut builder = Builder::default();
+    builder.chart.direction = direction;
     for line in first.into_iter().chain(lines.iter().copied()) {
         for statement in statements(line) {
             builder.statement(statement)?;
@@ -117,9 +107,11 @@ fn statements(line: &str) -> Vec<&str> {
         .collect()
 }
 
+#[derive(Default)]
 struct Builder {
     chart: Chart,
     ids: HashMap<String, usize>,
+    described: syntax::Descriptions,
 }
 
 /// Statements about how things look, or how the chart is grouped, which a
@@ -133,18 +125,12 @@ const IGNORED: &[&str] = &[
     "direction",
     "subgraph",
     "end",
-    "accTitle",
-    "accDescr",
     "title",
 ];
 
 impl Builder {
     fn statement(&mut self, statement: &str) -> Option<()> {
-        let first = statement
-            .split(|c: char| c.is_whitespace() || c == ':')
-            .next()
-            .unwrap_or("");
-        if IGNORED.contains(&first) {
+        if self.described.skip(statement) || IGNORED.contains(&syntax::first_word(statement)) {
             return Some(());
         }
         let mut scan = Scan {
@@ -216,24 +202,16 @@ impl Builder {
             let close = scan.rest().find('}')?;
             scan.at += close + 1;
         }
-        let at = match self.ids.get(id) {
-            Some(&at) => at,
-            None => {
-                if self.chart.nodes.len() >= MAX_NODES {
-                    return None;
-                }
-                self.chart.nodes.push(Node {
-                    id: id.to_string(),
-                    label: label_lines(id),
-                    shape: Shape::Rect,
-                    looped: false,
-                });
-                self.ids.insert(id.to_string(), self.chart.nodes.len() - 1);
-                self.chart.nodes.len() - 1
+        let at = syntax::named(&mut self.ids, &mut self.chart.nodes, id, MAX_NODES, || {
+            Node {
+                id: id.to_string(),
+                label: label::lines(id),
+                shape: Shape::Rect,
+                looped: false,
             }
-        };
+        })?;
         if let Some((label, shape)) = shaped {
-            self.chart.nodes[at].label = label_lines(&label);
+            self.chart.nodes[at].label = label::lines(&label);
             self.chart.nodes[at].shape = shape;
         }
         Some(at)
@@ -366,7 +344,7 @@ fn link(scan: &mut Scan) -> Option<Option<Link>> {
     if !head && matches!(body, "--" | "==" | "-.") && scan.rest().starts_with(char::is_whitespace) {
         let close = if body == "-." { ".-" } else { body };
         let end = scan.rest().find(close)?;
-        label = label_lines(&scan.rest()[..end]);
+        label = label::lines(&scan.rest()[..end]);
         scan.at += end;
         let closing = self::body(scan);
         stroke = stroke_of(closing);
@@ -378,7 +356,7 @@ fn link(scan: &mut Scan) -> Option<Option<Link>> {
     scan.skip_space();
     if scan.eat("|") {
         let end = scan.rest().find('|')?;
-        label = label_lines(&scan.rest()[..end]);
+        label = label::lines(&scan.rest()[..end]);
         scan.at += end + 1;
     } else {
         scan.at = at;
@@ -466,11 +444,7 @@ fn layout(chart: &Chart, direction: Direction) -> Option<Diagram> {
     graph.links = chart
         .edges
         .iter()
-        .map(|edge| layered::Link {
-            from: edge.from,
-            to: edge.to,
-            words: (!edge.label.is_empty()).then(|| (widest(&edge.label), edge.label.len())),
-        })
+        .map(|edge| layered::Link::new(edge.from, edge.to, &edge.label))
         .collect();
     let placed = layered::layout(&graph)?;
     let mut canvas = Canvas::new(placed.width, placed.height)?;
@@ -479,8 +453,8 @@ fn layout(chart: &Chart, direction: Direction) -> Option<Diagram> {
     for (at, rect) in placed.boxes.iter().enumerate() {
         let shape = chart.nodes[at].shape;
         let corners = match shape {
-            Shape::Rect => ['┌', '┐', '└', '┘'],
-            Shape::Round => ['╭', '╮', '╰', '╯'],
+            Shape::Rect => SQUARE,
+            Shape::Round => ROUND,
             Shape::Subroutine => ['╔', '╗', '╚', '╝'],
             Shape::Diamond => ['╱', '╲', '╲', '╱'],
         };
@@ -488,14 +462,12 @@ fn layout(chart: &Chart, direction: Direction) -> Option<Diagram> {
         let (x, y, w, h) = (rect.x, rect.y, rect.width, rect.height);
         canvas.outline(x, y, w, h, corners, double, Ink::of(Role::Border, at));
         let words = Ink::plain(Role::Text);
-        layered::centred(&mut canvas, x + 1, y + 1, w - 2, &labels[at], words);
+        label::centred(&mut canvas, x + 1, y + 1, w - 2, &labels[at], words);
     }
-    for (edge, rect) in chart.edges.iter().zip(&placed.words) {
-        if let Some(rect) = rect {
-            let ink = Ink::of(Role::Label, edge.from);
-            layered::centred(&mut canvas, rect.x, rect.y, rect.width, &edge.label, ink);
-        }
-    }
+    placed.draw_words(&mut canvas, |edge| {
+        let edge = &chart.edges[edge];
+        (&edge.label, Ink::of(Role::Label, edge.from))
+    });
 
     // Each edge is drawn in the colour of the node it leaves, which its
     // arrowhead carries to the node it reaches.
@@ -510,26 +482,16 @@ fn layout(chart: &Chart, direction: Direction) -> Option<Diagram> {
         let head = Ink::of(Role::Arrow, edge.from);
         // Where an edge meets a box, the join is part of the box's outline.
         let join = Ink::of(Role::Border, end.node);
-        if end.leaving {
-            if !double {
-                canvas.put(end.border.0, end.border.1, end.facing.join(), join);
-            }
-            if arrow {
-                canvas.put(end.outside.0, end.outside.1, end.facing.arrow(), head);
-            }
-        } else if arrow {
-            canvas.put(end.outside.0, end.outside.1, end.facing.arrow(), head);
-        } else if !double {
+        if end.joined(arrow) && !double {
             canvas.put(end.border.0, end.border.1, end.facing.join(), join);
+        }
+        if arrow {
+            canvas.put(end.outside.0, end.outside.1, end.facing.arrow(), head);
         }
     }
     let mut diagram = canvas.finish();
     diagram.keys = chart.nodes.iter().map(|node| key(&node.id)).collect();
-    diagram.links = chart
-        .edges
-        .iter()
-        .filter_map(|edge| Some((u16::try_from(edge.from).ok()?, u16::try_from(edge.to).ok()?)))
-        .collect();
+    diagram.links = pairs(chart.edges.iter().map(|edge| (edge.from, edge.to)));
     Some(diagram)
 }
 
@@ -758,18 +720,11 @@ mod tests {
     #[test]
     fn a_box_is_its_nodes_and_an_edge_its_sources() {
         let diagram = draw(&chart("graph LR\n  A -->|go| B").unwrap(), 80).unwrap();
-        let ink_of = |needle: char| {
-            diagram
-                .rows
-                .iter()
-                .flatten()
-                .find(|(text, _)| text.contains(needle))
-                .map(|(_, ink)| *ink)
-        };
-        assert_eq!(ink_of('▶'), Some(Ink::of(Role::Arrow, 0)));
-        assert_eq!(ink_of('g'), Some(Ink::of(Role::Label, 0)));
+        let ink_of = |needle: &str| super::super::ink_of(&diagram, needle);
+        assert_eq!(ink_of("▶"), Some(Ink::of(Role::Arrow, 0)));
+        assert_eq!(ink_of("g"), Some(Ink::of(Role::Label, 0)));
         assert_eq!(
-            ink_of('A'),
+            ink_of("A"),
             Some(Ink::plain(Role::Text)),
             "words stay plain"
         );

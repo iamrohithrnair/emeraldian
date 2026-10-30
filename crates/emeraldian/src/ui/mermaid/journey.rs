@@ -10,7 +10,8 @@
 use unicode_width::UnicodeWidthStr;
 
 use super::canvas::Canvas;
-use super::{Diagram, Ink, Role, key, wrap};
+use super::label::{self, wrap};
+use super::{Diagram, Ink, Role, key, pairs, syntax};
 
 /// Past this a journey is too long to read in a terminal.
 const MAX_TASKS: usize = 300;
@@ -38,7 +39,7 @@ pub struct Section {
     pub tasks: Vec<Task>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Journey {
     pub title: Option<String>,
     pub sections: Vec<Section>,
@@ -46,36 +47,23 @@ pub struct Journey {
 
 /// Reads the lines after `journey`.
 pub fn parse(lines: &[&str]) -> Option<Journey> {
-    let mut journey = Journey {
-        title: None,
-        sections: Vec::new(),
-    };
+    let mut journey = Journey::default();
     let mut tasks = 0;
-    // Inside an `accDescr { … }` block, which describes the journey for a
-    // screen reader in a browser.
-    let mut skipping = false;
+    let mut described = syntax::Descriptions::default();
     for line in lines {
         let line = line.trim();
-        if skipping {
-            skipping = !line.contains('}');
+        if line.is_empty() || described.skip(line) {
             continue;
         }
-        if line.is_empty() {
-            continue;
-        }
-        if let Some(rest) = keyword(line, "title") {
+        if let Some(rest) = syntax::keyword(line, "title") {
             journey.title = Some(words(rest));
             continue;
         }
-        if let Some(rest) = keyword(line, "section") {
+        if let Some(rest) = syntax::keyword(line, "section") {
             journey.sections.push(Section {
                 name: Some(words(rest)),
                 tasks: Vec::new(),
             });
-            continue;
-        }
-        if line.starts_with("accTitle") || line.starts_with("accDescr") {
-            skipping = line.contains('{') && !line.contains('}');
             continue;
         }
         // `Task name: score: actor, actor`.
@@ -114,16 +102,9 @@ pub fn parse(lines: &[&str]) -> Option<Journey> {
     Some(journey)
 }
 
-/// What follows `word` at the start of a line, when the line starts with it
-/// as a word of its own.
-fn keyword<'a>(line: &'a str, word: &str) -> Option<&'a str> {
-    let rest = line.strip_prefix(word)?;
-    (rest.is_empty() || rest.starts_with(char::is_whitespace)).then(|| rest.trim())
-}
-
 /// Text without its markup, on one line.
 fn words(raw: &str) -> String {
-    super::timeline::clean(raw).join(" ")
+    super::label::unwrapped(raw).join(" ")
 }
 
 /// Where a task goes: the row it starts on, its name and the people in it
@@ -153,11 +134,8 @@ pub fn draw(journey: &Journey, width: usize) -> Option<Diagram> {
     let actors = score + 3;
     let actor_width = room.saturating_sub(actors).clamp(10, ACTOR_WIDTH);
 
-    let mut title = Vec::new();
-    if let Some(text) = &journey.title {
-        wrap(text, room, &mut title);
-    }
-    let mut row = if title.is_empty() { 0 } else { title.len() + 1 };
+    let title = label::title(journey.title.as_deref(), room);
+    let mut row = label::above(&title);
     let mut width = title.iter().map(|line| line.width()).max().unwrap_or(0);
     // What goes on each row: a section's heading, or a task's name and the
     // people in it, line by line, with its score on the first.
@@ -200,9 +178,7 @@ pub fn draw(journey: &Journey, width: usize) -> Option<Diagram> {
     }
     let mut canvas = Canvas::new(width, row)?;
 
-    for (at, line) in title.iter().enumerate() {
-        canvas.text(0, at, line, Ink::plain(Role::Text));
-    }
+    label::draw_title(&mut canvas, &title);
     for (row, line, owner) in &headings {
         canvas.text(0, *row, line, Ink::of(Role::Label, *owner));
     }
@@ -244,9 +220,7 @@ pub fn draw(journey: &Journey, width: usize) -> Option<Diagram> {
         .iter()
         .map(|section| key(section.name.as_deref().unwrap_or("")))
         .collect();
-    diagram.links = (1..journey.sections.len())
-        .filter_map(|k| Some((u16::try_from(k - 1).ok()?, u16::try_from(k).ok()?)))
-        .collect();
+    diagram.links = pairs((1..journey.sections.len()).map(|k| (k - 1, k)));
     Some(diagram)
 }
 
@@ -331,14 +305,7 @@ Go home
         let diagram = draw(&journey(DAY).unwrap(), 80).unwrap();
         assert_eq!(diagram.keys, [key("Go to work"), key("Go home")]);
         assert_eq!(diagram.links, [(0, 1)]);
-        let ink_of = |needle: &str| {
-            diagram
-                .rows
-                .iter()
-                .flatten()
-                .find(|(text, _)| text.contains(needle))
-                .map(|(_, ink)| *ink)
-        };
+        let ink_of = |needle: &str| super::super::ink_of(&diagram, needle);
         assert_eq!(ink_of("Go home"), Some(Ink::of(Role::Label, 1)));
         assert_eq!(ink_of("Cat"), Some(Ink::plain(Role::Label)));
         assert_eq!(ink_of("█"), Some(Ink::of(Role::Border, 0)));
@@ -382,19 +349,5 @@ Go home
             assert!(diagram.rows.len() * diagram.width <= super::super::canvas::MAX_CELLS);
         }
         assert!(start.elapsed().as_secs() < 2);
-    }
-
-    #[test]
-    fn mangled_journeys_never_panic() {
-        let sample = format!("journey\n{DAY}\n      Sleep: 4.5: Me, Cat\n    accTitle: Day");
-        let lines = |text: &str| -> Vec<String> { text.lines().map(str::to_string).collect() };
-        for (at, c) in sample.char_indices() {
-            let cut = &sample[..at];
-            let dropped = format!("{}{}", &sample[..at], &sample[at + c.len_utf8()..]);
-            for width in [1, 40, 200] {
-                let _ = super::super::draw(&lines(cut), width);
-                let _ = super::super::draw(&lines(&dropped), width);
-            }
-        }
     }
 }

@@ -44,11 +44,13 @@ mod er;
 mod flowchart;
 mod gantt;
 mod journey;
+mod label;
 mod layered;
 mod mindmap;
 mod pie;
 mod sequence;
 mod state;
+mod syntax;
 mod timeline;
 mod xychart;
 
@@ -61,8 +63,6 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::rc::Rc;
-
-use unicode_width::UnicodeWidthStr;
 
 /// What a run of a diagram's characters is, so the renderer can colour it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,6 +165,24 @@ impl Diagram {
         picked
     }
 }
+
+/// Owners joined in pairs, as [`Diagram::links`] keeps them, leaving out any
+/// past what it can hold.
+fn pairs(pairs: impl IntoIterator<Item = (usize, usize)>) -> Vec<(u16, u16)> {
+    pairs
+        .into_iter()
+        .filter_map(|(a, b)| Some((u16::try_from(a).ok()?, u16::try_from(b).ok()?)))
+        .collect()
+}
+
+/// The corners of a box, square and round, as [`canvas::Canvas::outline`]
+/// takes them.
+const SQUARE: [char; 4] = ['┌', '┐', '└', '┘'];
+const ROUND: [char; 4] = ['╭', '╮', '╰', '╯'];
+
+/// Blocks filled from the left by eighths, from none to all, which a bar
+/// ends in so bars close in length still look different.
+const EIGHTHS: [char; 9] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'];
 
 /// A key for a node's or participant's id, the same on every run and every
 /// machine: FNV-1a, then mixed with SplitMix64's finaliser so ids that differ
@@ -317,124 +335,6 @@ impl Cache {
     }
 }
 
-/// Widest a line of a box's or an edge's words may be before it wraps.
-const LABEL_WIDTH: usize = 28;
-
-/// A label as the lines it is shown on: `<br>` breaks a line, other HTML tags
-/// and Markdown markers are dropped, the common entities are decoded, and
-/// long lines are wrapped.
-#[must_use]
-pub fn label_lines(raw: &str) -> Vec<String> {
-    let mut text = raw.trim();
-    if text.len() >= 2 && text.starts_with('"') && text.ends_with('"') {
-        text = &text[1..text.len() - 1];
-    }
-    let text = text.trim_matches('`');
-    let mut plain = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(open) = rest.find('<') {
-        plain.push_str(&rest[..open]);
-        let tag = &rest[open..];
-        match tag.find('>') {
-            Some(close) if is_tag(&tag[1..close]) => {
-                if tag[1..close].trim().to_ascii_lowercase().starts_with("br") {
-                    plain.push('\n');
-                }
-                rest = &tag[close + 1..];
-            }
-            _ => {
-                plain.push('<');
-                rest = &tag[1..];
-            }
-        }
-    }
-    plain.push_str(rest);
-    let plain = plain
-        .replace("**", "")
-        .replace("&quot;", "\"")
-        .replace("#quot;", "\"")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&nbsp;", " ")
-        .replace("&amp;", "&")
-        .replace("\\n", "\n");
-    let mut lines = Vec::new();
-    for line in plain.lines() {
-        let line: String = line
-            .chars()
-            .map(|c| if c.is_control() { ' ' } else { c })
-            .collect();
-        wrap(line.trim(), LABEL_WIDTH, &mut lines);
-    }
-    if lines.is_empty() {
-        lines.push(String::new());
-    }
-    lines
-}
-
-/// Whether the inside of `<…>` looks like an HTML tag rather than a `<` in
-/// prose, such as `a < b > c`.
-fn is_tag(inside: &str) -> bool {
-    let name = inside.trim_start_matches('/');
-    name.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
-        && name
-            .chars()
-            .take_while(|c| !c.is_whitespace() && *c != '/')
-            .all(|c| c.is_ascii_alphanumeric())
-}
-
-/// Breaks text at spaces into lines no wider than `width`, splitting a word
-/// that is wider on its own.
-fn wrap(text: &str, width: usize, out: &mut Vec<String>) {
-    let mut line = String::new();
-    for word in text.split_whitespace() {
-        let needed = line.width() + usize::from(!line.is_empty()) + word.width();
-        if !line.is_empty() && needed > width {
-            out.push(std::mem::take(&mut line));
-        }
-        if !line.is_empty() {
-            line.push(' ');
-        }
-        for c in word.chars() {
-            if line.width() + c.to_string().width() > width && !line.is_empty() {
-                out.push(std::mem::take(&mut line));
-            }
-            line.push(c);
-        }
-    }
-    if !line.is_empty() || out.is_empty() {
-        out.push(line);
-    }
-}
-
-/// Columns the widest of some lines takes.
-fn widest(lines: &[String]) -> usize {
-    lines.iter().map(|line| line.width()).max().unwrap_or(0)
-}
-
-/// Text cut short to fit in `width` columns, ending in `…` where it was cut.
-fn truncate(text: &str, width: usize) -> String {
-    use unicode_width::UnicodeWidthChar;
-
-    if text.width() <= width {
-        return text.to_string();
-    }
-    let mut out = String::new();
-    let mut used = 0;
-    for c in text.chars() {
-        let wide = c.width().unwrap_or(0);
-        if used + wide + 1 > width {
-            break;
-        }
-        out.push(c);
-        used += wide;
-    }
-    if width > 0 {
-        out.push('…');
-    }
-    out
-}
-
 #[cfg(test)]
 pub(crate) fn plain(diagram: &Diagram) -> String {
     diagram
@@ -449,34 +349,23 @@ pub(crate) fn plain(diagram: &Diagram) -> String {
         .join("\n")
 }
 
+/// The ink of the first run of a drawing that has `needle` in it.
+#[cfg(test)]
+pub(crate) fn ink_of(diagram: &Diagram, needle: &str) -> Option<Ink> {
+    diagram
+        .rows
+        .iter()
+        .flatten()
+        .find(|(text, _)| text.contains(needle))
+        .map(|(_, ink)| *ink)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn lines(source: &str) -> Vec<String> {
         source.lines().map(str::to_string).collect()
-    }
-
-    #[test]
-    fn labels_lose_markup_and_break_where_asked() {
-        assert_eq!(label_lines("\"one<br/>two\""), ["one", "two"]);
-        assert_eq!(
-            label_lines("<b>bold</b> &amp; **strong**"),
-            ["bold & strong"]
-        );
-        assert_eq!(label_lines("a < b > c"), ["a < b > c"], "not a tag");
-        assert_eq!(label_lines(""), [""]);
-    }
-
-    #[test]
-    fn long_labels_wrap_and_long_words_split() {
-        let wrapped = label_lines(&"word ".repeat(20));
-        assert!(wrapped.len() > 1);
-        assert!(wrapped.iter().all(|line| line.width() <= LABEL_WIDTH));
-        let split = label_lines(&"x".repeat(70));
-        assert_eq!(split.len(), 3);
-        let wide = label_lines(&"漢".repeat(30));
-        assert!(wide.iter().all(|line| line.width() <= LABEL_WIDTH));
     }
 
     #[test]
@@ -492,6 +381,37 @@ mod tests {
     fn comments_and_front_matter_before_the_kind_are_skipped() {
         let source = "---\ntitle: Flow\n---\n%% a comment\n\ngraph TD\n  A --> B\n  %% another\n";
         assert!(render(&lines(source), 80).is_some());
+    }
+
+    /// What describes a diagram to a screen reader, on a line or in a block,
+    /// is passed over by every kind but a mind map, where it is a node.
+    #[test]
+    fn descriptions_for_screen_readers_are_passed_over() {
+        let described = "  accTitle: For a screen reader\n  accDescr: Briefly\n  accDescr{\n    Hidden : 1\n  }";
+        for source in [
+            "graph TD\n  A --> B",
+            "sequenceDiagram\n  A->>B: hi",
+            "classDiagram\n  A <|-- B",
+            "stateDiagram-v2\n  [*] --> A",
+            "erDiagram\n  A ||--o{ B : has",
+            "C4Context\n  Person(a, \"A\")",
+            "pie\n  \"A\" : 1",
+            "gantt\n  A : 2024-01-01, 1d",
+            "xychart-beta\n  bar [1, 2]",
+            "timeline\n  2003 : real",
+            "journey\n  Tea: 5: Me",
+        ] {
+            let (header, body) = source.split_once('\n').unwrap();
+            let source = format!("{header}\n{described}\n{body}");
+            let drawn = draw(&lines(&source), 80).expect(&source);
+            let text = plain(&drawn);
+            assert!(
+                !text.contains("Hidden") && !text.contains("screen"),
+                "{text}"
+            );
+        }
+        let map = draw(&lines("mindmap\n  Root\n    accTitle: a node"), 80).unwrap();
+        assert!(plain(&map).contains("accTitle: a node"));
     }
 
     #[test]
@@ -522,6 +442,7 @@ mod tests {
             "pie showData title Pets 🐶\n  \"Dogs\" : 386\n  \"Cats\" : 85.5\n  \"Rats\" : .5\n  \"日本\" : 0",
             "gantt\n  dateFormat YYYY-MM-DD\n  title Plan 🙂\n  section A\n  One : done, a1, 2024-01-01, 3d\n  Two : after a1, 12h\n  section 日本\n  Three : until m1\n  Ship : milestone, m1, 2024-01-09, 0d",
             "xychart-beta horizontal\n  title \"Sales 🙂\"\n  x-axis \"Month\" [jan, \"feb x\", mar]\n  y-axis \"Revenue\" -40 --> 110.5\n  bar \"rain\" [5, -6, 7.5]\n  line [+1, .5, 99]",
+            "xychart-beta\n  title \"Sales 🙂\"\n  x-axis \"Month\" [jan, \"feb x\", mar]\n  y-axis \"Revenue\" -40 --> 110.5\n  bar \"rain\" [5, -6, 7.5]\n  line [+1, .5, 99]",
         ];
         for sample in samples {
             let mut cuts: Vec<String> = sample
@@ -534,7 +455,7 @@ mod tests {
                     .map(|(at, c)| format!("{}{}", &sample[..at], &sample[at + c.len_utf8()..])),
             );
             for cut in cuts {
-                for width in [1, 20, 200] {
+                for width in [1, 20, 40, 200] {
                     let _ = draw(&lines(&cut), width);
                 }
             }

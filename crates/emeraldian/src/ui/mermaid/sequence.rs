@@ -8,7 +8,8 @@
 use std::collections::HashMap;
 
 use super::canvas::{Canvas, Stroke};
-use super::{Diagram, Ink, Role, key, label_lines, widest};
+use super::label::{self, widest};
+use super::{Diagram, Ink, ROUND, Role, SQUARE, key, pairs, syntax};
 
 const MAX_ACTORS: usize = 40;
 const MAX_EVENTS: usize = 400;
@@ -56,7 +57,7 @@ pub enum Event {
     Rule(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Sequence {
     pub actors: Vec<Actor>,
     pub events: Vec<Event>,
@@ -89,6 +90,7 @@ const BLOCKS: &[(&str, bool)] = &[
     ("box", false),
 ];
 
+#[derive(Default)]
 struct Builder {
     sequence: Sequence,
     ids: HashMap<String, usize>,
@@ -99,39 +101,26 @@ impl Builder {
         if id.is_empty() {
             return None;
         }
-        if let Some(&at) = self.ids.get(id) {
-            return Some(at);
-        }
-        if self.sequence.actors.len() >= MAX_ACTORS {
-            return None;
-        }
-        self.sequence.actors.push(Actor {
+        let actors = &mut self.sequence.actors;
+        syntax::named(&mut self.ids, actors, id, MAX_ACTORS, || Actor {
             id: id.to_string(),
-            label: label_lines(id),
+            label: label::lines(id),
             person: false,
-        });
-        self.ids
-            .insert(id.to_string(), self.sequence.actors.len() - 1);
-        Some(self.sequence.actors.len() - 1)
+        })
     }
 }
 
 /// Reads the lines after `sequenceDiagram`.
 pub fn parse(lines: &[&str]) -> Option<Sequence> {
-    let mut builder = Builder {
-        sequence: Sequence {
-            actors: Vec::new(),
-            events: Vec::new(),
-        },
-        ids: HashMap::new(),
-    };
+    let mut builder = Builder::default();
     let mut open: Vec<bool> = Vec::new();
     let mut numbered = false;
     let mut number = 0;
+    let mut described = syntax::Descriptions::default();
     for line in lines {
         let line = line.trim();
         let line = line.strip_prefix("create ").unwrap_or(line).trim();
-        if line.is_empty() {
+        if line.is_empty() || described.skip(line) {
             continue;
         }
         let (word, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
@@ -146,7 +135,7 @@ pub fn parse(lines: &[&str]) -> Option<Sequence> {
                 let actor = &mut builder.sequence.actors[at];
                 actor.person = word.eq_ignore_ascii_case("actor");
                 if let Some(label) = label {
-                    actor.label = label_lines(label);
+                    actor.label = label::lines(label);
                 }
             }
             "autonumber" => numbered = true,
@@ -176,7 +165,7 @@ pub fn parse(lines: &[&str]) -> Option<Sequence> {
                     first: first.min(last),
                     last: first.max(last),
                     side,
-                    label: label_lines(text),
+                    label: label::lines(text),
                 });
             }
             "end" => {
@@ -207,7 +196,7 @@ pub fn parse(lines: &[&str]) -> Option<Sequence> {
                 let (from, to, stroke, head, text) = message(line)?;
                 let from = builder.actor(from)?;
                 let to = builder.actor(to)?;
-                let mut label = label_lines(text).join(" ");
+                let mut label = label::joined(text);
                 if numbered {
                     number += 1;
                     label = format!("{number}. {label}").trim_end().to_string();
@@ -233,7 +222,7 @@ pub fn parse(lines: &[&str]) -> Option<Sequence> {
 }
 
 fn rule_text(word: &str, rest: &str) -> String {
-    let text = label_lines(rest).join(" ");
+    let text = label::joined(rest);
     if text.is_empty() {
         word.to_string()
     } else {
@@ -375,19 +364,19 @@ pub fn draw(sequence: &Sequence) -> Option<Diagram> {
     // messages it sends are drawn in.
     for (k, actor) in actors.iter().enumerate() {
         let column = x(centre[k] - boxes[k] as i64 / 2);
-        let corners = if actor.person {
-            ['╭', '╮', '╰', '╯']
-        } else {
-            ['┌', '┐', '└', '┘']
-        };
+        let corners = if actor.person { ROUND } else { SQUARE };
         let outline = Ink::of(Role::Border, k);
         for top in [0, height - tall] {
             canvas.outline(column, top, boxes[k], tall, corners, false, outline);
-            for (row, line) in actor.label.iter().enumerate() {
-                let indent = (boxes[k] - 2 - line.width()) / 2;
-                let words = Ink::plain(Role::Text);
-                canvas.text(column + 1 + indent, top + 1 + row, line, words);
-            }
+            let words = Ink::plain(Role::Text);
+            label::centred(
+                &mut canvas,
+                column + 1,
+                top + 1,
+                boxes[k] - 2,
+                &actor.label,
+                words,
+            );
         }
     }
     let mut row = tall;
@@ -443,15 +432,7 @@ pub fn draw(sequence: &Sequence) -> Option<Diagram> {
                 let (from, to) = notes.next()?;
                 let (column, wide) = (x(from), usize::try_from(to - from).ok()?);
                 let note = Ink::plain(Role::Note);
-                canvas.outline(
-                    column,
-                    row,
-                    wide,
-                    label.len() + 2,
-                    ['┌', '┐', '└', '┘'],
-                    false,
-                    note,
-                );
+                canvas.outline(column, row, wide, label.len() + 2, SQUARE, false, note);
                 // Filled with blanks first, so the lifelines don't run
                 // through it.
                 for inside in row + 1..row + 1 + label.len() {
@@ -504,19 +485,15 @@ pub fn draw(sequence: &Sequence) -> Option<Diagram> {
 /// Participants side by side, and those that message each other, which
 /// should differ in colour.
 fn links(sequence: &Sequence) -> Vec<(u16, u16)> {
-    let pair =
-        |a: usize, b: usize| Some((u16::try_from(a.min(b)).ok()?, u16::try_from(a.max(b)).ok()?));
-    let mut links: Vec<(u16, u16)> = (1..sequence.actors.len())
-        .filter_map(|k| pair(k - 1, k))
-        .collect();
-    for event in &sequence.events {
-        if let Event::Message { from, to, .. } = event
-            && from != to
-            && let Some(link) = pair(*from, *to)
-        {
-            links.push(link);
-        }
-    }
+    let talking = sequence.events.iter().filter_map(|event| match *event {
+        Event::Message { from, to, .. } if from != to => Some((from.min(to), from.max(to))),
+        _ => None,
+    });
+    let mut links = pairs(
+        (1..sequence.actors.len())
+            .map(|k| (k - 1, k))
+            .chain(talking),
+    );
     links.sort_unstable();
     links.dedup();
     links
@@ -633,14 +610,7 @@ mod tests {
     fn each_participant_colours_its_lifeline_and_what_it_sends() {
         let s = sequence("A->>B: hi\nB-->>A: back\nNote over A: aside\nC->>C: me").unwrap();
         let diagram = draw(&s).unwrap();
-        let ink_of = |needle: &str| {
-            diagram
-                .rows
-                .iter()
-                .flatten()
-                .find(|(text, _)| text.contains(needle))
-                .map(|(_, ink)| *ink)
-        };
+        let ink_of = |needle: &str| super::super::ink_of(&diagram, needle);
         assert_eq!(ink_of("hi"), Some(Ink::of(Role::Label, 0)));
         assert_eq!(ink_of("back"), Some(Ink::of(Role::Label, 1)));
         assert_eq!(ink_of("▶"), Some(Ink::of(Role::Arrow, 0)));

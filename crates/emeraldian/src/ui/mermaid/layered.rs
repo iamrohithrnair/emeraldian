@@ -32,6 +32,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use super::canvas::{Canvas, Stroke};
+use super::label::{self, widest};
 use super::{Ink, Role};
 
 /// Boxes, bends, edge words and the places frames keep in ranks they would
@@ -46,8 +47,9 @@ pub const MAX_DEPTH: usize = 16;
 const LABEL_ROOM: usize = 48;
 
 /// Which way a graph flows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Direction {
+    #[default]
     Down,
     Up,
     Right,
@@ -113,6 +115,18 @@ pub struct Link {
     /// The columns and rows of its words, which get a place of their own
     /// between its ends.
     pub words: Option<(usize, usize)>,
+}
+
+impl Link {
+    /// A link with `words` on it, or none.
+    #[must_use]
+    pub fn new(from: usize, to: usize, words: &[String]) -> Self {
+        Self {
+            from,
+            to,
+            words: (!words.is_empty()).then(|| (widest(words), words.len())),
+        }
+    }
 }
 
 /// What to lay out.
@@ -189,6 +203,15 @@ pub struct End {
     pub facing: Facing,
 }
 
+impl End {
+    /// Whether the box's outline is joined to the line here: where the line
+    /// leaves, and where it arrives without a `head` drawn outside.
+    #[must_use]
+    pub fn joined(&self, head: bool) -> bool {
+        self.leaving || !head
+    }
+}
+
 /// Where everything went.
 #[derive(Debug, Clone)]
 pub struct Layout {
@@ -230,6 +253,21 @@ impl Layout {
         }
         self.width += x;
         self.height += y;
+    }
+
+    /// Writes each link's words in the place kept for them, centred, as
+    /// `words` gives them for the link with their ink.
+    pub fn draw_words<'a>(
+        &self,
+        canvas: &mut Canvas,
+        words: impl Fn(usize) -> (&'a [String], Ink),
+    ) {
+        for (link, rect) in self.words.iter().enumerate() {
+            if let Some(rect) = rect {
+                let (lines, ink) = words(link);
+                label::centred(canvas, rect.x, rect.y, rect.width, lines, ink);
+            }
+        }
     }
 
     /// Draws every line, each in the stroke and colour `style` gives its
@@ -306,9 +344,19 @@ impl Layout {
             && length >= 4
             && !label.is_empty()
         {
-            let cut = super::truncate(label, length - 2);
+            let cut = label::truncate(label, length - 2);
             canvas.text(x, y, &format!(" {cut} "), ink);
         }
+    }
+}
+
+/// A rule across a box `width` wide whose left side is at `x`, joined to
+/// both sides, as between a box's compartments.
+pub fn rule(canvas: &mut Canvas, x: usize, y: usize, width: usize, ink: Ink) {
+    canvas.put(x, y, '├', ink);
+    canvas.put(x + width - 1, y, '┤', ink);
+    for column in x + 1..x + width - 1 {
+        canvas.put(column, y, '─', ink);
     }
 }
 
@@ -321,16 +369,6 @@ pub fn join(canvas: &Canvas, end: &End) -> char {
     match (canvas.glyph(x, y), end.facing) {
         (Some('├' | '┤'), Facing::Left | Facing::Right) => '┼',
         _ => end.facing.join(),
-    }
-}
-
-/// Writes lines of text centred in a band `width` columns wide.
-pub fn centred(canvas: &mut Canvas, x: usize, y: usize, width: usize, lines: &[String], ink: Ink) {
-    use unicode_width::UnicodeWidthStr;
-
-    for (row, line) in lines.iter().enumerate() {
-        let indent = width.saturating_sub(line.width()) / 2;
-        canvas.text(x + indent, y + row, line, ink);
     }
 }
 
@@ -360,6 +398,23 @@ struct Place {
 }
 
 impl Place {
+    /// A place for something `columns` by `rows`, turned to the flow.
+    fn new(kind: Kind, rank: usize, (columns, rows): (usize, usize), across_flow: bool) -> Self {
+        let (along, across) = if across_flow {
+            (columns, rows)
+        } else {
+            (rows, columns)
+        };
+        Self {
+            kind,
+            rank,
+            along,
+            across,
+            at: 0,
+            frame: None,
+        }
+    }
+
     fn centre(&self) -> i64 {
         self.at + self.across as i64 / 2
     }
@@ -440,21 +495,9 @@ pub fn layout(graph: &Graph) -> Option<Layout> {
 
     // Places: the boxes, then the bends and words of each edge.
     let mut places: Vec<Place> = (0..count)
-        .map(|at| {
-            let (columns, rows) = graph.boxes[at];
-            let (along, across) = if across_flow {
-                (columns, rows)
-            } else {
-                (rows, columns)
-            };
-            Place {
-                kind: Kind::Node(at),
-                rank: rank[at],
-                along,
-                across,
-                at: 0,
-                frame: frame_of(at),
-            }
+        .map(|at| Place {
+            frame: frame_of(at),
+            ..Place::new(Kind::Node(at), rank[at], graph.boxes[at], across_flow)
         })
         .collect();
     let mut segments = Vec::new();
@@ -469,31 +512,11 @@ pub fn layout(graph: &Graph) -> Option<Layout> {
         for r in rank[top] + 1..rank[bottom] {
             let place = match link.words {
                 Some((columns, rows)) if r == middle => {
-                    let columns = columns.max(1);
-                    let (along, across) = if across_flow {
-                        (columns, rows)
-                    } else {
-                        (rows, columns)
-                    };
-                    Place {
-                        kind: Kind::Words(edge),
-                        rank: r,
-                        along,
-                        across,
-                        at: 0,
-                        frame,
-                    }
+                    Place::new(Kind::Words(edge), r, (columns.max(1), rows), across_flow)
                 }
-                _ => Place {
-                    kind: Kind::Bend,
-                    rank: r,
-                    along: 1,
-                    across: 1,
-                    at: 0,
-                    frame,
-                },
+                _ => Place::new(Kind::Bend, r, (1, 1), across_flow),
             };
-            places.push(place);
+            places.push(Place { frame, ..place });
             if places.len() > MAX_PLACES {
                 return None;
             }
@@ -529,12 +552,8 @@ pub fn layout(graph: &Graph) -> Option<Layout> {
                     held.insert((outer, r));
                 }
                 places.push(Place {
-                    kind: Kind::Hold,
-                    rank: r,
-                    along: 1,
-                    across: 1,
-                    at: 0,
                     frame: Some(f),
+                    ..Place::new(Kind::Hold, r, (1, 1), across_flow)
                 });
                 if places.len() > MAX_PLACES {
                     return None;
@@ -1191,53 +1210,39 @@ fn separate(
         Left,
         Right,
     }
+    // Steps the run on to `to`, which is `now`, at least as far from what
+    // it passed as a right side needs, for no `gap`, or else a left side,
+    // which keeps two columns from a place, or a place `gap` from one.
+    let mut step = |last: &mut Option<(usize, Last)>, to: usize, now: Last, gap: Option<i64>| {
+        if let Some((from, was)) = *last {
+            let least = match (was, gap) {
+                (Last::Place(across), None) => across + 1,
+                (Last::Place(across), Some(gap)) => across + gap,
+                (Last::Right, Some(_)) => 3,
+                _ => 2,
+            };
+            edge(from, to, least);
+        }
+        *last = Some((to, now));
+    };
     for (layer, gaps) in layers.iter().zip(gaps) {
-        let mut last: Option<(usize, Last)> = None;
+        let mut last = None;
         let mut open: &[usize] = &[];
         for (i, &p) in layer.iter().enumerate() {
             let chain = chains[p];
             let shared = open.iter().zip(chain).take_while(|(x, y)| x == y).count();
             for &f in open[shared..].iter().rev() {
-                if let Some((from, was)) = last {
-                    let least = match was {
-                        Last::Place(across) => across + 1,
-                        Last::Left | Last::Right => 2,
-                    };
-                    edge(from, right(f), least);
-                }
-                last = Some((right(f), Last::Right));
+                step(&mut last, right(f), Last::Right, None);
             }
             for &f in &chain[shared..] {
-                if let Some((from, was)) = last {
-                    let least = match was {
-                        Last::Place(across) => across + 2,
-                        Last::Right => 3,
-                        Last::Left => 2,
-                    };
-                    edge(from, left(f), least);
-                }
-                last = Some((left(f), Last::Left));
+                step(&mut last, left(f), Last::Left, Some(2));
             }
-            if let Some((from, was)) = last {
-                let least = match was {
-                    Last::Place(across) => across + gaps[i],
-                    Last::Right => 3,
-                    Last::Left => 2,
-                };
-                edge(from, p, least);
-            }
-            last = Some((p, Last::Place(places[p].across as i64)));
+            let across = places[p].across as i64;
+            step(&mut last, p, Last::Place(across), Some(gaps[i]));
             open = chain;
         }
         for &f in open.iter().rev() {
-            if let Some((from, was)) = last {
-                let least = match was {
-                    Last::Place(across) => across + 1,
-                    Last::Left | Last::Right => 2,
-                };
-                edge(from, right(f), least);
-            }
-            last = Some((right(f), Last::Right));
+            step(&mut last, right(f), Last::Right, None);
         }
     }
 
