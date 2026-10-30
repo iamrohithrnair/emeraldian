@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.2]
+
+### Changed
+
+- **Diagrams are drawn by less code, and none of them slowly.** The
+  Mermaid diagrams now share one reader for the syntax they have in common
+  and one place for their words, and every diagram is drawn as it was. The
+  only difference you might see is a welcome one: a diagram with an
+  `accDescr { … }` block, which describes it to a screen reader, is drawn
+  now rather than left as code. A few diagrams that took up to a tenth of
+  a second to draw now take a couple of milliseconds at most: thousands of
+  accents, joined emoji or `<` signs in one label, a class member made of
+  thousands of `~`, and a Gantt chart's date format of thousands of dashes.
+
 ## [0.10.1] — 2026-10-29
 
 C4, class, state and entity relationship diagrams, pie and Gantt charts, mind

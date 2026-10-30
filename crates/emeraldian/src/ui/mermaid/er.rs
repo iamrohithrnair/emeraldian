@@ -18,8 +18,9 @@ use std::collections::HashMap;
 use unicode_width::UnicodeWidthStr;
 
 use super::canvas::{Canvas, Stroke};
+use super::label::{self, truncate, widest};
 use super::layered::{self, Direction, Graph, Link};
-use super::{Diagram, Ink, Role, key, label_lines, truncate, widest};
+use super::{Diagram, Ink, Role, SQUARE, key, pairs, syntax};
 
 const MAX_ENTITIES: usize = 150;
 const MAX_ATTRIBUTES: usize = 60;
@@ -55,7 +56,7 @@ pub struct Relationship {
     pub stroke: Stroke,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ErDiagram {
     pub direction: Direction,
     pub entities: Vec<Entity>,
@@ -66,9 +67,7 @@ pub struct ErDiagram {
 
 /// Statements about how entities look, which a drawing in text has no use
 /// for.
-const IGNORED: &[&str] = &[
-    "style", "classDef", "class", "accTitle", "accDescr", "title",
-];
+const IGNORED: &[&str] = &["style", "classDef", "class", "title"];
 
 /// Mermaid's marks for each cardinality, as written on the left of the line
 /// and on its right, and how it is shown.
@@ -95,24 +94,18 @@ const WORDS: &[(&str, &str)] = &[
     ("1", "1"),
 ];
 
+#[derive(Default)]
 struct Reader {
     diagram: ErDiagram,
     ids: HashMap<String, usize>,
     /// The entity whose attributes are being read.
     open: Option<usize>,
+    described: syntax::Descriptions,
 }
 
 /// Reads the lines after `erDiagram`.
 pub fn parse(lines: &[&str]) -> Option<ErDiagram> {
-    let mut reader = Reader {
-        diagram: ErDiagram {
-            direction: Direction::Down,
-            entities: Vec::new(),
-            relationships: Vec::new(),
-        },
-        ids: HashMap::new(),
-        open: None,
-    };
+    let mut reader = Reader::default();
     for line in lines {
         reader.line(line.trim())?;
     }
@@ -128,10 +121,6 @@ impl Reader {
             return Some(());
         }
         if let Some(entity) = self.open {
-            if line == "}" {
-                self.open = None;
-                return Some(());
-            }
             let (line, closed) = match line.strip_suffix('}') {
                 Some(line) => (line.trim(), true),
                 None => (line, false),
@@ -144,18 +133,15 @@ impl Reader {
             }
             return Some(());
         }
+        if self.described.skip(line) {
+            return Some(());
+        }
         let first = line.split_whitespace().next().unwrap_or("");
         if IGNORED.contains(&first) {
             return Some(());
         }
         if first == "direction" {
-            self.diagram.direction = match line["direction".len()..].trim() {
-                "TB" | "TD" => Direction::Down,
-                "BT" => Direction::Up,
-                "LR" => Direction::Right,
-                "RL" => Direction::Left,
-                _ => return None,
-            };
+            self.diagram.direction = syntax::direction(line["direction".len()..].trim())?;
             return Some(());
         }
         if let Some(parts) = relationship(line) {
@@ -185,36 +171,20 @@ impl Reader {
     /// in its place, as `p[Person]`.
     fn entity(&mut self, name: &str) -> Option<usize> {
         let name = name.split(":::").next().unwrap_or(name).trim();
-        let (id, shown) = match name.find('[') {
-            Some(open) if name.ends_with(']') => {
-                (name[..open].trim(), Some(&name[open + 1..name.len() - 1]))
-            }
-            Some(_) => return None,
-            None => (name, None),
-        };
-        let id = unquote(id);
+        let (id, shown) = syntax::bracketed(name)?;
+        let id = syntax::unquote(id);
         if id.is_empty() || (id.contains(char::is_whitespace) && !name.starts_with('"')) {
             return None;
         }
-        let at = match self.ids.get(id) {
-            Some(&at) => at,
-            None => {
-                if self.diagram.entities.len() >= MAX_ENTITIES {
-                    return None;
-                }
-                self.diagram.entities.push(Entity {
-                    id: id.to_string(),
-                    name: label_lines(id),
-                    attributes: Vec::new(),
-                    loops: Vec::new(),
-                });
-                self.ids
-                    .insert(id.to_string(), self.diagram.entities.len() - 1);
-                self.diagram.entities.len() - 1
-            }
-        };
+        let entities = &mut self.diagram.entities;
+        let at = syntax::named(&mut self.ids, entities, id, MAX_ENTITIES, || Entity {
+            id: id.to_string(),
+            name: label::lines(id),
+            attributes: Vec::new(),
+            loops: Vec::new(),
+        })?;
         if let Some(shown) = shown {
-            self.diagram.entities[at].name = label_lines(unquote(shown));
+            self.diagram.entities[at].name = label::lines(syntax::unquote(shown));
         }
         Some(at)
     }
@@ -255,7 +225,7 @@ impl Reader {
     fn relationship(&mut self, parts: Parts) -> Option<()> {
         let from = self.entity(parts.from)?;
         let to = self.entity(parts.to)?;
-        let label = label_lines(parts.label).join(" ");
+        let label = label::joined(parts.label);
         let text = if label.is_empty() {
             format!("{} to {}", parts.left, parts.right)
         } else {
@@ -274,18 +244,11 @@ impl Reader {
         self.diagram.relationships.push(Relationship {
             from,
             to,
-            words: label_lines(&text),
+            words: label::lines(&text),
             stroke: parts.stroke,
         });
         Some(())
     }
-}
-
-fn unquote(text: &str) -> &str {
-    let text = text.trim();
-    text.strip_prefix('"')
-        .and_then(|inner| inner.strip_suffix('"'))
-        .unwrap_or(text)
 }
 
 /// The parts of a relationship statement.
@@ -302,7 +265,7 @@ struct Parts<'a> {
 /// `A ||--o{ B : label`, or the same in words, as its parts; `None` when
 /// the line holds no relationship.
 fn relationship(line: &str) -> Option<Parts<'_>> {
-    let (link, label) = split_label(line);
+    let (link, label) = syntax::label_after(line, &['"']);
     marks(link)
         .or_else(|| words(link))
         .map(|(from, left, stroke, right, to)| Parts {
@@ -311,21 +274,8 @@ fn relationship(line: &str) -> Option<Parts<'_>> {
             left,
             right,
             stroke,
-            label: unquote(label),
+            label: syntax::unquote(label),
         })
-}
-
-/// Splits at the first colon outside quotes.
-fn split_label(line: &str) -> (&str, &str) {
-    let mut quoted = false;
-    for (at, c) in line.char_indices() {
-        match c {
-            '"' => quoted = !quoted,
-            ':' if !quoted => return (&line[..at], line[at + 1..].trim()),
-            _ => {}
-        }
-    }
-    (line, "")
 }
 
 type Link4<'a> = (&'a str, &'static str, Stroke, &'static str, &'a str);
@@ -441,11 +391,7 @@ pub fn draw(diagram: &ErDiagram, width: usize) -> Option<Diagram> {
     graph.links = diagram
         .relationships
         .iter()
-        .map(|r| Link {
-            from: r.from,
-            to: r.to,
-            words: (!r.words.is_empty()).then(|| (widest(&r.words), r.words.len())),
-        })
+        .map(|r| Link::new(r.from, r.to, &r.words))
         .collect();
     graph.room = width;
     graph.spread = true;
@@ -455,12 +401,10 @@ pub fn draw(diagram: &ErDiagram, width: usize) -> Option<Diagram> {
     for (at, (entity, rect)) in entities.iter().zip(&placed.boxes).enumerate() {
         draw_entity(&mut canvas, entity, at, *rect);
     }
-    for (r, rect) in diagram.relationships.iter().zip(&placed.words) {
-        if let Some(rect) = rect {
-            let ink = Ink::of(Role::Label, r.from);
-            layered::centred(&mut canvas, rect.x, rect.y, rect.width, &r.words, ink);
-        }
-    }
+    placed.draw_words(&mut canvas, |at| {
+        let r = &diagram.relationships[at];
+        (&r.words, Ink::of(Role::Label, r.from))
+    });
     placed.draw_lines(&mut canvas, |at| {
         let r = &diagram.relationships[at];
         (r.stroke, Ink::of(Role::Line, r.from).owner)
@@ -473,44 +417,24 @@ pub fn draw(diagram: &ErDiagram, width: usize) -> Option<Diagram> {
 
     let mut drawn = canvas.finish();
     drawn.keys = entities.iter().map(|e| key(&e.id)).collect();
-    drawn.links = diagram
-        .relationships
-        .iter()
-        .filter_map(|r| Some((u16::try_from(r.from).ok()?, u16::try_from(r.to).ok()?)))
-        .collect();
+    drawn.links = pairs(diagram.relationships.iter().map(|r| (r.from, r.to)));
     Some(drawn)
 }
 
 fn draw_entity(canvas: &mut Canvas, entity: &Entity, at: usize, rect: layered::Rect) {
     let (x, y, w, h) = (rect.x, rect.y, rect.width, rect.height);
     let outline = Ink::of(Role::Border, at);
-    canvas.outline(x, y, w, h, ['┌', '┐', '└', '┘'], false, outline);
-    layered::centred(
-        canvas,
-        x + 1,
-        y + 1,
-        w - 2,
-        &entity.name,
-        Ink::plain(Role::Text),
-    );
+    canvas.outline(x, y, w, h, SQUARE, false, outline);
+    let name = Ink::plain(Role::Text);
+    label::centred(canvas, x + 1, y + 1, w - 2, &entity.name, name);
     let loops = y + 1 + entity.name.len();
-    layered::centred(
-        canvas,
-        x + 1,
-        loops,
-        w - 2,
-        &entity.loops,
-        Ink::of(Role::Label, at),
-    );
+    let own = Ink::of(Role::Label, at);
+    label::centred(canvas, x + 1, loops, w - 2, &entity.loops, own);
     if entity.attributes.is_empty() {
         return;
     }
     let rule = loops + entity.loops.len();
-    canvas.put(x, rule, '├', outline);
-    canvas.put(x + w - 1, rule, '┤', outline);
-    for column in x + 1..x + w - 1 {
-        canvas.put(column, rule, '─', outline);
-    }
+    layered::rule(canvas, x, rule, w, outline);
     let widths = entity.columns();
     let quiet = Ink::plain(Role::Label);
     for (row, attribute) in entity.attributes.iter().enumerate() {
@@ -657,14 +581,7 @@ CUSTOMER }|..|{ DELIVERY-ADDRESS : uses";
     fn keys_are_in_the_entitys_colour_and_types_are_quiet() {
         let d = diagram("A {\n  int id PK\n}\nA ||--o{ B : has").unwrap();
         let drawn = draw(&d, 80).unwrap();
-        let ink_of = |needle: &str| {
-            drawn
-                .rows
-                .iter()
-                .flatten()
-                .find(|(text, _)| text.contains(needle))
-                .map(|(_, ink)| *ink)
-        };
+        let ink_of = |needle: &str| super::super::ink_of(&drawn, needle);
         assert_eq!(ink_of("PK"), Some(Ink::of(Role::Label, 0)));
         assert_eq!(ink_of("int"), Some(Ink::plain(Role::Label)));
         assert_eq!(ink_of("has"), Some(Ink::of(Role::Label, 0)));

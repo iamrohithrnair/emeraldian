@@ -20,8 +20,9 @@ use std::collections::HashMap;
 use unicode_width::UnicodeWidthStr;
 
 use super::canvas::{Canvas, Stroke};
+use super::label::{self, widest};
 use super::layered::{self, Direction, Facing, Graph, Link};
-use super::{Diagram, Ink, Role, key, label_lines, widest};
+use super::{Diagram, Ink, ROUND, Role, SQUARE, key, pairs, syntax};
 
 const MAX_STATES: usize = 200;
 const MAX_TRANSITIONS: usize = 400;
@@ -69,7 +70,7 @@ pub struct Transition {
     pub note: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct StateDiagram {
     pub direction: Direction,
     pub states: Vec<State>,
@@ -81,9 +82,10 @@ pub struct StateDiagram {
 
 /// Statements about how states look, which a drawing in text has no use for.
 const IGNORED: &[&str] = &[
-    "classDef", "class", "style", "click", "scale", "hide", "accTitle", "accDescr", "title",
+    "classDef", "class", "style", "click", "scale", "hide", "title",
 ];
 
+#[derive(Default)]
 struct Reader {
     diagram: StateDiagram,
     ids: HashMap<String, usize>,
@@ -93,22 +95,12 @@ struct Reader {
     region: HashMap<Option<usize>, usize>,
     /// A note being read up to its `end note`: its state, and its lines.
     note: Option<(usize, Vec<String>)>,
+    described: syntax::Descriptions,
 }
 
 /// Reads the lines after `stateDiagram`.
 pub fn parse(lines: &[&str]) -> Option<StateDiagram> {
-    let mut reader = Reader {
-        diagram: StateDiagram {
-            direction: Direction::Down,
-            states: Vec::new(),
-            composites: Vec::new(),
-            transitions: Vec::new(),
-        },
-        ids: HashMap::new(),
-        open: Vec::new(),
-        region: HashMap::new(),
-        note: None,
-    };
+    let mut reader = Reader::default();
     for line in lines {
         reader.line(line.trim())?;
     }
@@ -133,7 +125,7 @@ impl Reader {
             lines.push(line.to_string());
             return Some(());
         }
-        if line.is_empty() {
+        if line.is_empty() || self.described.skip(line) {
             return Some(());
         }
         if line == "}" {
@@ -146,22 +138,13 @@ impl Reader {
             *self.region.entry(self.frame()).or_insert(0) += 1;
             return Some(());
         }
-        let first = line
-            .split(|c: char| c.is_whitespace() || c == ':')
-            .next()
-            .unwrap_or("");
+        let first = syntax::first_word(line);
         if IGNORED.contains(&first) {
             return Some(());
         }
         if first == "direction" {
             if self.open.is_empty() {
-                self.diagram.direction = match line["direction".len()..].trim() {
-                    "TB" | "TD" => Direction::Down,
-                    "BT" => Direction::Up,
-                    "LR" => Direction::Right,
-                    "RL" => Direction::Left,
-                    _ => return None,
-                };
+                self.diagram.direction = syntax::direction(line["direction".len()..].trim())?;
             }
             return Some(());
         }
@@ -171,7 +154,7 @@ impl Reader {
         if let Some(rest) = line.strip_prefix("state ") {
             return self.state_statement(rest.trim());
         }
-        if let Some(at) = arrow(line) {
+        if let Some(at) = syntax::outside_quotes(line, "-->", &['"']) {
             let (link, label) = match line[at + 3..].split_once(':') {
                 Some((to, label)) => (&line[..at + 3 + to.len()], label.trim()),
                 None => (line, ""),
@@ -194,28 +177,26 @@ impl Reader {
         if id.is_empty() || id.contains(char::is_whitespace) || id.starts_with('[') {
             return None;
         }
-        if let Some(&at) = self.ids.get(id) {
-            return Some(at);
-        }
-        self.add(State {
+        let frame = self.frame();
+        self.named(id, || State {
             id: id.to_string(),
             kind: Kind::State,
-            name: label_lines(id),
+            name: label::lines(id),
             description: Vec::new(),
-            frame: self.frame(),
+            frame,
             composite: None,
         })
     }
 
-    fn add(&mut self, state: State) -> Option<usize> {
-        if self.diagram.states.len() >= MAX_STATES {
-            return None;
-        }
-        let id = state.id.clone();
-        self.diagram.states.push(state);
-        let at = self.diagram.states.len() - 1;
-        self.ids.insert(id, at);
-        Some(at)
+    /// The state with `id`, made by `make` the first time it is named.
+    fn named(&mut self, id: &str, make: impl FnOnce() -> State) -> Option<usize> {
+        syntax::named(
+            &mut self.ids,
+            &mut self.diagram.states,
+            id,
+            MAX_STATES,
+            make,
+        )
     }
 
     /// A transition's end: a state, or `[*]`, which is the start of the
@@ -233,11 +214,8 @@ impl Reader {
             "[*] {} {scope} {region}",
             if from { "start" } else { "end" }
         );
-        if let Some(&at) = self.ids.get(&id) {
-            return Some(at);
-        }
-        self.add(State {
-            id,
+        self.named(&id, || State {
+            id: id.clone(),
             kind,
             name: Vec::new(),
             description: Vec::new(),
@@ -248,7 +226,7 @@ impl Reader {
 
     fn transition(&mut self, from: usize, to: usize, label: &str) -> Option<()> {
         if from == to {
-            let words = label_lines(label).join(" ");
+            let words = label::joined(label);
             let line = if words.is_empty() {
                 "↻".to_string()
             } else {
@@ -262,7 +240,7 @@ impl Reader {
         let words = if label.is_empty() {
             Vec::new()
         } else {
-            label_lines(label)
+            label::lines(label)
         };
         self.diagram.transitions.push(Transition {
             from,
@@ -278,7 +256,7 @@ impl Reader {
         if description.len() >= MAX_DESCRIPTION {
             return Some(());
         }
-        description.extend(label_lines(text));
+        description.extend(label::lines(text));
         Some(())
     }
 
@@ -298,20 +276,14 @@ impl Reader {
                 None => (rest, None),
             }
         };
-        let (id, kind) = match id.find("<<") {
-            Some(open) => {
-                let close = id[open..].find(">>")? + open;
-                (id[..open].trim(), Some(&id[open + 2..close]))
-            }
-            None => (id, None),
-        };
+        let (id, kind) = syntax::annotated(id)?;
         let (id, description) = match id.split_once(':') {
             Some((id, description)) => (id.trim(), Some(description.trim())),
             None => (id, None),
         };
         let state = self.state(id)?;
         if let Some(name) = name {
-            self.diagram.states[state].name = label_lines(name);
+            self.diagram.states[state].name = label::lines(name);
         }
         if let Some(description) = description {
             self.describe(state, description)?;
@@ -367,12 +339,12 @@ impl Reader {
     }
 
     fn add_note(&mut self, owner: usize, text: &str) -> Option<()> {
-        let at = self.diagram.states.len();
+        let id = format!("note {}", self.diagram.states.len());
         let frame = self.diagram.states[owner].frame;
-        self.add(State {
-            id: format!("note {at}"),
+        let at = self.named(&id, || State {
+            id: id.clone(),
             kind: Kind::Note,
-            name: label_lines(text),
+            name: label::lines(text),
             description: Vec::new(),
             frame,
             composite: None,
@@ -388,19 +360,6 @@ impl Reader {
         });
         Some(())
     }
-}
-
-/// Where `-->` is in a line, outside quotes.
-fn arrow(line: &str) -> Option<usize> {
-    let mut quoted = false;
-    for (at, c) in line.char_indices() {
-        match c {
-            '"' => quoted = !quoted,
-            '-' if !quoted && line[at..].starts_with("-->") => return Some(at),
-            _ => {}
-        }
-    }
-    None
 }
 
 // ---------------------------------------------------------------- drawing
@@ -502,11 +461,7 @@ pub fn draw(diagram: &StateDiagram, width: usize) -> Option<Diagram> {
     }
     graph.links = transitions
         .iter()
-        .map(|&(from, to, t)| Link {
-            from,
-            to,
-            words: (!t.words.is_empty()).then(|| (widest(&t.words), t.words.len())),
-        })
+        .map(|&(from, to, t)| Link::new(from, to, &t.words))
         .collect();
     graph.frames = diagram.composites.iter().map(|c| c.parent).collect();
     graph.framed = boxes.iter().map(|&s| states[s].frame).collect();
@@ -540,18 +495,10 @@ pub fn draw(diagram: &StateDiagram, width: usize) -> Option<Diagram> {
             across,
         );
     }
-    for (&(from, _, t), rect) in transitions.iter().zip(&placed.words) {
-        if let Some(rect) = rect {
-            layered::centred(
-                &mut canvas,
-                rect.x,
-                rect.y,
-                rect.width,
-                &t.words,
-                ink(Role::Label, from),
-            );
-        }
-    }
+    placed.draw_words(&mut canvas, |link| {
+        let (from, _, t) = transitions[link];
+        (&t.words, ink(Role::Label, from))
+    });
     placed.draw_lines(&mut canvas, |link| {
         let (from, _, t) = transitions[link];
         let stroke = if t.note {
@@ -566,17 +513,16 @@ pub fn draw(diagram: &StateDiagram, width: usize) -> Option<Diagram> {
         let state = &states[boxes[end.node]];
         let arrow = end.to && !t.note;
         // A start or end has no outline to join, and a bar is joined below.
-        let joins = !matches!(state.kind, Kind::Start | Kind::End);
-        if joins && (end.leaving || !arrow) {
+        let joins = !matches!(state.kind, Kind::Start | Kind::End)
+            && joinable(state, end.border, placed.boxes[end.node], across);
+        if joins && end.joined(arrow) {
             let glyph = join(state.kind, &canvas, end);
-            if joinable(state, end.border, placed.boxes[end.node], across) {
-                canvas.put(
-                    end.border.0,
-                    end.border.1,
-                    glyph,
-                    ink(Role::Border, end.node),
-                );
-            }
+            canvas.put(
+                end.border.0,
+                end.border.1,
+                glyph,
+                ink(Role::Border, end.node),
+            );
         }
         if arrow {
             canvas.put(
@@ -593,10 +539,7 @@ pub fn draw(diagram: &StateDiagram, width: usize) -> Option<Diagram> {
 
     let mut drawn = canvas.finish();
     drawn.keys = boxes.iter().map(|&s| key(&states[s].id)).collect();
-    drawn.links = transitions
-        .iter()
-        .filter_map(|&(from, to, _)| Some((u16::try_from(from).ok()?, u16::try_from(to).ok()?)))
-        .collect();
+    drawn.links = pairs(transitions.iter().map(|&(from, to, _)| (from, to)));
     Some(drawn)
 }
 
@@ -669,31 +612,26 @@ fn draw_state(canvas: &mut Canvas, state: &State, rect: layered::Rect, outline: 
             }
         }
         Kind::State | Kind::Note => {
-            let corners = if state.kind == Kind::Note {
-                ['┌', '┐', '└', '┘']
-            } else {
-                ['╭', '╮', '╰', '╯']
-            };
-            canvas.outline(x, y, w, h, corners, false, outline);
-            let words = if state.kind == Kind::Note {
-                outline
-            } else {
-                Ink::plain(Role::Text)
-            };
+            // A note's words are written as they are, from the left.
             if state.kind == Kind::Note {
+                canvas.outline(x, y, w, h, SQUARE, false, outline);
                 for (row, line) in state.name.iter().enumerate() {
-                    canvas.text(x + 2, y + 1 + row, line, words);
+                    canvas.text(x + 2, y + 1 + row, line, outline);
                 }
             } else {
-                layered::centred(canvas, x + 1, y + 1, w - 2, &state.name, words);
+                canvas.outline(x, y, w, h, ROUND, false, outline);
+                label::centred(
+                    canvas,
+                    x + 1,
+                    y + 1,
+                    w - 2,
+                    &state.name,
+                    Ink::plain(Role::Text),
+                );
             }
             if !state.description.is_empty() {
                 let rule = y + 1 + state.name.len();
-                canvas.put(x, rule, '├', outline);
-                canvas.put(x + w - 1, rule, '┤', outline);
-                for column in x + 1..x + w - 1 {
-                    canvas.put(column, rule, '─', outline);
-                }
+                layered::rule(canvas, x, rule, w, outline);
                 for (row, line) in state.description.iter().enumerate() {
                     canvas.text(x + 2, rule + 1 + row, line, Ink::plain(Role::Text));
                 }
@@ -836,14 +774,7 @@ Published --> [*]";
     fn states_have_colours_and_the_marks_are_no_ones() {
         let d = diagram("[*] --> A\nA --> B : go\nB --> [*]").unwrap();
         let drawn = draw(&d, 80).unwrap();
-        let ink_of = |needle: &str| {
-            drawn
-                .rows
-                .iter()
-                .flatten()
-                .find(|(text, _)| text.contains(needle))
-                .map(|(_, ink)| *ink)
-        };
+        let ink_of = |needle: &str| super::super::ink_of(&drawn, needle);
         assert_eq!(ink_of("●"), Some(Ink::plain(Role::Border)));
         assert_eq!(ink_of("go"), Some(Ink::of(Role::Label, 1)));
         assert_eq!(drawn.keys.len(), 4);

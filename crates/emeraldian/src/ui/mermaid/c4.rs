@@ -26,8 +26,9 @@ use std::collections::HashMap;
 use unicode_width::UnicodeWidthStr;
 
 use super::canvas::{Canvas, Stroke};
+use super::label::{self, truncate, widest};
 use super::layered::{self, Direction, Graph, Link};
-use super::{Diagram, Ink, Role, key, label_lines, truncate, widest};
+use super::{Diagram, Ink, ROUND, Role, SQUARE, key, pairs, syntax};
 
 const MAX_ELEMENTS: usize = 120;
 const MAX_RELS: usize = 240;
@@ -95,7 +96,7 @@ pub struct Rel {
     pub both: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct C4 {
     pub title: Option<String>,
     pub elements: Vec<Element>,
@@ -117,29 +118,18 @@ pub fn is_kind(kind: &str) -> bool {
 /// Reads the lines after the line naming the diagram. `numbered` numbers the
 /// relationships, as a dynamic diagram does.
 pub fn parse(lines: &[&str], numbered: bool) -> Option<C4> {
-    let mut reader = Reader {
-        c4: C4 {
-            title: None,
-            elements: Vec::new(),
-            frames: Vec::new(),
-            rels: Vec::new(),
-        },
-        aliases: HashMap::new(),
-        frame_aliases: HashMap::new(),
-        open: Vec::new(),
-        pending: None,
-        rels: Vec::new(),
-    };
+    let mut reader = Reader::default();
+    let mut described = syntax::Descriptions::default();
     for line in lines {
         let line = line.trim();
-        if line.is_empty() {
+        if line.is_empty() || described.skip(line) {
             continue;
         }
         if let Some(title) = line.strip_prefix("title ") {
-            reader.c4.title = Some(label_lines(title).join(" "));
+            reader.c4.title = Some(label::joined(title));
             continue;
         }
-        if line.starts_with("accTitle") || line.starts_with("accDescr") || line == "title" {
+        if line == "title" {
             continue;
         }
         for piece in pieces(line) {
@@ -163,6 +153,7 @@ pub fn parse(lines: &[&str], numbered: bool) -> Option<C4> {
     Some(reader.c4)
 }
 
+#[derive(Default)]
 struct Reader {
     c4: C4,
     aliases: HashMap<String, usize>,
@@ -233,21 +224,17 @@ impl Reader {
         };
         let mut kind = format!("{}{named}", if external { "External " } else { "" });
         if technical && let Some(techn) = args.get(slots, "techn") {
-            kind = format!("{kind}: {}", label_lines(&techn).join(" "));
+            kind = format!("{kind}: {}", label::joined(&techn));
         }
         let element = Element {
             alias: alias.clone(),
             shape,
             external,
-            name: clip(label_lines(&label), NAME_LINES),
-            kind: {
-                let mut lines = Vec::new();
-                super::wrap(&format!("[{kind}]"), KIND_WIDTH, &mut lines);
-                clip(lines, KIND_LINES)
-            },
+            name: clip(label::lines(&label), NAME_LINES),
+            kind: clip(label::wrapped(&format!("[{kind}]"), KIND_WIDTH), KIND_LINES),
             description: args
                 .get(slots, "descr")
-                .map(|text| clip(label_lines(&text), DESCRIPTION_LINES))
+                .map(|text| clip(label::lines(&text), DESCRIPTION_LINES))
                 .unwrap_or_default(),
             frame: self.frame(),
             looped: false,
@@ -271,12 +258,11 @@ impl Reader {
             || name.starts_with("node");
         let slots: &[&str] = &["alias", "label", "type", "descr"];
         let alias = args.get(slots, "alias")?;
-        let label =
-            label_lines(&args.get(slots, "label").unwrap_or_else(|| alias.clone())).join(" ");
+        let label = label::joined(&args.get(slots, "label").unwrap_or_else(|| alias.clone()));
         let kind = args
             .get(slots, "type")
             .filter(|_| typed)
-            .map(|kind| label_lines(&kind).join(" "));
+            .map(|kind| label::joined(&kind));
         if self.c4.frames.len() >= MAX_FRAMES {
             return None;
         }
@@ -311,15 +297,13 @@ impl Reader {
             Some(number) => format!("{number}. {label}"),
             None => label,
         };
-        let mut words: Vec<String> = label_lines(&label)
+        let mut words: Vec<String> = label::lines(&label)
             .into_iter()
             .filter(|line| !line.is_empty())
             .collect();
         if let Some(techn) = args.get(slots, "techn") {
-            let techn = format!("[{}]", label_lines(&techn).join(" "));
-            let mut lines = Vec::new();
-            super::wrap(&techn, KIND_WIDTH, &mut lines);
-            words.extend(clip(lines, KIND_LINES));
+            let techn = format!("[{}]", label::joined(&techn));
+            words.extend(clip(label::wrapped(&techn, KIND_WIDTH), KIND_LINES));
         }
         self.c4.rels.push(Rel {
             from,
@@ -456,42 +440,18 @@ fn call(piece: &str) -> Option<(String, Args)> {
     }
     let inside = piece[open + 1..].strip_suffix(')')?;
     let mut args = Args::default();
-    let mut quoted = false;
-    let mut start = 0;
-    let mut parts = Vec::new();
-    for (at, c) in inside.char_indices() {
-        match c {
-            '"' => quoted = !quoted,
-            ',' if !quoted => {
-                parts.push(&inside[start..at]);
-                start = at + 1;
-            }
-            _ => {}
-        }
-    }
-    if quoted {
-        return None;
-    }
-    parts.push(&inside[start..]);
-    for part in parts {
+    for part in syntax::split_outside_quotes(inside, ',')? {
         let part = part.trim();
         if let Some(named) = part.strip_prefix('$')
             && let Some((name, value)) = named.split_once('=')
         {
-            args.named.push((name.trim().to_string(), unquote(value)));
+            let value = syntax::unquote(value).to_string();
+            args.named.push((name.trim().to_string(), value));
         } else {
-            args.given.push(unquote(part));
+            args.given.push(syntax::unquote(part).to_string());
         }
     }
     Some((name.to_string(), args))
-}
-
-fn unquote(text: &str) -> String {
-    let text = text.trim();
-    text.strip_prefix('"')
-        .and_then(|inner| inner.strip_suffix('"'))
-        .unwrap_or(text)
-        .to_string()
 }
 
 /// At most `most` lines, the last ending in `…` if any were cut.
@@ -499,7 +459,7 @@ fn clip(mut lines: Vec<String>, most: usize) -> Vec<String> {
     if lines.len() > most {
         lines.truncate(most);
         if let Some(last) = lines.last_mut() {
-            *last = truncate(&format!("{last}…"), super::LABEL_WIDTH);
+            *last = truncate(&format!("{last}…"), label::WIDTH);
             if !last.ends_with('…') {
                 last.push('…');
             }
@@ -552,11 +512,7 @@ pub fn draw(c4: &C4, width: usize) -> Option<Diagram> {
     graph.links = c4
         .rels
         .iter()
-        .map(|rel| Link {
-            from: rel.from,
-            to: rel.to,
-            words: (!rel.words.is_empty()).then(|| (widest(&rel.words), rel.words.len())),
-        })
+        .map(|rel| Link::new(rel.from, rel.to, &rel.words))
         .collect();
     graph.frames = c4.frames.iter().map(|frame| frame.parent).collect();
     graph.framed = c4.elements.iter().map(|element| element.frame).collect();
@@ -564,27 +520,19 @@ pub fn draw(c4: &C4, width: usize) -> Option<Diagram> {
     graph.room = width;
     graph.spread = true;
     let mut placed = layered::layout(&graph)?;
-    let mut title = Vec::new();
-    if let Some(text) = &c4.title {
-        super::wrap(text, TITLE_WIDTH, &mut title);
-    }
-    let above = if title.is_empty() { 0 } else { title.len() + 1 };
-    placed.moved(0, above);
+    let title = label::title(c4.title.as_deref(), TITLE_WIDTH);
+    placed.moved(0, label::above(&title));
     let mut canvas = Canvas::new(placed.width.max(widest(&title)), placed.height)?;
-    for (row, line) in title.iter().enumerate() {
-        canvas.text(0, row, line, Ink::plain(Role::Text));
-    }
+    label::draw_title(&mut canvas, &title);
 
     placed.draw_frames(&mut canvas, Stroke::Dotted);
     for (at, (element, rect)) in c4.elements.iter().zip(&placed.boxes).enumerate() {
         draw_element(&mut canvas, element, at, *rect);
     }
-    for (rel, rect) in c4.rels.iter().zip(&placed.words) {
-        if let Some(rect) = rect {
-            let ink = c4.elements[rel.from].ink(Role::Label, rel.from);
-            layered::centred(&mut canvas, rect.x, rect.y, rect.width, &rel.words, ink);
-        }
-    }
+    placed.draw_words(&mut canvas, |rel| {
+        let rel = &c4.rels[rel];
+        (&rel.words, c4.elements[rel.from].ink(Role::Label, rel.from))
+    });
     placed.draw_lines(&mut canvas, |rel| {
         let from = c4.rels[rel].from;
         (Stroke::Solid, c4.elements[from].ink(Role::Line, from).owner)
@@ -594,23 +542,12 @@ pub fn draw(c4: &C4, width: usize) -> Option<Diagram> {
         let arrow = end.to || rel.both;
         let head = c4.elements[rel.from].ink(Role::Arrow, rel.from);
         let join = c4.elements[end.node].ink(Role::Border, end.node);
-        if end.leaving {
-            canvas.put(
-                end.border.0,
-                end.border.1,
-                layered::join(&canvas, end),
-                join,
-            );
+        if end.joined(arrow) {
+            let glyph = layered::join(&canvas, end);
+            canvas.put(end.border.0, end.border.1, glyph, join);
         }
         if arrow {
             canvas.put(end.outside.0, end.outside.1, end.facing.arrow(), head);
-        } else if !end.leaving {
-            canvas.put(
-                end.border.0,
-                end.border.1,
-                layered::join(&canvas, end),
-                join,
-            );
         }
     }
     for (at, frame) in c4.frames.iter().enumerate() {
@@ -623,11 +560,7 @@ pub fn draw(c4: &C4, width: usize) -> Option<Diagram> {
         .iter()
         .map(|element| key(&element.alias))
         .collect();
-    diagram.links = c4
-        .rels
-        .iter()
-        .filter_map(|rel| Some((u16::try_from(rel.from).ok()?, u16::try_from(rel.to).ok()?)))
-        .collect();
+    diagram.links = pairs(c4.rels.iter().map(|rel| (rel.from, rel.to)));
     Some(diagram)
 }
 
@@ -635,15 +568,11 @@ fn draw_element(canvas: &mut Canvas, element: &Element, at: usize, rect: layered
     let (x, y, w, h) = (rect.x, rect.y, rect.width, rect.height);
     let outline = element.ink(Role::Border, at);
     match element.shape {
-        Shape::Person => canvas.outline(x, y, w, h, ['╭', '╮', '╰', '╯'], false, outline),
-        Shape::Box => canvas.outline(x, y, w, h, ['┌', '┐', '└', '┘'], false, outline),
+        Shape::Person => canvas.outline(x, y, w, h, ROUND, false, outline),
+        Shape::Box => canvas.outline(x, y, w, h, SQUARE, false, outline),
         Shape::Database => {
-            canvas.outline(x, y, w, h, ['╭', '╮', '╰', '╯'], false, outline);
-            canvas.put(x, y + 1, '├', outline);
-            canvas.put(x + w - 1, y + 1, '┤', outline);
-            for column in x + 1..x + w - 1 {
-                canvas.put(column, y + 1, '─', outline);
-            }
+            canvas.outline(x, y, w, h, ROUND, false, outline);
+            layered::rule(canvas, x, y + 1, w, outline);
         }
         Shape::Queue => {
             canvas.outline(x, y, w, h, ['╓', '╖', '╙', '╜'], false, outline);
@@ -656,13 +585,13 @@ fn draw_element(canvas: &mut Canvas, element: &Element, at: usize, rect: layered
     let mut row = y + 1 + usize::from(element.shape == Shape::Database);
     let inside = w - 2;
     let name = element.name();
-    layered::centred(canvas, x + 1, row, inside, &name, Ink::plain(Role::Text));
+    label::centred(canvas, x + 1, row, inside, &name, Ink::plain(Role::Text));
     row += name.len();
     let kind = element.ink(Role::Label, at);
-    layered::centred(canvas, x + 1, row, inside, &element.kind, kind);
+    label::centred(canvas, x + 1, row, inside, &element.kind, kind);
     row += element.kind.len();
     let quiet = Ink::plain(Role::Label);
-    layered::centred(canvas, x + 1, row, inside, &element.description, quiet);
+    label::centred(canvas, x + 1, row, inside, &element.description, quiet);
 }
 
 #[cfg(test)]
@@ -885,14 +814,7 @@ mod tests {
     fn external_elements_are_quiet_and_others_have_their_own_colours() {
         let c4 = c4(CONTAINER).unwrap();
         let diagram = draw(&c4, 160).unwrap();
-        let ink_of = |needle: &str| {
-            diagram
-                .rows
-                .iter()
-                .flatten()
-                .find(|(text, _)| text.contains(needle))
-                .map(|(_, ink)| *ink)
-        };
+        let ink_of = |needle: &str| super::super::ink_of(&diagram, needle);
         assert_eq!(
             ink_of("[External Software System]"),
             Some(Ink::plain(Role::Label))
